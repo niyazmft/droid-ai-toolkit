@@ -2,14 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.3.3
+# Version: 1.3.5
 # Purpose: Clean installation, patching, and uninstallation of OpenClaw & Gemini.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.3.3"
+VERSION="1.3.5"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -33,6 +33,38 @@ status_msg() { echo -ne "\r${CLEAR_LINE}${BLUE}==>${NC} $1... "; }
 error_msg() { echo -e "\r${CLEAR_LINE}${RED}Error:${NC} $1"; }
 success_msg() { echo -e "${GREEN}Done.${NC}"; }
 wait_to_continue() { read -p "$(printf "\n${BLUE}>>${NC} Press Enter to continue...")" junk; }
+
+select_package_manager() {
+    echo -e "\n${BLUE}Select Package Manager:${NC}" >&2
+    echo "1) npm (Standard)" >&2
+    echo "2) pnpm (Fast/Efficient)" >&2
+    echo "3) Back" >&2
+    read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" PM_CHOICE
+
+    case $PM_CHOICE in
+        1) echo "npm" ;;
+        2) 
+            if ! command -v pnpm >/dev/null 2>&1; then
+                execute "npm install -g pnpm" "Installing pnpm"
+            fi
+            echo "pnpm" 
+            ;;
+        *) echo "back" ;;
+    esac
+}
+
+get_openclaw_root() {
+    local pm=$1
+    if [ "$pm" == "pnpm" ]; then
+        if command -v pnpm >/dev/null 2>&1; then
+            echo "$(pnpm root -g)/openclaw"
+        else
+            echo "/data/data/com.termux/files/usr/lib/node_modules/openclaw"
+        fi
+    else
+        echo "/data/data/com.termux/files/usr/lib/node_modules/openclaw"
+    fi
+}
 
 confirm_action() {
     # Flush buffer
@@ -105,9 +137,20 @@ install_openclaw() {
     rm -f "$LOG_FILE"
     echo -e "${YELLOW}Verbose logs are being written to $LOG_FILE${NC}\n"
 
-    # Cleanup any existing OpenClaw processes for a clean start
-    status_msg "Stopping existing OpenClaw tasks"
+    # Select Package Manager
+    PKG_MANAGER=$(select_package_manager)
+    [[ "$PKG_MANAGER" == "back" ]] && return 0
+
+    # Cleanup any existing processes for a clean start
+    status_msg "Stopping existing tasks & freeing memory"
     pkill -9 -f "openclaw" 2>/dev/null || true
+    pkill -9 -f "n8n" 2>/dev/null || true
+    
+    # If PM2 is active, kill it to reclaim memory
+    if command -v pm2 >/dev/null 2>&1; then
+        pm2 kill >> "$LOG_FILE" 2>&1 || true
+    fi
+    
     rm -f /data/data/com.termux/files/usr/var/run/crond.pid
     success_msg
 
@@ -121,7 +164,14 @@ install_openclaw() {
         execute "ln -sf '$NODE_OPT_BIN/node' '$TERMUX_BIN/node' && ln -sf '$NODE_OPT_BIN/npm' '$TERMUX_BIN/npm'" "Verifying Node.js links"
     fi
 
-    execute "NODE_LLAMA_CPP_SKIP_DOWNLOAD=true npm install -g openclaw@latest --unsafe-perm --ignore-scripts --silent" "Installing OpenClaw (Safe Mode)"
+    # Update root path for the chosen PM
+    OPENCLAW_ROOT=$(get_openclaw_root "$PKG_MANAGER")
+
+    if [ "$PKG_MANAGER" == "npm" ]; then
+        execute "NODE_LLAMA_CPP_SKIP_DOWNLOAD=true npm install -g openclaw@latest --unsafe-perm --ignore-scripts --silent" "Installing OpenClaw via npm (Safe Mode)"
+    else
+        execute "NODE_LLAMA_CPP_SKIP_DOWNLOAD=true pnpm add -g openclaw@latest --ignore-scripts" "Installing OpenClaw via pnpm (Safe Mode)"
+    fi
 
     apply_patches
     
@@ -142,14 +192,14 @@ install_openclaw() {
     fi
     success_msg
     
-    execute "openclaw plugins install telegram whatsapp slack --yes || true" "Pre-installing channel plugins"
+    execute "NODE_OPTIONS='--max-old-space-size=1536' openclaw plugins install telegram whatsapp slack --yes || true" "Pre-installing channel plugins"
     apply_patches "silent"
-    execute "openclaw plugins list" "Warming up plugin engine"
+    execute "NODE_OPTIONS='--max-old-space-size=1536' openclaw plugins list" "Warming up plugin engine"
     
     echo -e "\n${GREEN}✅ OpenClaw successfully installed and patched!${NC}"
     echo -e "\n${YELLOW}⚠️  NEXT STEPS:${NC}"
     echo -e "1. Run ${GREEN}openclaw onboard${NC} to configure your API keys."
-    echo -e "2. Use ${BLUE}Option 3${NC} in this script to configure background service."
+    echo -e "2. Use ${BLUE}Option 6${NC} (Recommended) or ${BLUE}Option 5${NC} to configure background services."
     echo -e "\n${RED}🛑 DO NOT USE 'openclaw update'${NC}"
     echo -e "   This will break patches. Use Option 1 of this script to update."
     wait_to_continue
@@ -186,6 +236,11 @@ apply_patches() {
 install_gemini_cli() {
     confirm_action "setup Gemini CLI" || return 0
     echo -e "\n${BLUE}✨ Setting up Gemini CLI...${NC}"
+
+    # Select Package Manager
+    PKG_MANAGER=$(select_package_manager)
+    [[ "$PKG_MANAGER" == "back" ]] && return 0
+
     execute "pkg update -y" "Updating packages"
     execute "pkg install -y python make clang pkg-config" "Installing build tools"
     
@@ -195,7 +250,11 @@ install_gemini_cli() {
     export ANDROID_NDK_ROOT=$PREFIX
     success_msg
 
-    execute "npm i -g @google/gemini-cli" "Installing @google/gemini-cli"
+    if [ "$PKG_MANAGER" == "npm" ]; then
+        execute "npm i -g @google/gemini-cli" "Installing @google/gemini-cli via npm"
+    else
+        execute "pnpm add -g @google/gemini-cli" "Installing @google/gemini-cli via pnpm"
+    fi
     
     if command -v gemini >/dev/null 2>&1 || command -v gemini-cli >/dev/null 2>&1; then
         echo -e "${GREEN}\nGemini CLI successfully installed!${NC}"
@@ -211,11 +270,20 @@ install_gemini_cli() {
 install_n8n() {
     confirm_action "install/repair n8n Server" || return 0
     echo -e "\n${BLUE}📱 Setting up n8n Android Infrastructure...${NC}"
+
+    # Select Package Manager
+    PKG_MANAGER=$(select_package_manager)
+    [[ "$PKG_MANAGER" == "back" ]] && return 0
     
     # Clean slate for n8n/OpenClaw tasks
-    status_msg "Stopping existing tasks"
+    status_msg "Stopping existing tasks & freeing memory"
     pkill -9 -f "n8n" 2>/dev/null || true
     pkill -9 -f "openclaw" 2>/dev/null || true
+    
+    # If PM2 is active, kill it to reclaim memory
+    if command -v pm2 >/dev/null 2>&1; then
+        pm2 kill >> "$LOG_FILE" 2>&1 || true
+    fi
     success_msg
 
     execute "pkg update -y" "Updating packages"
@@ -227,7 +295,11 @@ install_n8n() {
         execute "ln -sf '$NODE_OPT_BIN/node' '$TERMUX_BIN/node' && ln -sf '$NODE_OPT_BIN/npm' '$TERMUX_BIN/npm'" "Verifying Node.js links"
     fi
 
-    execute "npm install -g n8n" "Installing n8n globally"
+    if [ "$PKG_MANAGER" == "npm" ]; then
+        execute "npm install -g n8n" "Installing n8n globally via npm"
+    else
+        execute "pnpm add -g n8n" "Installing n8n globally via pnpm"
+    fi
 
     # Memory Detection & User Choice
     TOTAL_RAM=$(free -m | awk '/^Mem:/{print $2}')
@@ -516,6 +588,49 @@ remove_service_files() {
     echo -e "${GREEN}Background service configuration removed.${NC}"
 }
 
+manage_pm2() {
+    while true; do
+        echo -e "\n${BLUE}🚀 PM2 PROCESS MANAGEMENT${NC}"
+        echo "1) Install/Update PM2"
+        echo "2) Start OpenClaw with PM2"
+        echo "3) Start n8n with PM2"
+        echo "4) View Logs (Live)"
+        echo "5) View Status (Table)"
+        echo "6) Restart/Save All"
+        echo "7) Stop/Kill PM2"
+        echo "8) Back to Main Menu"
+        read -p "Select option [1-8]: " PM2_CHOICE
+
+        case $PM2_CHOICE in
+            1) execute "npm install -g pm2" "Installing PM2 Globally" ;;
+            2) 
+                if ! command -v openclaw >/dev/null 2>&1; then
+                    error_msg "OpenClaw is not installed."
+                else
+                    execute "pm2 start \"openclaw gateway run\" --name openclaw && pm2 save" "Starting OpenClaw in PM2"
+                fi
+                wait_to_continue ;;
+            3) 
+                if ! command -v n8n >/dev/null 2>&1; then
+                    error_msg "n8n is not installed."
+                else
+                    # Use environment file if it exists
+                    if [ -f "$HOME/n8n_server/config/n8n.env" ]; then
+                        execute "pm2 start n8n --name n8n --env \"$HOME/n8n_server/config/n8n.env\" && pm2 save" "Starting n8n in PM2 (with env)"
+                    else
+                        execute "pm2 start n8n --name n8n && pm2 save" "Starting n8n in PM2"
+                    fi
+                fi
+                wait_to_continue ;;
+            4) pm2 logs ;;
+            5) pm2 status; wait_to_continue ;;
+            6) execute "pm2 restart all && pm2 save" "Restarting and saving processes" ;;
+            7) execute "pm2 kill" "Stopping all PM2 processes and daemon"; wait_to_continue ;;
+            *) return ;;
+        esac
+    done
+}
+
 # --- 8. UNINSTALLATION LOGIC ---
 
 uninstall_menu() {
@@ -541,16 +656,39 @@ uninstall_menu() {
 soft_cleanup_openclaw() {
     echo -e "${YELLOW}Cleaning up OpenClaw...${NC}"
     remove_service_files
-    if [ -f "$TERMUX_BIN/npm" ]; then
-        execute "\"$TERMUX_BIN/npm\" uninstall -g openclaw" "Uninstalling OpenClaw"
+    
+    # Try to determine PM used for installation
+    local pm="npm"
+    [ -d "$(pnpm root -g)/openclaw" ] && pm="pnpm"
+
+    if [ "$pm" == "pnpm" ]; then
+        execute "pnpm remove -g openclaw" "Uninstalling OpenClaw via pnpm"
+    elif [ -f "$TERMUX_BIN/npm" ]; then
+        execute "\"$TERMUX_BIN/npm\" uninstall -g openclaw" "Uninstalling OpenClaw via npm"
     else
-        execute "npm uninstall -g openclaw" "Uninstalling OpenClaw"
+        execute "npm uninstall -g openclaw" "Uninstalling OpenClaw via npm"
     fi
-    rm -rf "$HOME/.openclaw"
+
+    # Data Preservation Prompt
+    echo -ne "\n${YELLOW}⚠️  DATA PRESERVATION:${NC}"
+    echo -e "\n1) Soft Uninstall (Keep plugins, memory, and workspace)"
+    echo -e "2) Deep Uninstall (Wipe everything including configuration)"
+    read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" DATA_CHOICE
+
+    if [ "$DATA_CHOICE" == "2" ]; then
+        execute "rm -rf '$HOME/.openclaw'" "Wiping user data"
+    else
+        execute "rm -f '$HOME/.openclaw/openclaw.json'" "Removing configuration only"
+        echo -e "${GREEN}Workspace and extensions preserved at $HOME/.openclaw${NC}"
+    fi
 }
 
 uninstall_gemini() {
-    execute "npm uninstall -g @google/gemini-cli" "Uninstalling Gemini CLI"
+    if command -v pnpm >/dev/null 2>&1 && [ -d "$(pnpm root -g)/@google/gemini-cli" ]; then
+        execute "pnpm remove -g @google/gemini-cli" "Uninstalling Gemini CLI via pnpm"
+    else
+        execute "npm uninstall -g @google/gemini-cli" "Uninstalling Gemini CLI via npm"
+    fi
 }
 
 remove_n8n_service_files() {
@@ -563,7 +701,12 @@ uninstall_n8n() {
     echo -e "${YELLOW}Cleaning up n8n...${NC}"
     remove_n8n_service_files
     crontab -l 2>/dev/null | grep -v "n8n-monitor.sh" | crontab -
-    execute "npm uninstall -g n8n" "Uninstalling n8n"
+    
+    if command -v pnpm >/dev/null 2>&1 && [ -d "$(pnpm root -g)/n8n" ]; then
+        execute "pnpm remove -g n8n" "Uninstalling n8n via pnpm"
+    else
+        execute "npm uninstall -g n8n" "Uninstalling n8n via npm"
+    fi
     rm -rf "$HOME/n8n_server" "$HOME/.n8n"
 }
 
@@ -585,9 +728,10 @@ show_menu() {
     echo -e "2) ${YELLOW}Install/Repair${NC} Gemini CLI"
     echo -e "3) ${BLUE}Install/Repair${NC} n8n Server"
     echo -e "4) ${YELLOW}Configure${NC} GCP Bridge (for n8n)"
-    echo -e "5) ${BLUE}Manage${NC} Background Services"
-    echo -e "6) ${RED}Uninstall${NC} Software"
-    echo -e "7) Exit"
+    echo -e "5) ${BLUE}Manage${NC} Background Services (Native)"
+    echo -e "6) ${YELLOW}Manage${NC} PM2 Processes (Recommended)"
+    echo -e "7) ${RED}Uninstall${NC} Software"
+    echo -e "8) Exit"
     echo -e "${BLUE}====================================================${NC}"
 }
 
@@ -595,7 +739,7 @@ check_termux
 
 while true; do
     show_menu
-    read -p "What would you like to do? [1-7]: " MAIN_CHOICE
+    read -p "What would you like to do? [1-8]: " MAIN_CHOICE
 
     case $MAIN_CHOICE in
         1) install_openclaw ;;
@@ -603,8 +747,9 @@ while true; do
         3) install_n8n ;;
         4) setup_n8n_gcp ;;
         5) manage_service ;;
-        6) uninstall_menu ;;
-        7) exit 0 ;;
+        6) manage_pm2 ;;
+        7) uninstall_menu ;;
+        8) exit 0 ;;
         *) echo -e "${RED}Invalid option.${NC}"; sleep 1 ;;
     esac
 done

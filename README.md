@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.3.3-blue.svg)](https://github.com/niyazmft/openclaw-android-toolkit)
+[![Version](https://img.shields.io/badge/version-1.3.5-blue.svg)](https://github.com/niyazmft/openclaw-android-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), and **n8n Server** natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -16,7 +16,9 @@ A high-performance, automated toolkit for running [OpenClaw](https://github.com/
 
 - **OS**: Android 9.0 and above.
 - **Architecture**: Tested on `armv8l` (32-bit) and `aarch64` (64-bit) CPUs.
-- **Optimization**: Automatically detects system RAM and recommends appropriate memory limits for Node.js and n8n workloads.
+- **Optimization**: Automatically detects system RAM and recommends appropriate memory limits (512MB to 2048MB) for Node.js and n8n workloads.
+- **Package Managers**: Supports both **npm** (Standard) and **pnpm** (High Efficiency) for all tools.
+- **Process Management**: Supports **PM2** (Recommended) and **termux-services** (Native).
 
 ---
 
@@ -30,7 +32,7 @@ Execute the following command to start the interactive toolkit:
 ```bash
 curl -sSL https://raw.githubusercontent.com/niyazmft/openclaw-android-toolkit/main/install.sh | bash
 ```
-> 💡 **Note:** Select **Option 1** for OpenClaw, **Option 2** for Gemini CLI, or **Option 3** for n8n.
+> 💡 **Note:** Select **Option 1** for OpenClaw, **Option 2** for Gemini CLI, or **Option 3** for n8n. You will be prompted to choose between **npm** or **pnpm**.
 
 ### 3. Onboard (For OpenClaw)
 Initialize your account and API providers:
@@ -39,19 +41,11 @@ openclaw onboard
 ```
 *Select **QuickStart** and choose an external provider (OpenRouter, OpenAI, etc.).*
 
-<p align="center">
-  <img src="./assets/1-openclaw_onboard.jpg" width="300" alt="Onboarding 1">
-</p>
-
 ### 4. Background Service (Optimized)
 To keep OpenClaw running even after you close Termux:
-1. Run the toolkit again and choose **Option 3 (Manage Background Service)**.
-2. Select your **Performance Profile**.
-3. Start the service: `sv up openclaw`
-
-<p align="center">
-  <img src="./assets/3-openclaw_gateway.jpg" width="300" alt="Gateway Running">
-</p>
+1. Run the toolkit again and choose **Option 6 (Manage PM2 Processes)**.
+2. Select **Start OpenClaw with PM2**.
+3. View logs with: `pm2 logs openclaw`
 
 ---
 
@@ -59,12 +53,11 @@ To keep OpenClaw running even after you close Termux:
 
 - 🛠 **Zero-Config Patching**: Automatically fixes the `koffi` native bridge and `renameat2` kernel crashes for OpenClaw.
 - 📂 **Path Awareness**: Aggressively redirects `/bin/npm`, `/bin/node`, and `/tmp` to Termux-compatible directories.
-- 📱 **n8n Automation**: Fully automated n8n server setup with a self-healing monitor and custom Python bridge.
-- 🌐 **GCP Bridge**: Integrated walkthrough to securely expose n8n to the internet via an SSH tunnel to Google Cloud.
-- 🔌 **Plugin Ready**: Auto-initializes and patches Telegram, WhatsApp, and Slack plugins for OpenClaw.
+- 🚀 **PM2 Integration**: Native support for starting, stopping, and monitoring OpenClaw and n8n via PM2 with optimized memory flags.
+- 📦 **pnpm Support**: Integrated support for pnpm to speed up installations and save storage space.
+- 🧠 **Memory Guard**: Automatically clears memory (PM2 kill) and increases Node.js heap limits (1.5GB+) to prevent crashes on low-RAM devices during updates.
+- 🛡 **Data Preservation**: The uninstaller now offers a **Soft Uninstall** (retains your memory, skills, and extensions) and a **Deep Uninstall** (full wipe).
 - 🧩 **Gemini CLI Support**: Dedicated installer with NDK environment optimizations.
-- ⚡ **Performance Profiles**: Intelligent, hardware-aware memory limits (512MB/1024MB+) to prevent Android system throttling.
-- 🧼 **Clean Management**: Includes a modular uninstaller with specific cleanup options for each tool.
 
 <p align="center">
   <img src="./assets/4-gemini_cli.jpg" width="300" alt="Gemini CLI Interface">
