@@ -2,14 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.6.6
-# Purpose: Clean slate installation to prevent ENOTEMPTY rename errors.
+# Version: 1.6.7
+# Purpose: Fix update logic by removing prefer-offline and adding force flags.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.6.6"
+VERSION="1.6.7"
 
 
 ARCH_TYPE=$(uname -m)
@@ -280,18 +280,18 @@ install_openclaw() {
     PKG_MANAGER=$(select_package_manager "openclaw")
     [[ "$PKG_MANAGER" == "back" ]] && return 0
 
-        if [[ "$mode" == "full" ]]; then
-            OPENCLAW_ROOT=$(get_openclaw_root "$PKG_MANAGER")
+    if [[ "$mode" == "full" ]]; then
+        OPENCLAW_ROOT=$(get_openclaw_root "$PKG_MANAGER")
+        
+        status_msg "Preparing clean slate"
+        rm -rf "$OPENCLAW_ROOT"
+        success_msg
 
-            status_msg "Preparing clean slate"
-            rm -rf "$OPENCLAW_ROOT"
-            success_msg
-
-            if [ "$PKG_MANAGER" == "npm" ]; then
-
+        if [ "$PKG_MANAGER" == "npm" ]; then
             execute "NODE_LLAMA_CPP_SKIP_DOWNLOAD=true npm install -g openclaw@latest --unsafe-perm --ignore-scripts --silent" "Installing OpenClaw via npm (Safe Mode)"
         else
-            execute "NODE_LLAMA_CPP_SKIP_DOWNLOAD=true pnpm add -g openclaw@latest --ignore-scripts --prefer-offline" "Installing OpenClaw via pnpm (Offline Optimized)"
+            # Note: Removed --prefer-offline to ensure we fetch the newest version from the registry
+            execute "NODE_LLAMA_CPP_SKIP_DOWNLOAD=true pnpm add -g openclaw@latest --ignore-scripts --force" "Installing OpenClaw via pnpm (Update Mode)"
         fi
     fi
 
@@ -399,9 +399,9 @@ install_gemini_cli() {
         success_msg
 
         if [ "$PKG_MANAGER" == "npm" ]; then
-            execute "npm i -g @google/gemini-cli" "Installing @google/gemini-cli via npm"
+            execute "npm i -g @google/gemini-cli@latest" "Installing @google/gemini-cli via npm"
         else
-            execute "pnpm add -g @google/gemini-cli" "Installing @google/gemini-cli via pnpm"
+            execute "pnpm add -g @google/gemini-cli@latest --force" "Installing @google/gemini-cli via pnpm"
         fi
     fi
     
@@ -484,9 +484,9 @@ install_n8n() {
         success_msg
 
         if [ "$PKG_MANAGER" == "npm" ]; then
-            execute "npm install -g n8n" "Installing n8n globally via npm"
+            execute "npm install -g n8n@latest" "Installing n8n globally via npm"
         else
-            execute "pnpm add -g n8n" "Installing n8n globally via pnpm"
+            execute "pnpm add -g n8n@latest --force" "Installing n8n globally via pnpm"
         fi
     fi
 
