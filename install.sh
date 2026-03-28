@@ -2,14 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.6.9
-# Purpose: Standardize package detection names to fix Gemini auto-detection.
+# Version: 1.7.0
+# Purpose: Decoupled services and standardized manual activation workflow.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.6.9"
+VERSION="1.7.0"
 
 
 ARCH_TYPE=$(uname -m)
@@ -555,17 +555,9 @@ EOF
     chmod +x "$HOME/n8n_server/scripts/n8n-monitor.sh"
     success_msg
 
-    status_msg "Setting up auto-boot & watchdog"
-    cat <<EOF > "$HOME/.termux/boot/start-n8n-on-boot"
-#!/bin/bash
-termux-wake-lock
-$HOME/n8n_server/scripts/n8n-monitor.sh
-EOF
-    chmod +x "$HOME/.termux/boot/start-n8n-on-boot"
-    (crontab -l 2>/dev/null | grep -v "n8n-monitor.sh"; echo "*/5 * * * * $HOME/n8n_server/scripts/n8n-monitor.sh") | crontab -
-    success_msg
-
-    echo -e "\n${GREEN}✅ n8n successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed") and automated!${NC}"
+    echo -e "\n${GREEN}✅ n8n successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
+    echo -e "\n${YELLOW}⚠️  NEXT STEPS:${NC}"
+    echo -e "1. Use ${BLUE}Option 5${NC} (Recommended) or ${BLUE}Option 6${NC} to configure background services."
     wait_to_continue
 }
 
