@@ -2,14 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.7.0
-# Purpose: Decoupled services and standardized manual activation workflow.
+# Version: 1.7.3
+# Purpose: Optimized performance by removing redundant plugin warming.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.7.0"
+VERSION="1.7.3"
 
 
 ARCH_TYPE=$(uname -m)
@@ -65,6 +65,19 @@ get_config() {
         jq -r --arg k "$key" '.[$k] // "null"' "$TOOLKIT_CONFIG"
     else
         echo "null"
+    fi
+}
+
+get_mem_limit() {
+    local total_ram=$(free -m | awk '/^Mem:/{print $2}')
+    # Aim for 75% of total RAM, but cap at 2048MB for stability
+    local calculated=$(( total_ram * 75 / 100 ))
+    if [ "$calculated" -gt 2048 ]; then
+        echo "2048"
+    elif [ "$calculated" -lt 512 ]; then
+        echo "512"
+    else
+        echo "$calculated"
     fi
 }
 
@@ -322,7 +335,6 @@ install_openclaw() {
     
     if [[ "$mode" == "full" ]]; then
         apply_patches "silent"
-        execute "NODE_OPTIONS='--max-old-space-size=1536' openclaw plugins list" "Warming up plugin engine"
     fi
     
     echo -e "\n${GREEN}✅ OpenClaw successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed") and patched!${NC}"
@@ -375,6 +387,10 @@ install_gemini_cli() {
     fi
 
     echo -e "\n${BLUE}✨ $([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") Gemini CLI...${NC}"
+
+    status_msg "Stopping existing tasks & freeing memory"
+    command -v pm2 >/dev/null 2>&1 && pm2 kill >> "$LOG_FILE" 2>&1 || true
+    success_msg
 
     if [[ "$mode" == "full" ]]; then
         smart_pkg_install python make clang pkg-config
@@ -494,20 +510,12 @@ install_n8n() {
     fi
 
     TOTAL_RAM=$(free -m | awk '/^Mem:/{print $2}')
-    RECOMMENDED_MEM=512
-    [ "$TOTAL_RAM" -gt 3000 ] && RECOMMENDED_MEM=1024
+    SAFE_LIMIT=$(get_mem_limit)
     
     echo -e "\n${YELLOW}🧠 MEMORY ALLOCATION:${NC}"
     echo -e "Detected Total RAM: ${BLUE}${TOTAL_RAM}MB${NC}"
-    echo -e "Recommended for your device: ${GREEN}${RECOMMENDED_MEM}MB${NC}"
-
-    while true; do
-        read -p "Enter RAM limit for n8n in MB [Default $RECOMMENDED_MEM]: " USER_MEM
-        USER_MEM=${USER_MEM:-$RECOMMENDED_MEM}
-        [[ "$USER_MEM" =~ ^[0-9]+$ ]] && break
-        error_msg "Invalid input. Please enter a numeric value."
-    done
-
+    echo -e "Applying Safe Limit: ${GREEN}${SAFE_LIMIT}MB${NC}"
+    
     status_msg "Creating directories"
     mkdir -p "$HOME/n8n_server/config" "$HOME/n8n_server/scripts" "$HOME/n8n_server/python" "$HOME/.termux/boot"
     success_msg
@@ -521,7 +529,7 @@ N8N_PYTHON_BINARY=$PREFIX/bin/python3
 N8N_NATIVE_PYTHON_RUNNER=false
 N8N_BLOCK_COMMAND_EXECUTION=false
 N8N_NODES_INCLUDE='["n8n-nodes-base.executeCommand","n8n-nodes-base.manualTrigger"]'
-NODE_OPTIONS="--max-old-space-size=$USER_MEM"
+NODE_OPTIONS="--max-old-space-size=$SAFE_LIMIT"
 N8N_PROTOCOL=http
 N8N_HOST=localhost
 EOF
