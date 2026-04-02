@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.7.3-blue.svg)](https://github.com/niyazmft/openclaw-android-toolkit)
+[![Version](https://img.shields.io/badge/version-1.7.7-blue.svg)](https://github.com/niyazmft/openclaw-android-toolkit)
 
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
