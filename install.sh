@@ -2,14 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.7.3
-# Purpose: Optimized performance by removing redundant plugin warming.
+# Version: 1.7.7
+# Purpose: Finalize Telegram dependencies (throttler/types) and OOM prevention.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.7.3"
+VERSION="1.7.7"
 
 
 ARCH_TYPE=$(uname -m)
@@ -78,6 +78,22 @@ get_mem_limit() {
         echo "512"
     else
         echo "$calculated"
+    fi
+}
+
+ensure_peer_deps() {
+    local pm=$1
+    local deps=(
+        "@slack/web-api" "@slack/bolt" "grammy" 
+        "@grammyjs/runner" "@grammyjs/transformer-throttler" "@grammyjs/types"
+        "@aws-sdk/client-bedrock" "@aws-sdk/client-bedrock-runtime"
+    )
+    
+    status_msg "Checking peer dependencies"
+    if [ "$pm" == "pnpm" ]; then
+        execute "pnpm add -g ${deps[*]} --prefer-offline || pnpm add -g ${deps[*]}" "Installing missing channel dependencies (Telegram/Slack/Bedrock)"
+    else
+        execute "npm install -g ${deps[*]} --silent" "Installing missing channel dependencies (Telegram/Slack/Bedrock)"
     fi
 }
 
@@ -308,6 +324,7 @@ install_openclaw() {
         fi
     fi
 
+    ensure_peer_deps "$PKG_MANAGER"
     apply_patches
     
     CONFIG_PATH="$HOME/.openclaw/openclaw.json"

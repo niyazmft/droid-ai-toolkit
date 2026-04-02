@@ -8,7 +8,7 @@ Provide a "one-click" high-performance installation process for OpenClaw, Gemini
 
 ## 🛠 Core Components
 
-- `install.sh`: The main automation script (v1.7.3).
+- `install.sh`: The main automation script (v1.7.7).
 
 - `README.md`: Combined documentation with visual setup guides.
 - `assets/`: Screenshots and media for documentation.
