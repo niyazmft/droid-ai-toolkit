@@ -2,14 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.7.10
-# Purpose: Support OpenClaw v2026.4.5 dependencies with stronger Android runtime module resolution.
+# Version: 1.7.11
+# Purpose: Module Linker strategy for high-reliability dependency resolution.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.7.10"
+VERSION="1.7.11"
 
 
 ARCH_TYPE=$(uname -m)
@@ -113,27 +113,28 @@ ensure_peer_deps() {
 
 ensure_openclaw_runtime_modules() {
     local pm=$1
-    local module_name="@larksuiteoapi/node-sdk"
-    local target="$OPENCLAW_ROOT/package.json"
-    local resolver="const { createRequire } = require('module'); const r = createRequire(process.argv[1]); r.resolve(process.argv[2]);"
-    local node_path
-    node_path=$(get_global_node_path)
-
-    status_msg "Verifying OpenClaw runtime modules"
-    if NODE_PATH="$node_path" node -e "$resolver" "$target" "$module_name" >/dev/null 2>&1; then
-        success_msg
-        return 0
-    fi
-    echo ""
-
-    if [ "$pm" == "pnpm" ]; then
-        execute "pnpm add -g $module_name --prefer-offline || pnpm add -g $module_name --force" "Repairing missing Lark SDK"
-    else
-        execute "npm install -g $module_name --silent" "Repairing missing Lark SDK"
+    local modules=("@larksuiteoapi/node-sdk" "@buape/carbon" "grammy" "@grammyjs/runner" "@slack/web-api")
+    local global_root
+    global_root=$(npm root -g 2>/dev/null || echo "$PREFIX/lib/node_modules")
+    
+    # If pnpm, global root is different
+    if [ "$pm" == "pnpm" ] && command -v pnpm >/dev/null 2>&1; then
+        global_root=$(pnpm root -g 2>/dev/null || echo "$global_root")
     fi
 
-    execute "npm install --prefix '$OPENCLAW_ROOT' $module_name --silent --no-audit --no-fund || true" "Applying local module fallback"
-    execute "NODE_PATH='$node_path' node -e \"$resolver\" '$target' '$module_name'" "Verifying Lark SDK resolution"
+    status_msg "Linking runtime modules"
+    mkdir -p "$OPENCLAW_ROOT/node_modules"
+    
+    for mod in "${modules[@]}"; do
+        if [ -d "$global_root/$mod" ]; then
+            # Handle scoped modules (@scope/pkg)
+            if [[ "$mod" == "@"* ]]; then
+                mkdir -p "$OPENCLAW_ROOT/node_modules/${mod%/*}"
+            fi
+            ln -sf "$global_root/$mod" "$OPENCLAW_ROOT/node_modules/$mod"
+        fi
+    done
+    success_msg
 }
 
 # Intelligence Helpers
