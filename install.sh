@@ -2,14 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.7.7
-# Purpose: Finalize Telegram dependencies (throttler/types) and OOM prevention.
+# Version: 1.7.8
+# Purpose: Support OpenClaw v2026.4.5 UI dependencies (@buape/carbon) and OOM prevention.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.7.7"
+VERSION="1.7.8"
 
 
 ARCH_TYPE=$(uname -m)
@@ -87,13 +87,14 @@ ensure_peer_deps() {
         "@slack/web-api" "@slack/bolt" "grammy" 
         "@grammyjs/runner" "@grammyjs/transformer-throttler" "@grammyjs/types"
         "@aws-sdk/client-bedrock" "@aws-sdk/client-bedrock-runtime"
+        "@buape/carbon"
     )
     
     status_msg "Checking peer dependencies"
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm add -g ${deps[*]} --prefer-offline || pnpm add -g ${deps[*]}" "Installing missing channel dependencies (Telegram/Slack/Bedrock)"
+        execute "pnpm add -g ${deps[*]} --prefer-offline || pnpm add -g ${deps[*]}" "Installing missing channel and UI dependencies"
     else
-        execute "npm install -g ${deps[*]} --silent" "Installing missing channel dependencies (Telegram/Slack/Bedrock)"
+        execute "npm install -g ${deps[*]} --silent" "Installing missing channel and UI dependencies"
     fi
 }
 
