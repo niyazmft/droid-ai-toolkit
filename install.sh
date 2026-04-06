@@ -2,14 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.7.8
-# Purpose: Support OpenClaw v2026.4.5 UI dependencies (@buape/carbon) and OOM prevention.
+# Version: 1.7.10
+# Purpose: Support OpenClaw v2026.4.5 dependencies with stronger Android runtime module resolution.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.7.8"
+VERSION="1.7.10"
 
 
 ARCH_TYPE=$(uname -m)
@@ -81,12 +81,25 @@ get_mem_limit() {
     fi
 }
 
+get_global_node_path() {
+    local node_path="$PREFIX/lib/node_modules"
+    if command -v pnpm >/dev/null 2>&1; then
+        local pnpm_root
+        pnpm_root=$(pnpm root -g 2>/dev/null || true)
+        if [ -n "$pnpm_root" ]; then
+            node_path="$node_path:$pnpm_root"
+        fi
+    fi
+    echo "$node_path"
+}
+
 ensure_peer_deps() {
     local pm=$1
     local deps=(
         "@slack/web-api" "@slack/bolt" "grammy" 
         "@grammyjs/runner" "@grammyjs/transformer-throttler" "@grammyjs/types"
         "@aws-sdk/client-bedrock" "@aws-sdk/client-bedrock-runtime"
+        "@larksuiteoapi/node-sdk"
         "@buape/carbon"
     )
     
@@ -96,6 +109,31 @@ ensure_peer_deps() {
     else
         execute "npm install -g ${deps[*]} --silent" "Installing missing channel and UI dependencies"
     fi
+}
+
+ensure_openclaw_runtime_modules() {
+    local pm=$1
+    local module_name="@larksuiteoapi/node-sdk"
+    local target="$OPENCLAW_ROOT/package.json"
+    local resolver="const { createRequire } = require('module'); const r = createRequire(process.argv[1]); r.resolve(process.argv[2]);"
+    local node_path
+    node_path=$(get_global_node_path)
+
+    status_msg "Verifying OpenClaw runtime modules"
+    if NODE_PATH="$node_path" node -e "$resolver" "$target" "$module_name" >/dev/null 2>&1; then
+        success_msg
+        return 0
+    fi
+    echo ""
+
+    if [ "$pm" == "pnpm" ]; then
+        execute "pnpm add -g $module_name --prefer-offline || pnpm add -g $module_name --force" "Repairing missing Lark SDK"
+    else
+        execute "npm install -g $module_name --silent" "Repairing missing Lark SDK"
+    fi
+
+    execute "npm install --prefix '$OPENCLAW_ROOT' $module_name --silent --no-audit --no-fund || true" "Applying local module fallback"
+    execute "NODE_PATH='$node_path' node -e \"$resolver\" '$target' '$module_name'" "Verifying Lark SDK resolution"
 }
 
 # Intelligence Helpers
@@ -309,10 +347,9 @@ install_openclaw() {
 
     PKG_MANAGER=$(select_package_manager "openclaw")
     [[ "$PKG_MANAGER" == "back" ]] && return 0
+    OPENCLAW_ROOT=$(get_openclaw_root "$PKG_MANAGER")
 
     if [[ "$mode" == "full" ]]; then
-        OPENCLAW_ROOT=$(get_openclaw_root "$PKG_MANAGER")
-        
         status_msg "Preparing clean slate"
         rm -rf "$OPENCLAW_ROOT"
         success_msg
@@ -326,6 +363,7 @@ install_openclaw() {
     fi
 
     ensure_peer_deps "$PKG_MANAGER"
+    ensure_openclaw_runtime_modules "$PKG_MANAGER"
     apply_patches
     
     CONFIG_PATH="$HOME/.openclaw/openclaw.json"
@@ -346,6 +384,7 @@ install_openclaw() {
             .plugins.entries.whatsapp.enabled = true | 
             .plugins.entries.slack.enabled = true |
             .env.PATH = "'"$PREFIX"'/bin:/bin" |
+            .env.NODE_PATH = "'"$(get_global_node_path)"'" |
             del(.plugins.installs[]? | select(. == "telegram" or . == "whatsapp" or . == "slack")) |
             (.plugins.load.paths // []) |= map(select(test("/extensions/(telegram|whatsapp|slack)$") | not))' "$CONFIG_PATH" > "$tmp_cfg" && mv "$tmp_cfg" "$CONFIG_PATH"
         success_msg
@@ -639,13 +678,17 @@ setup_service_files() {
     status_msg "Creating OpenClaw service files"
     mkdir -p "$SERVICE_DIR/log" "$HOME/.openclaw/logs"
 
-    cat <<EOF > "$SERVICE_DIR/run"
+cat <<EOF > "$SERVICE_DIR/run"
 #!/bin/bash
 termux-wake-lock
 export TERMUX_BIN='$TERMUX_BIN'
 export PATH="\$TERMUX_BIN:\$PATH"
 export npm_execpath="\$TERMUX_BIN/npm"
-export NODE_PATH="\$TERMUX_BIN/node"
+PNPM_NODE_PATH=""
+if command -v pnpm >/dev/null 2>&1; then
+    PNPM_NODE_PATH="\$(pnpm root -g 2>/dev/null)"
+fi
+export NODE_PATH="$PREFIX/lib/node_modules\${PNPM_NODE_PATH:+:\$PNPM_NODE_PATH}"
 export HOME='$HOME'
 rm -f "\$HOME/.openclaw/tmp/openclaw.lock" "\$PREFIX/var/run/crond.pid"
 pkill -9 -f "openclaw gateway run" 2>/dev/null || true
@@ -707,7 +750,7 @@ manage_pm2() {
             1) execute "npm install -g pm2" "Installing PM2 Globally" ;;
             2) 
                 if command -v openclaw >/dev/null 2>&1; then
-                    execute "pkill -9 -f openclaw 2>/dev/null || true; sleep 2; pm2 start \"openclaw gateway run\" --name openclaw --interpreter none && pm2 save" "Starting OpenClaw in PM2"
+                    execute "pkill -9 -f openclaw 2>/dev/null || true; sleep 2; PNPM_NODE_PATH=\$(pnpm root -g 2>/dev/null || true); NODE_PATH=\"$PREFIX/lib/node_modules\${PNPM_NODE_PATH:+:\$PNPM_NODE_PATH}\" npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH' pm2 start \"openclaw gateway run\" --name openclaw --interpreter none && pm2 save" "Starting OpenClaw in PM2"
                 else
                     error_msg "OpenClaw missing."
                 fi
