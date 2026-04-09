@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.7.14-blue.svg)](https://github.com/niyazmft/openclaw-android-toolkit)
+[![Version](https://img.shields.io/badge/version-1.8.0-blue.svg)](https://github.com/niyazmft/openclaw-android-toolkit)
 
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
@@ -164,7 +164,9 @@ To update or repair safely:
 
 1. Run the `install.sh` script.
 2. Choose **Option 1 (Install/Repair)**.
-3. Select **[R] Repair** to fix patches instantly (2s) or **[U] Update** for a full version upgrade.
+3. Select **[R] Repair** to fix patches instantly (2s) or **[S] Switch Version** to install/change your OpenClaw release.
+
+> 💡 **Version Selection:** This toolkit currently supports **v2026.3.28** and **v2026.4.2**. These specific releases have been selected and tested for their high stability and full compatibility with the Android/Termux kernel and filesystem restrictions.
 
 ### 🔋 Battery Optimization
 
