@@ -2,17 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.7.14
-# Purpose: Zero-collision management and aggressive port cleanup.
+# Version: 1.8.0
+# Purpose: Explicit version selection and manual lifecycle management.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.7.14"
-
-
-
+VERSION="1.8.0"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -309,13 +306,15 @@ check_termux() {
 # --- 3. OPENCLAW INSTALLATION ---
 
 install_openclaw() {
-    local mode="full"
+    local mode="repair"
+    local target_version="2026.4.2" # Default
+
     if is_installed "openclaw"; then
         echo -e "\n${YELLOW}🦞 OpenClaw is already installed.${NC}"
         echo "1) [R] Repair Patches (Fast - 2s)"
-        echo "2) [U] Update to Latest (Full - 1m)"
+        echo "2) [S] Switch/Install Version (Full - 1m)"
         echo "3) Back"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" REPAIR_CHOICE
+        read -p "$(printf "${BLUE}>>${NC} Select Option [1-3]: ")" REPAIR_CHOICE
         case $REPAIR_CHOICE in
             1) mode="repair" ;;
             2) mode="full" ;;
@@ -323,6 +322,19 @@ install_openclaw() {
         esac
     else
         confirm_action "Install OpenClaw" || return 0
+        mode="full"
+    fi
+
+    if [[ "$mode" == "full" ]]; then
+        echo -e "\n${BLUE}Select OpenClaw Version:${NC}"
+        echo "1) 2026.3.28 (Legacy Stable)"
+        echo "2) 2026.4.2 (Latest Verified)"
+        read -p "$(printf "${BLUE}>>${NC} Select Version [1-2]: ")" VERSION_CHOICE
+        case $VERSION_CHOICE in
+            1) target_version="2026.3.28" ;;
+            2) target_version="2026.4.2" ;;
+            *) echo -e "${RED}Invalid selection. Using 2026.4.2.${NC}" ;;
+        esac
     fi
 
     rm -f "$LOG_FILE"
@@ -333,7 +345,7 @@ install_openclaw() {
     pkill -9 -f "n8n" 2>/dev/null || true
     command -v pm2 >/dev/null 2>&1 && pm2 kill >> "$LOG_FILE" 2>&1 || true
     
-    # Surgical lock cleanup (fuser is unreliable on some Android kernels)
+    # Surgical lock cleanup
     rm -f "$HOME/.openclaw/tmp/openclaw.lock" "$HOME/.openclaw/tmp/openclaw-*" "$PREFIX/var/run/crond.pid"
     success_msg
 
@@ -357,10 +369,9 @@ install_openclaw() {
         success_msg
 
         if [ "$PKG_MANAGER" == "npm" ]; then
-            execute "NODE_LLAMA_CPP_SKIP_DOWNLOAD=true npm install -g openclaw@latest --unsafe-perm --ignore-scripts --silent" "Installing OpenClaw via npm (Safe Mode)"
+            execute "NODE_LLAMA_CPP_SKIP_DOWNLOAD=true npm install -g openclaw@$target_version --unsafe-perm --ignore-scripts --silent" "Installing OpenClaw v$target_version via npm"
         else
-            # Note: Removed --prefer-offline to ensure we fetch the newest version from the registry
-            execute "NODE_LLAMA_CPP_SKIP_DOWNLOAD=true pnpm add -g openclaw@latest --ignore-scripts --force" "Installing OpenClaw via pnpm (Update Mode)"
+            execute "NODE_LLAMA_CPP_SKIP_DOWNLOAD=true pnpm add -g openclaw@$target_version --ignore-scripts --force" "Installing OpenClaw v$target_version via pnpm"
         fi
     fi
 
