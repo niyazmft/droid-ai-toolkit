@@ -2,14 +2,15 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.7.11
-# Purpose: Module Linker strategy for high-reliability dependency resolution.
+# Version: 1.7.14
+# Purpose: Zero-collision management and aggressive port cleanup.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.7.11"
+VERSION="1.7.14"
+
 
 
 ARCH_TYPE=$(uname -m)
@@ -379,18 +380,27 @@ install_openclaw() {
         status_msg "Optimizing plugin configuration"
         tmp_cfg=$(mktemp)
         # 1. Enable standard channels
-        # 2. Set Termux binary path
-        # 3. PURGE conflicting local installs/paths for standard channels
+        # 2. Set Termux environment and performance flags
+        # 3. PURGE conflicting local installs/paths
+        # 4. Remove schema-invalid and legacy keys before doctor --fix
         jq '.plugins.entries.telegram.enabled = true | 
             .plugins.entries.whatsapp.enabled = true | 
             .plugins.entries.slack.enabled = true |
             .env.PATH = "'"$PREFIX"'/bin:/bin" |
-            .env.NODE_PATH = "'"$(get_global_node_path)"'" |
+            .env.NODE_OPTIONS = "--dns-result-order=ipv4first" |
+            .env.OPENCLAW_TMP = "'"$HOME"'/.openclaw/tmp" |
+            del(.sidecars, .paths) |
             del(.plugins.installs[]? | select(. == "telegram" or . == "whatsapp" or . == "slack")) |
-            (.plugins.load.paths // []) |= map(select(test("/extensions/(telegram|whatsapp|slack)$") | not))' "$CONFIG_PATH" > "$tmp_cfg" && mv "$tmp_cfg" "$CONFIG_PATH"
+            (.plugins.load.paths // []) |= map(select(test("/extensions/(telegram|whatsapp|slack)$") | not)) |
+            del(.channels.telegram.streamMode, .channels.telegram.chunkMode, .channels.telegram.blockStreaming, .channels.telegram.draftChunk, .channels.telegram.blockStreamingCoalesce) |
+            del(.channels.slack.streamMode, .channels.slack.chunkMode, .channels.slack.blockStreaming, .channels.slack.blockStreamingCoalesce, .channels.slack.nativeStreaming) |
+            if (.channels.telegram.streaming? | type) != "object" then del(.channels.telegram.streaming) else . end |
+            if (.channels.slack.streaming? | type) != "object" then del(.channels.slack.streaming) else . end' "$CONFIG_PATH" > "$tmp_cfg" && mv "$tmp_cfg" "$CONFIG_PATH"
+        
+        # 4. Automated Migration: Fix legacy keys and validate schema
+        yes "" | openclaw doctor --fix >> "$LOG_FILE" 2>&1 || true
         success_msg
     fi
-    
     if [[ "$mode" == "full" ]]; then
         apply_patches "silent"
     fi
@@ -749,13 +759,20 @@ manage_pm2() {
 
         case $PM2_CHOICE in
             1) execute "npm install -g pm2" "Installing PM2 Globally" ;;
-            2) 
+            2)
                 if command -v openclaw >/dev/null 2>&1; then
-                    execute "pkill -9 -f openclaw 2>/dev/null || true; sleep 2; PNPM_NODE_PATH=\$(pnpm root -g 2>/dev/null || true); NODE_PATH=\"$PREFIX/lib/node_modules\${PNPM_NODE_PATH:+:\$PNPM_NODE_PATH}\" npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH' pm2 start \"openclaw gateway run\" --name openclaw --interpreter none && pm2 save" "Starting OpenClaw in PM2"
+                    status_msg "Clearing ports and stale processes"
+                    pm2 delete openclaw 2>/dev/null || true
+                    pkill -9 -f openclaw 2>/dev/null || true
+                    rm -f "$HOME/.openclaw/tmp/openclaw.lock"
+                    success_msg
+                    PNPM_NODE_PATH=$(pnpm root -g 2>/dev/null || true)
+                    execute "sleep 5; NODE_PATH=\"$PREFIX/lib/node_modules${PNPM_NODE_PATH:+:$PNPM_NODE_PATH}\" npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH' pm2 start \"openclaw gateway run\" --name openclaw --interpreter none && pm2 save" "Starting OpenClaw in PM2 (Clean Start)"
                 else
                     error_msg "OpenClaw missing."
                 fi
                 wait_to_continue ;;
+
             3) 
                 if command -v n8n >/dev/null 2>&1; then
                     local n8n_env=""
