@@ -21,7 +21,7 @@ Provide a "one-click" high-performance installation process for OpenClaw, Gemini
 The script (`install.sh`) provides an intelligent menu:
 
 - **Package Manager Selection**: State-aware selection between `npm` and `pnpm`.
-- **Smart Repair**: Detects existing installations. Offers **[R] Repair** (instant patch re-application) or **[U] Update** (full registry download).
+- **Smart Repair**: Detects existing installations. Offers **[R] Repair** (instant patch re-application) or **[U] Update** (installs latest version).
 - **Automated Dependencies**: Uses `smart_pkg_install` to audit system packages via `dpkg`, skipping slow registry syncs if `nodejs-22`, `ffmpeg`, etc., are already present.
 - **n8n Android Infrastructure**: Automated setup with watchdog (cron), memory-optimized environment, and Python 3 bridge.
 

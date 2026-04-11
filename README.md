@@ -164,9 +164,9 @@ To update or repair safely:
 
 1. Run the `install.sh` script.
 2. Choose **Option 1 (Install/Repair)**.
-3. Select **[R] Repair** to fix patches instantly (2s) or **[S] Switch Version** to install/change your OpenClaw release.
+3. Select **[R] Repair** to fix patches instantly (2s) or **[U] Update** to install the latest verified version.
 
-> 💡 **Version Selection:** This toolkit currently supports **v2026.3.28** and **v2026.4.2**. These specific releases have been selected and tested for their high stability and full compatibility with the Android/Termux kernel and filesystem restrictions.
+> 💡 **Latest Version:** This toolkit always installs the latest available version of OpenClaw to ensure maximum feature compatibility and security.
 
 ### 🔋 Battery Optimization
 
