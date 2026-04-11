@@ -2,14 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.8.0
-# Purpose: Explicit version selection and manual lifecycle management.
+# Version: 1.8.1
+# Purpose: Dynamic memory guarding and latest version support.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.8.0"
+VERSION="1.8.1"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
