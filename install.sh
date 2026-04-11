@@ -307,12 +307,12 @@ check_termux() {
 
 install_openclaw() {
     local mode="repair"
-    local target_version="2026.4.2" # Default
+    local target_version="latest"
 
     if is_installed "openclaw"; then
         echo -e "\n${YELLOW}🦞 OpenClaw is already installed.${NC}"
         echo "1) [R] Repair Patches (Fast - 2s)"
-        echo "2) [S] Switch/Install Version (Full - 1m)"
+        echo "2) [U] Update to Latest (Full - 1m)"
         echo "3) Back"
         read -p "$(printf "${BLUE}>>${NC} Select Option [1-3]: ")" REPAIR_CHOICE
         case $REPAIR_CHOICE in
@@ -323,18 +323,6 @@ install_openclaw() {
     else
         confirm_action "Install OpenClaw" || return 0
         mode="full"
-    fi
-
-    if [[ "$mode" == "full" ]]; then
-        echo -e "\n${BLUE}Select OpenClaw Version:${NC}"
-        echo "1) 2026.3.28 (Legacy Stable)"
-        echo "2) 2026.4.2 (Latest Verified)"
-        read -p "$(printf "${BLUE}>>${NC} Select Version [1-2]: ")" VERSION_CHOICE
-        case $VERSION_CHOICE in
-            1) target_version="2026.3.28" ;;
-            2) target_version="2026.4.2" ;;
-            *) echo -e "${RED}Invalid selection. Using 2026.4.2.${NC}" ;;
-        esac
     fi
 
     rm -f "$LOG_FILE"
