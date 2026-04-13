@@ -2,14 +2,14 @@
 
 # ==============================================================================
 # 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.8.1
-# Purpose: Dynamic memory guarding and latest version support.
+# Version: 1.8.2
+# Purpose: Fix jq path errors and force npm platform compatibility for LanceDB.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.8.1"
+VERSION="1.8.2"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -28,8 +28,9 @@ SERVICE_DIR="$PREFIX/var/service/openclaw"
 N8N_SERVICE_DIR="$PREFIX/var/service/n8n"
 TERMUX_BIN="$PREFIX/bin"
 
-# Force correct npm path for the current session
+# Force correct npm path and bypass platform checks for LanceDB (Android support)
 export npm_execpath="$TERMUX_BIN/npm"
+export npm_config_force=true
 
 # --- 2. HELPER FUNCTIONS ---
 
@@ -367,8 +368,9 @@ install_openclaw() {
     ensure_openclaw_runtime_modules "$PKG_MANAGER"
     apply_patches
     
+    SAFE_LIMIT=$(get_mem_limit)
     CONFIG_PATH="$HOME/.openclaw/openclaw.json"
-    status_msg "Initializing environment"
+    status_msg "Initializing environment (Limit: ${SAFE_LIMIT}MB)"
     mkdir -p "$HOME/.openclaw/workspace/memory" "$HOME/.openclaw/workspace/skills"
     
     if [ ! -f "$CONFIG_PATH" ]; then
@@ -386,10 +388,10 @@ install_openclaw() {
             .plugins.entries.whatsapp.enabled = true | 
             .plugins.entries.slack.enabled = true |
             .env.PATH = "'"$PREFIX"'/bin:/bin" |
-            .env.NODE_OPTIONS = "--dns-result-order=ipv4first" |
+            .env.NODE_OPTIONS = "--dns-result-order=ipv4first --max-old-space-size='"$SAFE_LIMIT"'" |
             .env.OPENCLAW_TMP = "'"$HOME"'/.openclaw/tmp" |
-            del(.sidecars, .paths) |
-            del(.plugins.installs[]? | select(. == "telegram" or . == "whatsapp" or . == "slack")) |
+            del(.sidecars, .paths, .plugins.meta) |
+            (.plugins.installs // []) |= map(select(. != "telegram" and . != "whatsapp" and . != "slack")) |
             (.plugins.load.paths // []) |= map(select(test("/extensions/(telegram|whatsapp|slack)$") | not)) |
             del(.channels.telegram.streamMode, .channels.telegram.chunkMode, .channels.telegram.blockStreaming, .channels.telegram.draftChunk, .channels.telegram.blockStreamingCoalesce) |
             del(.channels.slack.streamMode, .channels.slack.chunkMode, .channels.slack.blockStreaming, .channels.slack.blockStreamingCoalesce, .channels.slack.nativeStreaming) |
@@ -397,6 +399,7 @@ install_openclaw() {
             if (.channels.slack.streaming? | type) != "object" then del(.channels.slack.streaming) else . end' "$CONFIG_PATH" > "$tmp_cfg" && mv "$tmp_cfg" "$CONFIG_PATH"
         
         # 4. Automated Migration: Fix legacy keys and validate schema
+        # We ignore failure because doctor --fix tries to install systemd services on Linux, which fails on Android but is not critical.
         yes "" | openclaw doctor --fix >> "$LOG_FILE" 2>&1 || true
         success_msg
     fi
