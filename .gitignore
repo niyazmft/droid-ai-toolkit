@@ -2,7 +2,7 @@
 .DS_Store
 Thumbs.db
 
-# OpenClaw local data (if running locally during dev)
+# OpenClaw local data (runtime directory from installed tool)
 .openclaw/
 openclaw.json
 
