@@ -1,11 +1,11 @@
-# 🦞 OpenClaw Android (Termux) Toolkit
+# 🤖 Droid AI Toolkit (Termux)
 
 <p align="center">
-  <img src="./assets/Cover.png" width="100%" alt="OpenClaw Android Cover">
+  <img src="./assets/Cover.png" width="100%" alt="Droid AI Toolkit Cover">
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.8.2-blue.svg)](https://github.com/niyazmft/openclaw-android-toolkit)
+[![Version](https://img.shields.io/badge/version-1.8.2-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
@@ -34,7 +34,7 @@ Install **Termux** from [F-Droid](https://f-droid.org/en/packages/com.termux/). 
 Execute the following command to start the interactive toolkit:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/niyazmft/openclaw-android-toolkit/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/niyazmft/droid-ai-toolkit/main/install.sh | bash
 ```
 
 > 💡 **Smart Repair (v1.5.0+):** If a tool is already installed, the toolkit offers a **[R] Repair** mode. Use this to fix Android-specific patches in seconds without re-downloading the entire package.

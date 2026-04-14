@@ -1,15 +1,16 @@
 #!/bin/bash
 
 # ==============================================================================
-# 🦞 OPENCLAW ANDROID TOOLKIT (Termux)
-# Version: 1.8.2
-# Purpose: Fix jq path errors and force npm platform compatibility for LanceDB.
+# 🤖 DROID AI TOOLKIT (Termux)
+# Version: 1.9.0
+# Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
+#          Hermes) on Android via Termux with kernel patches and path fixes.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.8.2"
+VERSION="1.9.0"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -21,7 +22,7 @@ CLEAR_LINE=$(printf '\033[K')
 # Termux dynamically exports $PREFIX. Fallback just in case.
 PREFIX=${PREFIX:-"/data/data/com.termux/files/usr"}
 
-LOG_FILE="$HOME/openclaw_install.log"
+LOG_FILE="$HOME/droid_ai_toolkit.log"
 TOOLKIT_CONFIG="$HOME/.openclaw/.toolkit_config"
 OPENCLAW_ROOT="$PREFIX/lib/node_modules/openclaw"
 SERVICE_DIR="$PREFIX/var/service/openclaw"
@@ -311,7 +312,7 @@ install_openclaw() {
     local target_version="latest"
 
     if is_installed "openclaw"; then
-        echo -e "\n${YELLOW}🦞 OpenClaw is already installed.${NC}"
+        echo -e "\n${YELLOW}🤖 OpenClaw is already installed.${NC}"
         echo "1) [R] Repair Patches (Fast - 2s)"
         echo "2) [U] Update to Latest (Full - 1m)"
         echo "3) Back"
@@ -664,7 +665,67 @@ setup_n8n_gcp() {
     wait_to_continue
 }
 
-# --- 7. SERVICE MANAGEMENT ---
+# --- 7. OLLAMA INSTALLATION ---
+
+install_ollama() {
+    if command -v ollama >/dev/null 2>&1; then
+        echo -e "\n${YELLOW}🦙 Ollama is already installed.${NC}"
+        echo "1) [R] Reinstall / Repair"
+        echo "2) Back"
+        read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" OL_CHOICE
+        case $OL_CHOICE in
+            1) ;;
+            *) return 0 ;;
+        esac
+    else
+        confirm_action "Install Ollama" || return 0
+    fi
+
+    echo -e "\n${BLUE}🦙 Installing Ollama...${NC}"
+
+    smart_pkg_install ollama
+
+    if command -v ollama >/dev/null 2>&1; then
+        echo -e "\n${GREEN}✅ Ollama successfully installed!${NC}"
+        echo -e "Start the server: ${BLUE}ollama serve${NC}"
+        echo -e "Pull a model:      ${BLUE}ollama pull llama3${NC}"
+        echo -e "Run a model:       ${BLUE}ollama run llama3${NC}"
+    else
+        error_msg "Installation finished but 'ollama' command not found in PATH."
+    fi
+    wait_to_continue
+}
+
+# --- 8. HERMES INSTALLATION ---
+
+install_hermes() {
+    if command -v hermes >/dev/null 2>&1; then
+        echo -e "\n${YELLOW}⚡ Hermes is already installed.${NC}"
+        echo "1) [R] Reinstall"
+        echo "2) Back"
+        read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" HM_CHOICE
+        case $HM_CHOICE in
+            1) ;;
+            *) return 0 ;;
+        esac
+    else
+        confirm_action "Install Hermes Agent" || return 0
+    fi
+
+    echo -e "\n${BLUE}⚡ Installing Hermes Agent...${NC}"
+
+    execute "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash" "Downloading and running Hermes installer"
+
+    if [ -f "$HOME/.hermes/bin/hermes" ] || command -v hermes >/dev/null 2>&1; then
+        echo -e "\n${GREEN}✅ Hermes successfully installed!${NC}"
+        echo -e "Run: ${BLUE}hermes${NC}"
+    else
+        echo -e "\n${YELLOW}⚠️  Hermes installer completed. Restart your shell or run 'source ~/.bashrc' to activate.${NC}"
+    fi
+    wait_to_continue
+}
+
+# --- 9. SERVICE MANAGEMENT ---
 
 manage_service() {
     while true; do
@@ -747,21 +808,26 @@ remove_n8n_service_files() {
 }
 
 manage_pm2() {
+    if ! command -v pm2 >/dev/null 2>&1; then
+        confirm_action "Install PM2 first" || return 0
+        execute "npm install -g pm2" "Installing PM2 Globally"
+    fi
     while true; do
         echo -e "\n${BLUE}🚀 PM2 PROCESS MANAGEMENT${NC}"
-        echo "1) Install/Update PM2"
-        echo "2) Start OpenClaw with PM2"
-        echo "3) Start n8n with PM2"
+        echo -e "${BLUE}── Start Services ──────────────${NC}"
+        echo "1) Start OpenClaw"
+        echo "2) Start n8n"
+        echo "3) Start Ollama"
+        echo -e "${BLUE}── Manage ─────────────────────${NC}"
         echo "4) View Logs (Live)"
         echo "5) View Status (Table)"
-        echo "6) Restart/Save All"
+        echo "6) Restart All"
         echo "7) Stop/Kill PM2"
         echo "8) Back to Main Menu"
         read -p "Select option [1-8]: " PM2_CHOICE
 
         case $PM2_CHOICE in
-            1) execute "npm install -g pm2" "Installing PM2 Globally" ;;
-            2)
+            1)
                 if command -v openclaw >/dev/null 2>&1; then
                     status_msg "Clearing ports and stale processes"
                     pm2 delete openclaw 2>/dev/null || true
@@ -771,39 +837,47 @@ manage_pm2() {
                     PNPM_NODE_PATH=$(pnpm root -g 2>/dev/null || true)
                     execute "sleep 5; NODE_PATH=\"$PREFIX/lib/node_modules${PNPM_NODE_PATH:+:$PNPM_NODE_PATH}\" npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH' pm2 start \"openclaw gateway run\" --name openclaw --interpreter none && pm2 save" "Starting OpenClaw in PM2 (Clean Start)"
                 else
-                    error_msg "OpenClaw missing."
+                    error_msg "OpenClaw is not installed."
                 fi
                 wait_to_continue ;;
-
-            3) 
+            2) 
                 if command -v n8n >/dev/null 2>&1; then
                     local n8n_env=""
                     [ -f "$HOME/n8n_server/config/n8n.env" ] && n8n_env="--env '$HOME/n8n_server/config/n8n.env'"
                     execute "pkill -9 -f n8n 2>/dev/null || true; sleep 2; pm2 start n8n --name n8n $n8n_env --interpreter none && pm2 save" "Starting n8n in PM2"
                 else
-                    error_msg "n8n missing."
+                    error_msg "n8n is not installed."
+                fi
+                wait_to_continue ;;
+            3)
+                if command -v ollama >/dev/null 2>&1; then
+                    execute "pm2 delete ollama 2>/dev/null || true; pm2 start ollama serve --name ollama --interpreter none && pm2 save" "Starting Ollama in PM2"
+                else
+                    error_msg "Ollama is not installed."
                 fi
                 wait_to_continue ;;
             4) pm2 logs ;;
             5) pm2 status; wait_to_continue ;;
-            6) execute "pm2 stop all; pkill -9 -f 'openclaw|n8n' 2>/dev/null || true; sleep 2; pm2 start all && pm2 save" "Restarting all processes safely" ;;
+            6) execute "pm2 stop all; pkill -9 -f 'openclaw|n8n|ollama' 2>/dev/null || true; sleep 2; pm2 start all && pm2 save" "Restarting all processes safely" ;;
             7) execute "pm2 kill" "Stopping PM2" ;;
             *) return ;;
         esac
     done
 }
 
-# --- 8. UNINSTALLATION LOGIC ---
+# --- 10. UNINSTALLATION LOGIC ---
 
 uninstall_menu() {
     while true; do
         echo -e "\n${RED}⚠️  UNINSTALLATION MENU${NC}"
-        echo "1) Remove OpenClaw only"
-        echo "2) Remove Gemini CLI only"
-        echo "3) Remove n8n only"
-        echo "4) Wipe Software Stack (Reset)"
-        echo "5) Back to Main Menu"
-        read -p "Select option [1-5]: " UN_CHOICE
+        echo "1) Remove OpenClaw"
+        echo "2) Remove Gemini CLI"
+        echo "3) Remove n8n"
+        echo "4) Remove Ollama"
+        echo "5) Remove Hermes"
+        echo "6) Wipe Software Stack (Reset)"
+        echo "7) Back to Main Menu"
+        read -p "Select option [1-7]: " UN_CHOICE
 
         case $UN_CHOICE in
             1) 
@@ -823,9 +897,19 @@ uninstall_menu() {
                 echo -e "- All n8n configurations and local database files."
                 confirm_action "uninstall n8n" && { uninstall_n8n; wait_to_continue; } 
                 ;;
-            4) 
-                echo -e "\n${RED}🔥 RESET: This will wipe all three applications:${NC}"
-                echo -e "- OpenClaw, n8n, and Gemini CLI."
+            4)
+                echo -e "\n${YELLOW}This will remove:${NC}"
+                echo -e "- Ollama package and downloaded models."
+                confirm_action "uninstall Ollama" && { uninstall_ollama; wait_to_continue; }
+                ;;
+            5)
+                echo -e "\n${YELLOW}This will remove:${NC}"
+                echo -e "- Hermes agent installation."
+                confirm_action "uninstall Hermes" && { uninstall_hermes; wait_to_continue; }
+                ;;
+            6) 
+                echo -e "\n${RED}🔥 RESET: This will wipe all applications:${NC}"
+                echo -e "- OpenClaw, n8n, Gemini CLI, Ollama, and Hermes."
                 echo -e "- All memories, skills, and configurations."
                 echo -e "${BLUE}Note: Core system packages (Node.js, FFmpeg, etc.) are NOT removed.${NC}"
                 confirm_action "WIPE ALL SOFTWARE" && { full_cleanup; wait_to_continue; } 
@@ -888,7 +972,7 @@ uninstall_n8n() {
     command -v pm2 >/dev/null 2>&1 && pm2 delete n8n >> "$LOG_FILE" 2>&1 || true
 
     
-    crontab -l 2>/dev/null | grep -v "n8n-monitor.sh" | crontab - || true
+    crontab -l 2>/dev/null | grep -v "n8n-monitor.sh" | crontab - 2>/dev/null || true
     
     local pm=$(detect_package_manager "n8n")
     if [ "$pm" == "pnpm" ]; then
@@ -904,24 +988,54 @@ full_cleanup() {
     uninstall_openclaw "--deep"
     uninstall_gemini
     uninstall_n8n
+    uninstall_ollama
+    uninstall_hermes
     echo -e "\n${GREEN}✅ Toolkit software removed. System dependencies were kept intact.${NC}"
 }
 
-# --- 9. MAIN MENU ---
+uninstall_ollama() {
+    echo -e "${YELLOW}Cleaning up Ollama...${NC}"
+    command -v pm2 >/dev/null 2>&1 && pm2 delete ollama >> "$LOG_FILE" 2>&1 || true
+    pkill -9 -f "ollama" 2>/dev/null || true
+    if dpkg -s ollama >/dev/null 2>&1; then
+        execute "pkg uninstall -y ollama" "Uninstalling Ollama package"
+    else
+        echo -e "${YELLOW}Ollama package not installed via pkg — skipping pkg removal.${NC}"
+        command -v ollama >/dev/null 2>&1 && echo -e "${RED}Ollama binary still found in PATH. It may have been installed outside pkg — remove it manually.${NC}" || true
+    fi
+    echo -e "${BLUE}Note:${NC} Downloaded models in ~/.ollama are preserved. Remove manually if desired."
+}
+
+uninstall_hermes() {
+    echo -e "${YELLOW}Cleaning up Hermes...${NC}"
+    pkill -9 -f "hermes" 2>/dev/null || true
+    if [ -f "$HOME/.hermes/uninstall.sh" ]; then
+        execute "bash '$HOME/.hermes/uninstall.sh'" "Running Hermes uninstaller"
+    else
+        rm -rf "$HOME/.hermes" "$HOME/.local/bin/hermes" 2>/dev/null || true
+        echo -e "${YELLOW}Hermes directories removed. Check ~/.bashrc for stale PATH entries.${NC}"
+    fi
+}
+
+# --- 11. MAIN MENU ---
 
 show_menu() {
     clear
     echo -e "${BLUE}====================================================${NC}"
-    echo -e "${BLUE}       🦞 OPENCLAW ANDROID TOOLKIT v$VERSION        ${NC}"
+    echo -e "${BLUE}       🤖 DROID AI TOOLKIT v$VERSION        ${NC}"
     echo -e "${BLUE}====================================================${NC}"
-    echo -e "1) ${GREEN}Install/Repair${NC} OpenClaw"
-    echo -e "2) ${YELLOW}Install/Repair${NC} Gemini CLI"
-    echo -e "3) ${BLUE}Install/Repair${NC} n8n Server"
-    echo -e "4) ${YELLOW}Configure${NC} GCP Bridge (for n8n)"
-    echo -e "5) ${YELLOW}Manage${NC} PM2 Processes (Recommended)"
-    echo -e "6) ${BLUE}Manage${NC} Background Services (Native)"
-    echo -e "7) ${RED}Uninstall${NC} Software"
-    echo -e "8) Exit"
+    echo -e "${GREEN}── Install / Repair ──────────────────────────────${NC}"
+    echo -e "1) ${YELLOW}Hermes${NC} Agent"
+    echo -e "2) ${GREEN}OpenClaw${NC} AI Gateway"
+    echo -e "3) ${YELLOW}Gemini CLI${NC}"
+    echo -e "4) ${BLUE}n8n${NC} Server"
+    echo -e "5) ${GREEN}Ollama${NC} (Local LLMs)"
+    echo -e "${BLUE}── Manage ────────────────────────────────────────${NC}"
+    echo -e "6) ${BLUE}GCP${NC} Bridge (for n8n)"
+    echo -e "7) ${YELLOW}PM2${NC} Processes (Recommended)"
+    echo -e "8) ${BLUE}Background Services${NC} (Native)"
+    echo -e "9) ${RED}Uninstall${NC} Software"
+    echo -e "0) Exit"
     echo -e "${BLUE}====================================================${NC}"
 }
 
@@ -930,17 +1044,19 @@ ensure_jq
 
 while true; do
     show_menu
-    read -p "What would you like to do? [1-8]: " MAIN_CHOICE
+    read -p "What would you like to do? [0-9]: " MAIN_CHOICE
 
     case $MAIN_CHOICE in
-        1) install_openclaw ;;
-        2) install_gemini_cli ;;
-        3) install_n8n ;;
-        4) setup_n8n_gcp ;;
-        5) manage_pm2 ;;
-        6) manage_service ;;
-        7) uninstall_menu ;;
-        8) exit 0 ;;
+        1) install_hermes ;;
+        2) install_openclaw ;;
+        3) install_gemini_cli ;;
+        4) install_n8n ;;
+        5) install_ollama ;;
+        6) setup_n8n_gcp ;;
+        7) manage_pm2 ;;
+        8) manage_service ;;
+        9) uninstall_menu ;;
+        0) exit 0 ;;
         *) echo -e "${RED}Invalid option.${NC}"; sleep 1 ;;
     esac
 done
