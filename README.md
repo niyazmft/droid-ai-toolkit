@@ -5,11 +5,11 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.8.2-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.9.0-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
-A high-performance, automated toolkit for running [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), and **n8n Server** natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
+A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), and [Hermes](https://hermes-agent.nousresearch.com) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
 
 ---
 
@@ -18,7 +18,7 @@ A high-performance, automated toolkit for running [OpenClaw](https://github.com/
 - **OS**: Android 9.0 and above.
 - **Architecture**: Tested on `armv8l` (32-bit) and `aarch64` (64-bit) CPUs.
 - **Optimization**: Automatically detects system RAM and recommends appropriate memory limits (512MB to 2048MB) for Node.js and n8n workloads.
-- **Package Managers**: Supports both **npm** (Standard) and **pnpm** (High Efficiency) for all tools.
+- **Package Managers**: Supports both **npm** (Standard) and **pnpm** (High Efficiency) for Node.js-based tools.
 - **Process Management**: Supports **PM2** (Recommended) and **termux-services** (Native).
 
 ---
@@ -39,7 +39,19 @@ curl -sSL https://raw.githubusercontent.com/niyazmft/droid-ai-toolkit/main/insta
 
 > 💡 **Smart Repair (v1.5.0+):** If a tool is already installed, the toolkit offers a **[R] Repair** mode. Use this to fix Android-specific patches in seconds without re-downloading the entire package.
 
-### 3. Onboard (For OpenClaw)
+### 3. Choose Your Tools
+
+The toolkit menu provides one-click install/repair for:
+
+| Option | Tool | Description |
+| :---: | :--- | :--- |
+| **1** | **Hermes** | Nous Research AI agent |
+| **2** | **OpenClaw** | AI Gateway with multi-channel support |
+| **3** | **Gemini CLI** | Google's command-line AI assistant |
+| **4** | **n8n** | Workflow automation server |
+| **5** | **Ollama** | Local LLM runner (Termux native package) |
+
+### 4. Onboard OpenClaw (If Installed)
 
 Initialize your account and API providers:
 
@@ -49,13 +61,13 @@ openclaw onboard
 
 *Select **QuickStart** and choose an external provider (OpenRouter, OpenAI, etc.).*
 
-### 4. Background Service (Optimized)
+### 5. Background Service (Optimized)
 
-To keep OpenClaw running even after you close Termux:
+To keep tools running even after you close Termux:
 
-1. Run the toolkit again and choose **Option 5 (Manage PM2 Processes)**.
-2. Select **Start OpenClaw with PM2**.
-3. View logs with: `pm2 logs openclaw`
+1. Run the toolkit and choose **Option 7 (Manage PM2 Processes)**.
+2. Select the service you want to start (OpenClaw, n8n, or Ollama).
+3. View logs with: `pm2 logs`
 
 ---
 
@@ -64,11 +76,13 @@ To keep OpenClaw running even after you close Termux:
 - 🛠 **Smart Repair**: Detects existing installations and provides a 2-second "Repair Only" path to re-apply patches without redundant downloads.
 - 🩹 **Zero-Config Patching**: Automatically fixes the `koffi` native bridge and `renameat2` kernel crashes for OpenClaw.
 - 📂 **Path Awareness**: Aggressively redirects `/bin/npm`, `/bin/node`, and `/tmp` to Termux-compatible directories using `$PREFIX`.
-- 🚀 **PM2 Integration**: Native support for starting, stopping, and monitoring OpenClaw and n8n via PM2 with optimized memory flags.
+- 🚀 **PM2 Integration**: Native support for starting, stopping, and monitoring OpenClaw, n8n, and Ollama via PM2 with optimized memory flags.
 - 📦 **pnpm Support**: Integrated support for pnpm to speed up installations and save storage space.
 - 🧠 **Memory Guard**: Automatically clears memory (PM2 kill) and increases Node.js heap limits (1.5GB+) to prevent crashes on low-RAM devices during updates.
 - 🛡 **Surgical Cleanup**: The uninstaller offers **Soft/Deep** options and a **Wipe Stack (Reset)** function that preserves your system packages while cleaning the apps.
 - 🧩 **Gemini CLI Support**: Dedicated installer with NDK environment optimizations.
+- 🦙 **Ollama Support**: One-click install via Termux native package (`pkg install ollama`).
+- ⚡ **Hermes Support**: One-click install via official curl installer.
 
 <p align="center">
   <img src="./assets/4-gemini_cli.jpg" width="300" alt="Gemini CLI Interface">
@@ -76,19 +90,40 @@ To keep OpenClaw running even after you close Termux:
 
 ---
 
+## 🦙 Ollama (Local LLMs)
+
+Run large language models locally on your Android device. Installed via Termux's native package manager:
+
+```bash
+ollama serve          # Start the server
+ollama pull llama3    # Download a model
+ollama run llama3     # Run a model
+```
+
+Use **Option 7 (PM2)** to keep Ollama running in the background. Downloaded models are stored in `~/.ollama` and preserved during uninstall.
+
+---
+
+## ⚡ Hermes (Nous Research Agent)
+
+AI agent by Nous Research, installed via the official curl installer:
+
+```bash
+hermes                # Start the agent
+```
+
+---
+
 ## 🗑 Uninstallation & Reset
 
-Run the toolkit and select **Option 7** to access the modular uninstallation menu. Each option provides a detailed summary of the impact before you confirm:
+Run the toolkit and select **Option 9 (Uninstall)** to access the modular uninstallation menu. Each option provides a detailed summary of the impact before you confirm:
 
-- **Remove OpenClaw only**:
-  - Choice of **Soft Uninstall** (keeps memories/skills) or **Deep Uninstall** (full wipe).
-  - Automatically cleans up PM2 and background services.
-- **Remove Gemini CLI / n8n**:
-  - Full removal of application binaries and configurations.
-  - **n8n**: Surgically kills the GCP tunnel (port 5678) and removes the watchdog cron.
-- **Wipe Software Stack (Reset)**:
-  - Performs a batch "Deep Uninstall" of all three applications.
-  - **Safe Reset**: Cleans all toolkit-specific data but **preserves system packages** (Node.js, Git, Python, etc.) so your other Termux apps don't break.
+- **Remove OpenClaw**: Choice of **Soft Uninstall** (keeps memories/skills) or **Deep Uninstall** (full wipe). Automatically cleans up PM2 and background services.
+- **Remove Gemini CLI**: Full removal of application binaries and configurations.
+- **Remove n8n**: Surgically kills the GCP tunnel (port 5678) and removes the watchdog cron.
+- **Remove Ollama**: Removes the package. Downloaded models in `~/.ollama` are preserved.
+- **Remove Hermes**: Runs the official uninstaller if available, otherwise removes directories manually.
+- **Wipe Software Stack (Reset)**: Batch "Deep Uninstall" of all five applications. **Safe Reset**: Cleans all toolkit-specific data but **preserves system packages** (Node.js, Git, Python, etc.) so your other Termux apps don't break.
 
 ---
 
@@ -98,7 +133,7 @@ This toolkit includes a professional-grade setup for running **n8n** on Android 
 
 ### 1. Installation
 
-Run the toolkit and choose **Option 3 (Install/Repair n8n Server)**. This will:
+Run the toolkit and choose **Option 4 (Install/Repair n8n Server)**. This will:
 
 - Install n8n, Python 3, and process monitors.
 - Configure a 5-minute watchdog (Cron) to ensure 24/7 uptime.
@@ -106,7 +141,7 @@ Run the toolkit and choose **Option 3 (Install/Repair n8n Server)**. This will:
 
 ### 2. Monitoring & Control
 
-- **Manual Restart**: Choose **Option 5** in the toolkit or run `~/n8n_server/scripts/n8n-monitor.sh`.
+- **Manual Restart**: Choose **Option 7** in the toolkit or run `~/n8n_server/scripts/n8n-monitor.sh`.
 - **View n8n Dashboard**: If not using a bridge, access locally at `http://localhost:5678`.
 
 ---
@@ -133,7 +168,7 @@ To expose your n8n instance securely to the internet (`https://yourdomain.com`),
 
 ### Step 4: Establish the Tunnel
 
-1. Run the toolkit on your Android device and choose **Option 4 (Configure GCP Bridge)**.
+1. Run the toolkit on your Android device and choose **Option 6 (Configure GCP Bridge)**.
 2. Follow the prompts to enter your VM IP and Domain.
 3. Copy the generated **SSH Public Key** and paste it into the GCP VM's `~/.ssh/authorized_keys` file.
 4. The monitor script will now automatically maintain a secure `autossh` tunnel to the VM.
@@ -151,6 +186,10 @@ To expose your n8n instance securely to the internet (`https://yourdomain.com`),
 | **Force Kill (Stray)** | `pkill -9 -f openclaw` |
 | **Fix Environment** | `openclaw doctor` |
 | **Find Access Token** | `grep "token" ~/.openclaw/openclaw.json` |
+| **Ollama: Start Server** | `ollama serve` |
+| **Ollama: Pull Model** | `ollama pull llama3` |
+| **Ollama: Run Model** | `ollama run llama3` |
+| **Hermes: Start** | `hermes` |
 
 ---
 
@@ -163,10 +202,10 @@ To expose your n8n instance securely to the internet (`https://yourdomain.com`),
 To update or repair safely:
 
 1. Run the `install.sh` script.
-2. Choose **Option 1 (Install/Repair)**.
+2. Choose the tool's **Install/Repair** option from the menu.
 3. Select **[R] Repair** to fix patches instantly (2s) or **[U] Update** to install the latest verified version.
 
-> 💡 **Latest Version:** This toolkit always installs the latest available version of OpenClaw to ensure maximum feature compatibility and security.
+> 💡 **Latest Version:** This toolkit always installs the latest available version of each tool to ensure maximum feature compatibility and security.
 
 ### 🔋 Battery Optimization
 
@@ -183,6 +222,7 @@ termux-wake-lock
 - **Telegram Plugin Not Available**: This toolkit attempts to pre-fix this. If it persists, finish onboarding and run: `openclaw channels add --channel telegram`.
 - **Homebrew Recommendations**: **Ignore them.** Homebrew is not supported on Android. Use `pkg install <package>` for any missing dependencies.
 - **Node.js Errors**: Run the toolkit's **Install/Repair** option to reset environment locks and paths.
+- **Ollama Not Found After Install**: Restart Termux or run `source ~/.bashrc` to refresh your PATH.
 
 ---
 
