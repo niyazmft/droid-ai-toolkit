@@ -1005,15 +1005,16 @@ manage_pm2() {
         echo -e "${BLUE}── Start Services ──────────────${NC}"
         echo "1) Start OpenClaw"
         echo "2) Start n8n"
-        echo "3) Start Ollama"
-        echo "4) Start Paperclip"
+        echo "3) Start Hermes"
+        echo "4) Start Ollama"
+        echo "5) Start Paperclip"
         echo -e "${BLUE}── Manage ─────────────────────${NC}"
-        echo "5) View Logs (Live)"
-        echo "6) View Status (Table)"
-        echo "7) Restart All"
-        echo "8) Stop/Kill PM2"
-        echo "9) Back to Main Menu"
-        read -p "Select option [1-9]: " PM2_CHOICE
+        echo "6) View Logs (Live)"
+        echo "7) View Status (Table)"
+        echo "8) Restart All"
+        echo "9) Stop/Kill PM2"
+        echo "10) Back to Main Menu"
+        read -p "Select option [1-10]: " PM2_CHOICE
 
         case $PM2_CHOICE in
             1)
@@ -1029,7 +1030,7 @@ manage_pm2() {
                     error_msg "OpenClaw is not installed."
                 fi
                 wait_to_continue ;;
-            2) 
+            2)
                 if command -v n8n >/dev/null 2>&1; then
                     local n8n_env=""
                     [ -f "$HOME/n8n_server/config/n8n.env" ] && n8n_env="--env '$HOME/n8n_server/config/n8n.env'"
@@ -1039,13 +1040,25 @@ manage_pm2() {
                 fi
                 wait_to_continue ;;
             3)
+                local hermes_path=""
+                hermes_path=$(command -v hermes 2>/dev/null || echo "")
+                if [ -z "$hermes_path" ] && [ -f "$HOME/.hermes/bin/hermes" ]; then
+                    hermes_path="$HOME/.hermes/bin/hermes"
+                fi
+                if [ -n "$hermes_path" ]; then
+                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start '$hermes_path' --name hermes && pm2 save" "Starting Hermes in PM2"
+                else
+                    error_msg "Hermes is not installed."
+                fi
+                wait_to_continue ;;
+            4)
                 if command -v ollama >/dev/null 2>&1; then
                     execute "pm2 delete ollama 2>/dev/null || true; pm2 start ollama serve --name ollama --interpreter none && pm2 save" "Starting Ollama in PM2"
                 else
                     error_msg "Ollama is not installed."
                 fi
                 wait_to_continue ;;
-            4)
+            5)
                 if [ -f "$HOME/paperclip/server/dist/index.js" ]; then
                     status_msg "Checking PostgreSQL before Paperclip start"
                     if ! pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
@@ -1056,13 +1069,13 @@ manage_pm2() {
                     # PM2 --env does not load .env files; we embed source directly
                     execute "pm2 delete paperclip 2>/dev/null || true; cd $HOME/paperclip; pm2 start 'bash -c \"set -a && source config/paperclip.env && set +a && node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js\"' --name paperclip --interpreter none && pm2 save" "Starting Paperclip in PM2"
                 else
-                    error_msg "Paperclip is not installed. Use Option 10 in the main menu."
+                    error_msg "Paperclip is not installed. Use Option 6 in the main menu."
                 fi
                 wait_to_continue ;;
-            5) pm2 logs ;;
-            6) pm2 status; wait_to_continue ;;
-            7) execute "pm2 stop all; pkill -9 -f 'openclaw|n8n|ollama|paperclip' 2>/dev/null || true; sleep 2; pm2 start all && pm2 save" "Restarting all processes safely" ;;
-            8) execute "pm2 kill" "Stopping PM2" ;;
+            6) pm2 logs ;;
+            7) pm2 status; wait_to_continue ;;
+            8) execute "pm2 stop all; pkill -9 -f 'openclaw|n8n|hermes|ollama|paperclip' 2>/dev/null || true; sleep 2; pm2 start all && pm2 save" "Restarting all processes safely" ;;
+            9) execute "pm2 kill" "Stopping PM2" ;;
             *) return ;;
         esac
     done
