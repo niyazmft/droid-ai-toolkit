@@ -5,11 +5,11 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.9.0-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.10.0-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
-A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), and [Hermes](https://hermes-agent.nousresearch.com) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
+A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
 
 ---
 
@@ -50,6 +50,7 @@ The toolkit menu provides one-click install/repair for:
 | **3** | **Gemini CLI** | Google's command-line AI assistant |
 | **4** | **n8n** | Workflow automation server |
 | **5** | **Ollama** | Local LLM runner (Termux native package) |
+| **6** | **Paperclip** | AI orchestration server (EXPERIMENTAL) |
 
 ### 4. Onboard OpenClaw (If Installed)
 
@@ -65,8 +66,8 @@ openclaw onboard
 
 To keep tools running even after you close Termux:
 
-1. Run the toolkit and choose **Option 7 (Manage PM2 Processes)**.
-2. Select the service you want to start (OpenClaw, n8n, or Ollama).
+1. Run the toolkit and choose **Option 8 (Manage PM2 Processes)**.
+2. Select the service you want to start (OpenClaw, n8n, Ollama, or Paperclip).
 3. View logs with: `pm2 logs`
 
 ---
@@ -76,7 +77,7 @@ To keep tools running even after you close Termux:
 - 🛠 **Smart Repair**: Detects existing installations and provides a 2-second "Repair Only" path to re-apply patches without redundant downloads.
 - 🩹 **Zero-Config Patching**: Automatically fixes the `koffi` native bridge and `renameat2` kernel crashes for OpenClaw.
 - 📂 **Path Awareness**: Aggressively redirects `/bin/npm`, `/bin/node`, and `/tmp` to Termux-compatible directories using `$PREFIX`.
-- 🚀 **PM2 Integration**: Native support for starting, stopping, and monitoring OpenClaw, n8n, and Ollama via PM2 with optimized memory flags.
+- 🚀 **PM2 Integration**: Native support for starting, stopping, and monitoring OpenClaw, n8n, Ollama, and Paperclip via PM2 with optimized memory flags.
 - 📦 **pnpm Support**: Integrated support for pnpm to speed up installations and save storage space.
 - 🧠 **Memory Guard**: Automatically clears memory (PM2 kill) and increases Node.js heap limits (1.5GB+) to prevent crashes on low-RAM devices during updates.
 - 🛡 **Surgical Cleanup**: The uninstaller offers **Soft/Deep** options and a **Wipe Stack (Reset)** function that preserves your system packages while cleaning the apps.
@@ -100,7 +101,7 @@ ollama pull llama3    # Download a model
 ollama run llama3     # Run a model
 ```
 
-Use **Option 7 (PM2)** to keep Ollama running in the background. Downloaded models are stored in `~/.ollama` and preserved during uninstall.
+Use **Option 8 (PM2)** to keep Ollama running in the background. Downloaded models are stored in `~/.ollama` and preserved during uninstall.
 
 ---
 
@@ -116,14 +117,15 @@ hermes                # Start the agent
 
 ## 🗑 Uninstallation & Reset
 
-Run the toolkit and select **Option 9 (Uninstall)** to access the modular uninstallation menu. Each option provides a detailed summary of the impact before you confirm:
+Run the toolkit and select **Option 10 (Uninstall)** to access the modular uninstallation menu. Each option provides a detailed summary of the impact before you confirm:
 
 - **Remove OpenClaw**: Choice of **Soft Uninstall** (keeps memories/skills) or **Deep Uninstall** (full wipe). Automatically cleans up PM2 and background services.
 - **Remove Gemini CLI**: Full removal of application binaries and configurations.
 - **Remove n8n**: Surgically kills the GCP tunnel (port 5678) and removes the watchdog cron.
 - **Remove Ollama**: Removes the package. Downloaded models in `~/.ollama` are preserved.
 - **Remove Hermes**: Runs the official uninstaller if available, otherwise removes directories manually.
-- **Wipe Software Stack (Reset)**: Batch "Deep Uninstall" of all five applications. **Safe Reset**: Cleans all toolkit-specific data but **preserves system packages** (Node.js, Git, Python, etc.) so your other Termux apps don't break.
+- **Remove Paperclip**: Stops the PM2 service and preserves the source code and PostgreSQL database.
+- **Wipe Software Stack (Reset)**: Batch "Deep Uninstall" of all seven applications. **Safe Reset**: Cleans all toolkit-specific data but **preserves system packages** (Node.js, Git, Python, etc.) so your other Termux apps don't break.
 
 ---
 
@@ -141,8 +143,60 @@ Run the toolkit and choose **Option 4 (Install/Repair n8n Server)**. This will:
 
 ### 2. Monitoring & Control
 
-- **Manual Restart**: Choose **Option 7** in the toolkit or run `~/n8n_server/scripts/n8n-monitor.sh`.
+- **Manual Restart**: Choose **Option 8** in the toolkit or run `~/n8n_server/scripts/n8n-monitor.sh`.
 - **View n8n Dashboard**: If not using a bridge, access locally at `http://localhost:5678`.
+
+---
+
+## 📎 Paperclip (EXPERIMENTAL)
+
+[Paperclip](https://github.com/paperclipai/paperclip) is an open-source orchestration server for managing teams of AI agents. Running it on Android requires an external PostgreSQL database (the embedded version does not support Android).
+
+### 1. Installation (Paperclip)
+
+Run the toolkit and choose **Option 6 (📎 Paperclip Server)**. This will:
+
+- Clone the Paperclip repository and build from source.
+- Install PostgreSQL via `pkg` and initialize a local database.
+- Remove the `embedded-postgres` dependency (no Android build).
+- Configure `SHARP_IGNORE_GLOBAL_LIBVIPS=1` so `sharp` compiles against Termux's `libvips`.
+- Set a memory cap (`--max-old-space-size`) appropriate for your device.
+
+> **Requirements:** ~2GB free RAM, 2GB+ storage, pnpm 9.15+. This is an experimental path — expect longer build times.
+
+### 2. Launching
+
+After install, start the server via PM2 (**Option 8**) or manually:
+
+```bash
+cd ~/paperclip
+pm2 start 'bash -c "set -a && source config/paperclip.env && set +a && node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js"' --name paperclip --interpreter none
+pm2 save
+```
+
+### 3. First Run / Onboarding
+
+Before you can use the dashboard, Paperclip requires a one-time onboarding step to generate the agent JWT and instance config.
+
+```bash
+cd ~/paperclip
+pnpm paperclipai onboard --yes
+```
+
+The default is **trusted local loopback** mode (accessible only from the device). If you plan to access it from another machine on the same Wi-Fi, stop the server and re-onboard with a LAN bind:
+
+```bash
+pm2 stop paperclip
+cd ~/paperclip
+pnpm paperclipai onboard --yes --bind lan
+pm2 restart paperclip
+```
+
+Other bind options: `loopback` (default), `lan`, or `tailnet`.
+
+Then access the UI locally at `http://localhost:3100`.
+
+> **Note:** If accessing from your Mac via SSH port forwarding (e.g., `http://localhost:3101`), `loopback` mode is sufficient.
 
 ---
 
@@ -168,7 +222,7 @@ To expose your n8n instance securely to the internet (`https://yourdomain.com`),
 
 ### Step 4: Establish the Tunnel
 
-1. Run the toolkit on your Android device and choose **Option 6 (Configure GCP Bridge)**.
+1. Run the toolkit on your Android device and choose **Option 7 (Configure GCP Bridge)**.
 2. Follow the prompts to enter your VM IP and Domain.
 3. Copy the generated **SSH Public Key** and paste it into the GCP VM's `~/.ssh/authorized_keys` file.
 4. The monitor script will now automatically maintain a secure `autossh` tunnel to the VM.

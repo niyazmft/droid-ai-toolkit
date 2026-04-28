@@ -9,6 +9,7 @@ This project uses several open-source and fair-code components. Below is a list 
 | **OpenClaw** | [MIT](https://opensource.org/licenses/MIT) | [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw) |
 | **Gemini CLI** | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) | [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) |
 | **n8n** | [Sustainable Use License](https://github.com/n8n-io/n8n/blob/master/LICENSE.md) | [github.com/n8n-io/n8n](https://github.com/n8n-io/n8n) |
+| **Paperclip** | [MIT](https://github.com/paperclipai/paperclip/blob/master/LICENSE) | [github.com/paperclipai/paperclip](https://github.com/paperclipai/paperclip) |
 | **Koffi** | [MIT](https://opensource.org/licenses/MIT) | [codeberg.org/Koromix/rygel](https://codeberg.org/Koromix/rygel) |
 | **termux-services** | [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) | [github.com/termux/termux-services](https://github.com/termux/termux-services) |
 

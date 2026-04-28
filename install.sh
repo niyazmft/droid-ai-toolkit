@@ -2,20 +2,21 @@
 
 # ==============================================================================
 # 🤖 DROID AI TOOLKIT (Termux)
-# Version: 1.9.0
+# Version: 1.10.0
 # Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
-#          Hermes) on Android via Termux with kernel patches and path fixes.
+#          Hermes, Paperclip) on Android via Termux with kernel patches and path fixes.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.9.0"
+VERSION="1.10.0"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
 YELLOW=$(printf '\033[1;33m')
 RED=$(printf '\033[0;31m')
+MAGENTA=$(printf '\033[0;35m')
 NC=$(printf '\033[0m')
 CLEAR_LINE=$(printf '\033[K')
 
@@ -27,6 +28,7 @@ TOOLKIT_CONFIG="$HOME/.openclaw/.toolkit_config"
 OPENCLAW_ROOT="$PREFIX/lib/node_modules/openclaw"
 SERVICE_DIR="$PREFIX/var/service/openclaw"
 N8N_SERVICE_DIR="$PREFIX/var/service/n8n"
+PAPERCLIP_SERVICE_DIR="$PREFIX/var/service/paperclip"
 TERMUX_BIN="$PREFIX/bin"
 
 # Force correct npm path and bypass platform checks for LanceDB (Android support)
@@ -725,6 +727,192 @@ install_hermes() {
     wait_to_continue
 }
 
+# --- 8.5. PAPERCLIP INSTALLATION (EXPERIMENTAL) ---
+
+install_paperclip() {
+    local mode="full"
+    if [ -d "$HOME/paperclip" ] && [ -f "$HOME/paperclip/server/dist/index.js" ]; then
+        echo -e "\n${YELLOW}📎 Paperclip is already installed.${NC}"
+        echo "1) [R] Repair Config / Rebuild (Fast)"
+        echo "2) [U] Update to Latest (Full)"
+        echo "3) Back"
+        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" REPAIR_CHOICE
+        case $REPAIR_CHOICE in
+            1) mode="repair" ;;
+            2) mode="full" ;;
+            *) return 0 ;;
+        esac
+    else
+        echo -e "\n${YELLOW}⚠️  EXPERIMENTAL: Paperclip requires PostgreSQL, pnpm, and ~2GB RAM.${NC}"
+        confirm_action "Install Paperclip (server-only, build from source)" || return 0
+    fi
+
+    echo -e "\n${BLUE}📎 $([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") Paperclip...${NC}"
+
+    status_msg "Stopping existing tasks & freeing memory"
+    pkill -9 -f "paperclip" 2>/dev/null || true
+    command -v pm2 >/dev/null 2>&1 && pm2 delete paperclip >> "$LOG_FILE" 2>&1 || true
+    success_msg
+
+    if [[ "$mode" == "full" ]]; then
+        # Core deps: PostgreSQL is NON-NEGOTIABLE (embedded-postgres has no Android builds)
+        smart_pkg_install tur-repo build-essential python3 postgresql libvips git
+        
+        # Ensure pnpm
+        if ! command -v pnpm >/dev/null 2>&1; then
+            execute "npm install -g pnpm@9.15.4" "Installing pnpm (required by Paperclip)"
+        fi
+
+        # Node.js link fix (same as OpenClaw/n8n)
+        if [ -d "$PREFIX/opt/nodejs-22/bin" ]; then
+            NODE_OPT_BIN="$PREFIX/opt/nodejs-22/bin"
+            execute "ln -sf '$NODE_OPT_BIN/node' '$TERMUX_BIN/node' && ln -sf '$NODE_OPT_BIN/npm' '$TERMUX_BIN/npm'" "Verifying Node.js links"
+        fi
+    fi
+
+    if [[ "$mode" == "full" ]]; then
+        status_msg "Cloning Paperclip repository"
+        rm -rf "$HOME/paperclip"
+        execute "git clone https://github.com/paperclipai/paperclip.git '$HOME/paperclip'" "Cloning Paperclip from GitHub"
+        success_msg
+    fi
+
+    # --- Build from source ---
+    status_msg "Installing dependencies (this may take several minutes)"
+    cd "$HOME/paperclip"
+    
+    # Prevent embedded-postgres from breaking the install; we use external Postgres
+    export PAPERCLIP_DATABASE_URL="postgres://paperclip:paperclip@localhost:5432/paperclip"
+    export DATABASE_URL="$PAPERCLIP_DATABASE_URL"
+    
+    # Sharp build from source on Android
+    export SHARP_IGNORE_GLOBAL_LIBVIPS=1
+    
+    # Patch out embedded-postgres so pnpm install doesn't fail on missing binary
+    if [ -f "$HOME/paperclip/patches/embedded-postgres@18.1.0-beta.16.patch" ]; then
+        rm -f "$HOME/paperclip/patches/embedded-postgres@18.1.0-beta.16.patch" 2>/dev/null || true
+        # Remove the patchedDependency entry from package.json to avoid pnpm error
+        jq 'del(.pnpm.patchedDependencies["embedded-postgres@18.1.0-beta.16"])' package.json > tmp.json && mv tmp.json package.json
+    fi
+    
+    # Remove embedded-postgres from server deps so it isn't installed
+    if [ -f "$HOME/paperclip/server/package.json" ]; then
+        jq 'del(.dependencies["embedded-postgres"])' server/package.json > tmp.json && mv tmp.json server/package.json
+    fi
+    
+    # The lockfile was generated with embedded-postgres patches; deleting it forces a fresh
+    # resolution that matches our patched package.json. We do NOT use --frozen-lockfile here.
+    execute "rm -f pnpm-lock.yaml && pnpm install" "Installing Paperclip dependencies"
+    success_msg
+
+    status_msg "Building workspace dependencies"
+    execute "pnpm --filter @paperclipai/plugin-sdk build && pnpm --filter @paperclipai/db build" "Building Paperclip workspace dependencies"
+    success_msg
+
+    status_msg "Patching server tsconfig for Termux compatibility"
+    if [ -f "$HOME/paperclip/server/tsconfig.json" ]; then
+        jq '.compilerOptions.noImplicitAny = false | .compilerOptions.noEmitOnError = false | .compilerOptions.skipLibCheck = true' "$HOME/paperclip/server/tsconfig.json" > tmp.json && mv tmp.json "$HOME/paperclip/server/tsconfig.json"
+    fi
+    
+    # tsc still exits 2 on type errors; patch the build script so && does not abort
+    if [ -f "$HOME/paperclip/server/package.json" ]; then
+        jq '.scripts.build |= sub("tsc &&"; "tsc; ")' "$HOME/paperclip/server/package.json" > tmp.json && mv tmp.json "$HOME/paperclip/server/package.json"
+    fi
+    success_msg
+
+    status_msg "Building Paperclip server"
+    execute "pnpm --filter @paperclipai/server build" "Building Paperclip server"
+    success_msg
+
+    # --- UI setup ---
+    # Vite/esbuild requires ~4-6GB transient RSS to bundle 5,000+ React modules; Android devices with
+    # 3-4GB total RAM cannot survive it, even with swap. We download a prebuilt ui-dist tarball
+    # built from the identical upstream source to keep the install purely portable.
+    status_msg "Fetching prebuilt Paperclip UI assets"
+    UI_TARBALL_URL="https://github.com/niyazmft/droid-ai-toolkit/releases/download/v${VERSION}/ui-dist-v${VERSION}.tar.gz"
+    UI_TARBALL="$HOME/.paperclip_tmp/ui-dist-v${VERSION}.tar.gz"
+    mkdir -p "$HOME/.paperclip_tmp"
+    
+    if curl -fL --max-time 30 "$UI_TARBALL_URL" -o "$UI_TARBALL" 2>> "$LOG_FILE"; then
+        execute "rm -rf '$HOME/paperclip/server/ui-dist' && mkdir -p '$HOME/paperclip/server/ui-dist' && tar -xzf '$UI_TARBALL' -C '$HOME/paperclip/server'" "Extracting prebuilt UI assets"
+        rm -f "$UI_TARBALL"
+        success_msg
+        UI_SETUP_OK=true
+    else
+        status_msg "Prebuilt tarball unavailable (curl failed — see log). Attempting fallback UI build (this will likely fail on low-RAM devices)"
+        swapon -a 2>/dev/null || true
+        export NODE_OPTIONS="--max-old-space-size=$SAFE_LIMIT"
+        
+        # Disable minification before the single attempt to give it the best chance
+        sed -i 's/minify: "esbuild"/minify: false/' "$HOME/paperclip/ui/vite.config.ts"
+        sed -i '/drop:.*\["console"/d; /legalComments:.*"none"/d' "$HOME/paperclip/ui/vite.config.ts"
+        rm -rf "$HOME/paperclip/ui/dist"
+        
+        if pnpm --filter @paperclipai/ui build >> "$LOG_FILE" 2>&1 && pnpm --filter @paperclipai/server exec pnpm run prepare:ui-dist >> "$LOG_FILE" 2>&1; then
+            success_msg
+            UI_SETUP_OK=true
+        else
+            error_msg "UI build failed. Paperclip server is installed but the web UI will not be available."
+            echo -e "${YELLOW}The API server is functional. You can still use Paperclip via its REST API.${NC}"
+            UI_SETUP_OK=false
+        fi
+    fi
+    
+    # --- PostgreSQL setup ---
+    status_msg "Configuring PostgreSQL database"
+    if ! pg_isready -q 2>/dev/null; then
+        pg_ctl -D "$PREFIX/var/lib/postgresql" initdb 2>/dev/null || true
+        pg_ctl -D "$PREFIX/var/lib/postgresql" start -l "$HOME/paperclip/postgres.log" 2>/dev/null || true
+        sleep 3
+    fi
+    
+    # Create user/db if they don't exist
+    psql postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='paperclip'" 2>/dev/null | grep -q 1 || \
+        psql postgres -c "CREATE USER paperclip WITH PASSWORD 'paperclip';" 2>/dev/null || true
+    psql postgres -tAc "SELECT 1 FROM pg_database WHERE datname='paperclip'" 2>/dev/null | grep -q 1 || \
+        psql postgres -c "CREATE DATABASE paperclip OWNER paperclip;" 2>/dev/null || true
+    success_msg
+
+    # --- Environment setup ---
+    status_msg "Creating Paperclip environment"
+    SAFE_LIMIT=$(get_mem_limit)
+    mkdir -p "$HOME/paperclip/config"
+    
+    local auth_secret="paperclip-dev-secret-$(openssl rand -hex 8)"
+    # Preserve existing auth secret across repairs to avoid invalidating sessions
+    if [ -f "$HOME/paperclip/config/paperclip.env" ]; then
+        local existing_secret
+        existing_secret=$(grep '^BETTER_AUTH_SECRET=' "$HOME/paperclip/config/paperclip.env" 2>/dev/null | cut -d= -f2-)
+        [ -n "$existing_secret" ] && auth_secret="$existing_secret"
+    fi
+    
+    cat <<EOF > "$HOME/paperclip/config/paperclip.env"
+DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
+PORT=3100
+SERVE_UI=true
+BETTER_AUTH_SECRET=$auth_secret
+NODE_OPTIONS="--max-old-space-size=$SAFE_LIMIT"
+PAPERCLIP_HOME=$HOME/paperclip
+PAPERCLIP_INSTANCE_ID=default
+EOF
+    success_msg
+
+    echo -e "\n${GREEN}✅ Paperclip successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
+    echo -e "\n${YELLOW}⚠️  NEXT STEPS:${NC}"
+    echo -e "1. Start the server: ${BLUE}cd ~/paperclip && pnpm dev:server${NC}"
+    echo -e "2. Or start with PM2: ${BLUE}Option 8${NC} (Recommended)"
+    echo -e "3. Access locally: ${BLUE}http://localhost:3100${NC}"
+    echo -e "\n${RED}🛑 IMPORTANT:${NC}"
+    if [ "${UI_SETUP_OK:-false}" != true ]; then
+        echo -e "   ${YELLOW}⚠️ UI assets are MISSING. The API works, but the web dashboard is not available.${NC}"
+        echo -e "   To fix, upload 'ui-dist-v${VERSION}.tar.gz' to the GitHub release and re-run repair."
+    fi
+    echo -e "   Keep PostgreSQL running: ${BLUE}pg_ctl -D \$PREFIX/var/lib/postgresql start${NC}"
+    echo -e "   This is EXPERIMENTAL. Report issues upstream: github.com/paperclipai/paperclip"
+    wait_to_continue
+    cd - >/dev/null 2>&1 || true
+}
+
 # --- 9. SERVICE MANAGEMENT ---
 
 manage_service() {
@@ -818,13 +1006,14 @@ manage_pm2() {
         echo "1) Start OpenClaw"
         echo "2) Start n8n"
         echo "3) Start Ollama"
+        echo "4) Start Paperclip"
         echo -e "${BLUE}── Manage ─────────────────────${NC}"
-        echo "4) View Logs (Live)"
-        echo "5) View Status (Table)"
-        echo "6) Restart All"
-        echo "7) Stop/Kill PM2"
-        echo "8) Back to Main Menu"
-        read -p "Select option [1-8]: " PM2_CHOICE
+        echo "5) View Logs (Live)"
+        echo "6) View Status (Table)"
+        echo "7) Restart All"
+        echo "8) Stop/Kill PM2"
+        echo "9) Back to Main Menu"
+        read -p "Select option [1-9]: " PM2_CHOICE
 
         case $PM2_CHOICE in
             1)
@@ -856,10 +1045,24 @@ manage_pm2() {
                     error_msg "Ollama is not installed."
                 fi
                 wait_to_continue ;;
-            4) pm2 logs ;;
-            5) pm2 status; wait_to_continue ;;
-            6) execute "pm2 stop all; pkill -9 -f 'openclaw|n8n|ollama' 2>/dev/null || true; sleep 2; pm2 start all && pm2 save" "Restarting all processes safely" ;;
-            7) execute "pm2 kill" "Stopping PM2" ;;
+            4)
+                if [ -f "$HOME/paperclip/server/dist/index.js" ]; then
+                    status_msg "Checking PostgreSQL before Paperclip start"
+                    if ! pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+                        pg_ctl -D "$PREFIX/var/lib/postgresql" start -l "$HOME/paperclip/postgres.log" >/dev/null 2>&1 || true
+                        sleep 2
+                    fi
+                    success_msg
+                    # PM2 --env does not load .env files; we embed source directly
+                    execute "pm2 delete paperclip 2>/dev/null || true; cd $HOME/paperclip; pm2 start 'bash -c \"set -a && source config/paperclip.env && set +a && node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js\"' --name paperclip --interpreter none && pm2 save" "Starting Paperclip in PM2"
+                else
+                    error_msg "Paperclip is not installed. Use Option 10 in the main menu."
+                fi
+                wait_to_continue ;;
+            5) pm2 logs ;;
+            6) pm2 status; wait_to_continue ;;
+            7) execute "pm2 stop all; pkill -9 -f 'openclaw|n8n|ollama|paperclip' 2>/dev/null || true; sleep 2; pm2 start all && pm2 save" "Restarting all processes safely" ;;
+            8) execute "pm2 kill" "Stopping PM2" ;;
             *) return ;;
         esac
     done
@@ -875,9 +1078,10 @@ uninstall_menu() {
         echo "3) Remove n8n"
         echo "4) Remove Ollama"
         echo "5) Remove Hermes"
-        echo "6) Wipe Software Stack (Reset)"
-        echo "7) Back to Main Menu"
-        read -p "Select option [1-7]: " UN_CHOICE
+        echo "6) Remove Paperclip"
+        echo "7) Wipe Software Stack (Reset)"
+        echo "8) Back to Main Menu"
+        read -p "Select option [1-8]: " UN_CHOICE
 
         case $UN_CHOICE in
             1) 
@@ -907,9 +1111,15 @@ uninstall_menu() {
                 echo -e "- Hermes agent installation."
                 confirm_action "uninstall Hermes" && { uninstall_hermes; wait_to_continue; }
                 ;;
-            6) 
+            6)
+                echo -e "\n${YELLOW}This will remove:${NC}"
+                echo -e "- Paperclip process and service config."
+                echo -e "- Source code and database are PRESERVED."
+                confirm_action "uninstall Paperclip" && { uninstall_paperclip; wait_to_continue; }
+                ;;
+            7) 
                 echo -e "\n${RED}🔥 RESET: This will wipe all applications:${NC}"
-                echo -e "- OpenClaw, n8n, Gemini CLI, Ollama, and Hermes."
+                echo -e "- OpenClaw, n8n, Gemini CLI, Ollama, Hermes, and Paperclip."
                 echo -e "- All memories, skills, and configurations."
                 echo -e "${BLUE}Note: Core system packages (Node.js, FFmpeg, etc.) are NOT removed.${NC}"
                 confirm_action "WIPE ALL SOFTWARE" && { full_cleanup; wait_to_continue; } 
@@ -990,6 +1200,7 @@ full_cleanup() {
     uninstall_n8n
     uninstall_ollama
     uninstall_hermes
+    uninstall_paperclip
     echo -e "\n${GREEN}✅ Toolkit software removed. System dependencies were kept intact.${NC}"
 }
 
@@ -1017,6 +1228,23 @@ uninstall_hermes() {
     fi
 }
 
+uninstall_paperclip() {
+    echo -e "${YELLOW}Cleaning up Paperclip...${NC}"
+    # Stop processes
+    execute "sv down '$PAPERCLIP_SERVICE_DIR' 2>/dev/null || true" "Stopping Paperclip service"
+    pkill -9 -f "paperclip" 2>/dev/null || true
+    command -v pm2 >/dev/null 2>&1 && pm2 delete paperclip >> "$LOG_FILE" 2>&1 || true
+    # Note: PostgreSQL is a shared system service — we do NOT stop it.
+    # Other tools or user data may depend on it.
+
+    echo -e "${YELLOW}⚠️  Paperclip process stopped. Source code and database preserved.${NC}"
+    echo -e "   Source: ${BLUE}$HOME/paperclip${NC}"
+    echo -e "   Database: ${BLUE}postgres://paperclip:paperclip@localhost:5432/paperclip${NC}"
+    echo -e "   PostgreSQL is still running. Stop manually if no other services need it:"
+    echo -e "   ${BLUE}pg_ctl -D \$PREFIX/var/lib/postgresql stop${NC}"
+    echo -e "   Remove manually if desired."
+}
+
 # --- 11. MAIN MENU ---
 
 show_menu() {
@@ -1030,11 +1258,12 @@ show_menu() {
     echo -e "3) ${YELLOW}Gemini CLI${NC}"
     echo -e "4) ${BLUE}n8n${NC} Server"
     echo -e "5) ${GREEN}Ollama${NC} (Local LLMs)"
+    echo -e "6) ${MAGENTA}📎 Paperclip${NC} Server ${RED}(EXPERIMENTAL)${NC}"
     echo -e "${BLUE}── Manage ────────────────────────────────────────${NC}"
-    echo -e "6) ${BLUE}GCP${NC} Bridge (for n8n)"
-    echo -e "7) ${YELLOW}PM2${NC} Processes (Recommended)"
-    echo -e "8) ${BLUE}Background Services${NC} (Native)"
-    echo -e "9) ${RED}Uninstall${NC} Software"
+    echo -e "7) ${BLUE}GCP${NC} Bridge (for n8n)"
+    echo -e "8) ${YELLOW}PM2${NC} Processes (Recommended)"
+    echo -e "9) ${BLUE}Background Services${NC} (Native)"
+    echo -e "10) ${RED}Uninstall${NC} Software"
     echo -e "0) Exit"
     echo -e "${BLUE}====================================================${NC}"
 }
@@ -1044,7 +1273,7 @@ ensure_jq
 
 while true; do
     show_menu
-    read -p "What would you like to do? [0-9]: " MAIN_CHOICE
+    read -p "What would you like to do? [0-10]: " MAIN_CHOICE
 
     case $MAIN_CHOICE in
         1) install_hermes ;;
@@ -1052,10 +1281,11 @@ while true; do
         3) install_gemini_cli ;;
         4) install_n8n ;;
         5) install_ollama ;;
-        6) setup_n8n_gcp ;;
-        7) manage_pm2 ;;
-        8) manage_service ;;
-        9) uninstall_menu ;;
+        6) install_paperclip ;;
+        7) setup_n8n_gcp ;;
+        8) manage_pm2 ;;
+        9) manage_service ;;
+        10) uninstall_menu ;;
         0) exit 0 ;;
         *) echo -e "${RED}Invalid option.${NC}"; sleep 1 ;;
     esac
