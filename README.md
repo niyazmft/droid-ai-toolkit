@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.10.0-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.11.0-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 

@@ -2,15 +2,16 @@
 
 # ==============================================================================
 # DROID AI TOOLKIT (Termux)
-# Version: 1.10.0
+# Version: 1.11.0
 # Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
-#          Hermes, Paperclip) on Android via Termux with kernel patches and path fixes.
+#          Hermes, Pi, Paperclip) on Android via Termux with kernel patches and path fixes.
 # ==============================================================================
 
 set -e
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.10.0"
+VERSION="1.11.0"
+
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
