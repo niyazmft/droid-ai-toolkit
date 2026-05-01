@@ -115,6 +115,19 @@ hermes                # Start the agent
 
 ---
 
+## 🥧 Pi Coding Agent (Recommended)
+
+The high-performance coding agent by Mario Zechner, optimized for the Termux environment.
+
+```bash
+pi --help             # View available commands
+pi                    # Start the interactive agent
+```
+
+Use **Option 9 (PM2)** to keep the Pi Agent running in the background. The toolkit automatically configures a Termux-specific `AGENTS.md` context file to ensure the agent is aware of Android path structures and system utilities.
+
+---
+
 ## 🗑 Uninstallation & Reset
 
 Run the toolkit and select **Option 10 (Uninstall)** to access the modular uninstallation menu. Each option provides a detailed summary of the impact before you confirm:
@@ -124,6 +137,7 @@ Run the toolkit and select **Option 10 (Uninstall)** to access the modular unins
 - **Remove n8n**: Surgically kills the GCP tunnel (port 5678) and removes the watchdog cron.
 - **Remove Ollama**: Removes the package. Downloaded models in `~/.ollama` are preserved.
 - **Remove Hermes**: Runs the official uninstaller if available, otherwise removes directories manually.
+- **Remove Pi**: Full removal of global package and configuration.
 - **Remove Paperclip**: Stops the PM2 service and preserves the source code and PostgreSQL database.
 - **Wipe Software Stack (Reset)**: Batch "Deep Uninstall" of all seven applications. **Safe Reset**: Cleans all toolkit-specific data but **preserves system packages** (Node.js, Git, Python, etc.) so your other Termux apps don't break.
 
@@ -305,3 +319,4 @@ pnpm run lint:all
 ## 📄 License
 
 Distributed under the MIT License. See `LICENSE` for more information.
+mation.

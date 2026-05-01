@@ -42,11 +42,17 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 | Tool | Method |
 | --- | --- |
 | OpenClaw | npm/pnpm global + koffi kernel patch + path redirection (`/tmp`, `/bin/npm`, etc.) |
+| Pi Agent | **RECOMMENDED** — npm/pnpm global + `~/.pi/agent/AGENTS.md` context setup |
 | Gemini CLI | npm/pnpm global + `rename` → `copyFile+unlink` patch |
 | n8n | npm/pnpm global + watchdog cron + `NODE_OPTIONS` memory cap + optional GCP bridge |
 | Ollama | `pkg install ollama` (Termux native) |
 | Hermes | curl installer from `hermes-agent.nousresearch.com` |
 | Paperclip | **EXPERIMENTAL** — build from source (git clone + pnpm) + external PostgreSQL (embedded-postgres has no Android builds) |
+
+## Pi Agent Contextualization
+
+- **Path Awareness**: Automatically creates `~/.pi/agent/AGENTS.md` during installation.
+- **Environment**: Injects `$HOME`, `$PREFIX`, and Android-specific URL opening commands (`termux-open-url`) to prevent hallucination of standard Linux paths.
 
 ## Workflows
 

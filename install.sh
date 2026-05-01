@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# 🤖 DROID AI TOOLKIT (Termux)
+# DROID AI TOOLKIT (Termux)
 # Version: 1.10.0
 # Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
 #          Hermes, Paperclip) on Android via Termux with kernel patches and path fixes.
@@ -315,7 +315,7 @@ install_openclaw() {
     local target_version="latest"
 
     if is_installed "openclaw"; then
-        echo -e "\n${YELLOW}🤖 OpenClaw is already installed.${NC}"
+        echo -e "\n${YELLOW}OpenClaw is already installed.${NC}"
         echo "1) [R] Repair Patches (Fast - 2s)"
         echo "2) [U] Update to Latest (Full - 1m)"
         echo "3) Back"
@@ -411,18 +411,18 @@ install_openclaw() {
         apply_patches "silent"
     fi
     
-    echo -e "\n${GREEN}✅ OpenClaw successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed") and patched!${NC}"
-    echo -e "\n${YELLOW}⚠️  NEXT STEPS:${NC}"
+    echo -e "\n${GREEN}OpenClaw successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed") and patched!${NC}"
+    echo -e "\n${YELLOW}NEXT STEPS:${NC}"
     echo -e "1. Run ${GREEN}openclaw onboard${NC} to configure your API keys."
     echo -e "2. Use ${BLUE}Option 5${NC} (Recommended) or ${BLUE}Option 6${NC} to configure background services."
-    echo -e "\n${RED}🛑 DO NOT USE 'openclaw update'${NC}"
+    echo -e "\n${RED}DO NOT USE 'openclaw update'${NC}"
     echo -e "   This will break patches. Use Option 1 of this script to update."
     wait_to_continue
 }
 
 apply_patches() {
     local silent=$1
-    [[ "$silent" != "silent" ]] && echo -e "\n${BLUE}🩹 Applying Android compatibility patches:${NC}"
+    [[ "$silent" != "silent" ]] && echo -e "\n${BLUE}Applying Android compatibility patches:${NC}"
 
     # 1. Koffi Patch
     KOFFI_SRC="$OPENCLAW_ROOT/node_modules/koffi/lib/native/base/base.cc"
@@ -446,7 +446,7 @@ apply_patches() {
 install_gemini_cli() {
     local mode="full"
     if is_installed "@google/gemini-cli"; then
-        echo -e "\n${YELLOW}✨ Gemini CLI is already installed.${NC}"
+        echo -e "\n${YELLOW}Gemini CLI is already installed.${NC}"
         echo "1) [R] Repair Environment (Fast)"
         echo "2) [U] Update to Latest (Full)"
         echo "3) Back"
@@ -460,7 +460,7 @@ install_gemini_cli() {
         confirm_action "Setup Gemini CLI" || return 0
     fi
 
-    echo -e "\n${BLUE}✨ $([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") Gemini CLI...${NC}"
+    echo -e "\n${BLUE}$([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") Gemini CLI...${NC}"
 
     status_msg "Stopping existing tasks & freeing memory"
     command -v pm2 >/dev/null 2>&1 && pm2 kill >> "$LOG_FILE" 2>&1 || true
@@ -517,10 +517,74 @@ install_gemini_cli() {
         fi
         success_msg
 
-        echo -e "${GREEN}\n✅ Gemini CLI successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
+        echo -e "${GREEN}\nGemini CLI successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
         echo -e "You can now run: ${BLUE}gemini --help${NC}"
     else
         error_msg "Installation finished but 'gemini' command not found in PATH."
+    fi
+    wait_to_continue
+}
+
+# --- 4.5. PI CODING AGENT INSTALLATION ---
+
+install_pi() {
+    local mode="full"
+    if is_installed "@mariozechner/pi-coding-agent"; then
+        echo -e "\n${YELLOW}Pi Coding Agent is already installed.${NC}"
+        echo "1) [R] Repair / Reinstall"
+        echo "2) [U] Update to Latest"
+        echo "3) Back"
+        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" REPAIR_CHOICE
+        case $REPAIR_CHOICE in
+            1) mode="repair" ;;
+            2) mode="full" ;;
+            *) return 0 ;;
+        esac
+    else
+        confirm_action "Install Pi Coding Agent" || return 0
+    fi
+
+    echo -e "\n${BLUE}$([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") Pi Coding Agent...${NC}"
+
+    # Handle EEXIST conflicts surgically
+    if [ -f "$TERMUX_BIN/pi" ]; then
+        status_msg "Handling existing 'pi' binary conflict"
+        rm -f "$TERMUX_BIN/pi"
+        success_msg
+    fi
+
+    PKG_MANAGER=$(select_package_manager "@mariozechner/pi-coding-agent")
+    [[ "$PKG_MANAGER" == "back" ]] && return 0
+
+    if [ "$PKG_MANAGER" == "npm" ]; then
+        execute "npm install -g @mariozechner/pi-coding-agent@latest" "Installing Pi Coding Agent via npm"
+    else
+        execute "pnpm add -g @mariozechner/pi-coding-agent@latest --force" "Installing Pi Coding Agent via pnpm"
+    fi
+
+    status_msg "Optimizing Pi environment context"
+    mkdir -p "$HOME/.pi/agent"
+    cat <<EOF > "$HOME/.pi/agent/AGENTS.md"
+# Agent Environment: Termux on Android
+
+## Location
+- **OS**: Android (Termux terminal emulator)
+- **Home**: $HOME
+- **Prefix**: $PREFIX
+- **Shared storage**: /storage/emulated/0 (Downloads, Documents, etc.)
+
+## Opening URLs
+\`\`\`bash
+termux-open-url "https://example.com"
+\`\`\`
+EOF
+    success_msg
+
+    if command -v pi >/dev/null 2>&1; then
+        echo -e "\n${GREEN}Pi Coding Agent successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
+        echo -e "Run:  ${BLUE}pi --help${NC}"
+    else
+        error_msg "Installation finished but 'pi' command not found in PATH."
     fi
     wait_to_continue
 }
@@ -530,7 +594,7 @@ install_gemini_cli() {
 install_n8n() {
     local mode="full"
     if is_installed "n8n"; then
-        echo -e "\n${YELLOW}📱 n8n is already installed.${NC}"
+        echo -e "\n${YELLOW} n8n is already installed.${NC}"
         echo "1) [R] Repair Config/Watchdog (Fast)"
         echo "2) [U] Update to Latest (Full)"
         echo "3) Back"
@@ -544,7 +608,7 @@ install_n8n() {
         confirm_action "Install n8n Server" || return 0
     fi
 
-    echo -e "\n${BLUE}📱 $([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") n8n Android Infrastructure...${NC}"
+    echo -e "\n${BLUE} $([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") n8n Android Infrastructure...${NC}"
 
     status_msg "Stopping existing tasks & freeing memory"
     pkill -9 -f "n8n" 2>/dev/null || true
@@ -586,7 +650,7 @@ install_n8n() {
     TOTAL_RAM=$(free -m | awk '/^Mem:/{print $2}')
     SAFE_LIMIT=$(get_mem_limit)
     
-    echo -e "\n${YELLOW}🧠 MEMORY ALLOCATION:${NC}"
+    echo -e "\n${YELLOW} MEMORY ALLOCATION:${NC}"
     echo -e "Detected Total RAM: ${BLUE}${TOTAL_RAM}MB${NC}"
     echo -e "Applying Safe Limit: ${GREEN}${SAFE_LIMIT}MB${NC}"
     
@@ -620,7 +684,7 @@ LOG_FILE=~/n8n_monitor.log
 N8N_START="set -a; source $ENV_FILE; set +a; n8n start"
 
 if ! pgrep -f "n8n start" > /dev/null; then
-    echo "[$(date)] 🚀 n8n not found. Restarting..." >> "$LOG_FILE"
+    echo "[$(date)]  n8n not found. Restarting..." >> "$LOG_FILE"
     tmux kill-session -t "$N8N_SESSION" 2>/dev/null
     tmux new-session -d -s "$N8N_SESSION" "$N8N_START"
 fi
@@ -637,8 +701,8 @@ EOF
     chmod +x "$HOME/n8n_server/scripts/n8n-monitor.sh"
     success_msg
 
-    echo -e "\n${GREEN}✅ n8n successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
-    echo -e "\n${YELLOW}⚠️  NEXT STEPS:${NC}"
+    echo -e "\n${GREEN} n8n successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
+    echo -e "\n${YELLOW}  NEXT STEPS:${NC}"
     echo -e "1. Use ${BLUE}Option 5${NC} (Recommended) or ${BLUE}Option 6${NC} to configure background services."
     wait_to_continue
 }
@@ -672,7 +736,7 @@ setup_n8n_gcp() {
 
 install_ollama() {
     if command -v ollama >/dev/null 2>&1; then
-        echo -e "\n${YELLOW}🦙 Ollama is already installed.${NC}"
+        echo -e "\n${YELLOW}Ollama is already installed.${NC}"
         echo "1) [R] Reinstall / Repair"
         echo "2) Back"
         read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" OL_CHOICE
@@ -684,12 +748,12 @@ install_ollama() {
         confirm_action "Install Ollama" || return 0
     fi
 
-    echo -e "\n${BLUE}🦙 Installing Ollama...${NC}"
+    echo -e "\n${BLUE}Installing Ollama...${NC}"
 
     smart_pkg_install ollama
 
     if command -v ollama >/dev/null 2>&1; then
-        echo -e "\n${GREEN}✅ Ollama successfully installed!${NC}"
+        echo -e "\n${GREEN}Ollama successfully installed!${NC}"
         echo -e "Start the server: ${BLUE}ollama serve${NC}"
         echo -e "Pull a model:      ${BLUE}ollama pull llama3${NC}"
         echo -e "Run a model:       ${BLUE}ollama run llama3${NC}"
@@ -702,9 +766,21 @@ install_ollama() {
 # --- 8. HERMES INSTALLATION ---
 
 install_hermes() {
+    # Detection: check PATH, static binary, or .bashrc entry (install attempted)
+    local hermes_cmd=""
+    hermes_cmd=$(type -P hermes 2>/dev/null || true)
+    local bashrc_has_hermes=$(grep -q 'hermes' "$HOME/.bashrc" 2>/dev/null && echo "yes" || echo "no")
+    local hermes_exists="no"
+    if [ -n "$hermes_cmd" ] || [ -f "$HOME/.hermes/bin/hermes" ]; then
+        hermes_exists="yes"
+    elif [ "$bashrc_has_hermes" == "yes" ] || [ -d "$HOME/.hermes" ]; then
+        # Partial / broken install
+        hermes_exists="partial"
+    fi
+
     local mode="install"
-    if command -v hermes >/dev/null 2>&1 || [ -f "$HOME/.hermes/bin/hermes" ]; then
-        echo -e "\n${YELLOW}⚡ Hermes is already installed.${NC}"
+    if [ "$hermes_exists" == "yes" ]; then
+        echo -e "\n${YELLOW}Hermes is already installed.${NC}"
         echo "1) [R] Reinstall"
         echo "2) Back"
         read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" HM_CHOICE
@@ -712,20 +788,42 @@ install_hermes() {
             1) mode="reinstall" ;;
             *) return 0 ;;
         esac
+    elif [ "$hermes_exists" == "partial" ]; then
+        echo -e "\n${YELLOW}Hermes appears partially installed or broken.${NC}"
+        echo "1) [F] Fix / Retry Install"
+        echo "2) [D] Deep Clean & Reinstall"
+        echo "3) Back"
+        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" HM_CHOICE
+        case $HM_CHOICE in
+            1) mode="fix" ;;
+            2) mode="reinstall" ;;
+            *) return 0 ;;
+        esac
     else
         confirm_action "Install Hermes Agent" || return 0
     fi
 
-    echo -e "\n${BLUE}⚡ ${mode^}ing Hermes Agent...${NC}"
+    echo -e "\n${BLUE}${mode^}ing Hermes Agent...${NC}"
 
     # Pre-install build dependencies that upstream often fails on
     smart_pkg_install python clang rust make pkg-config libffi openssl binutils
 
-    # Deep clean on reinstall to avoid partial/corrupted state
+    # Handle reinstall / fix — preserve source dir for fallback pip path
     if [ "$mode" == "reinstall" ]; then
-        status_msg "Removing old Hermes installation"
+        status_msg "Backing up and removing old Hermes installation"
         pkill -9 -f hermes 2>/dev/null || true
-        rm -rf "$HOME/.hermes"
+        if [ -d "$HOME/.hermes" ]; then
+            # Timestamped backup so user can recover if reinstall fails
+            local backup_dir="$HOME/.hermes.bak.$(date +%Y%m%d%H%M%S)"
+            mv "$HOME/.hermes" "$backup_dir"
+            echo -e "${BLUE}Backed up old install to $backup_dir${NC}"
+        fi
+        # Remove stale PATH entries from .bashrc
+        sed -i '/\.hermes\/bin/d' "$HOME/.bashrc" 2>/dev/null || true
+        success_msg
+    elif [ "$mode" == "fix" ]; then
+        status_msg "Preparing broken Hermes for repair"
+        pkill -9 -f hermes 2>/dev/null || true
         success_msg
     fi
 
@@ -733,6 +831,12 @@ install_hermes() {
     export CARGO_BUILD_JOBS=1
     export CARGO_NET_GIT_FETCH_WITH_CLI=true
     export RUSTFLAGS="-C opt-level=2"
+
+    # Fix critical: Maturin requires ANDROID_API_LEVEL on Termux
+    # https://github.com/termux/termux-packages/issues/20771
+    local android_api_level=$(getprop ro.build.version.sdk 2>/dev/null || echo "34")
+    export ANDROID_API_LEVEL=${android_api_level}
+    export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=clang
 
     # Run upstream installer without strict execute wrapper to allow graceful fallback
     local hermes_tmp_log=$(mktemp)
@@ -744,7 +848,7 @@ install_hermes() {
     if [ $hermes_exit -eq 0 ]; then
         success_msg
     else
-        printf "\r${CLEAR_LINE}${YELLOW}⚠️  Hermes installer exited with warnings.${NC}\n"
+        printf "\r${CLEAR_LINE}${YELLOW}  Hermes installer exited with warnings.${NC}\n"
         echo -e "${BLUE}Attempting manual fallback installation...${NC}"
         tail -n 20 "$hermes_tmp_log"
     fi
@@ -755,6 +859,11 @@ install_hermes() {
         status_msg "Attempting manual Python package fallback"
         local venv_path="$HOME/.hermes/hermes-agent/venv"
         if [ -f "$venv_path/bin/pip" ]; then
+            # Export Termux env vars needed by maturin/Rust builds
+            export ANDROID_API_LEVEL=${android_api_level}
+            export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=clang
+            export CARGO_BUILD_JOBS=1
+
             "$venv_path/bin/pip" install --upgrade pip wheel setuptools --quiet 2>>"$LOG_FILE" || true
             # Prefer pre-built binary wheels where available to skip Rust compilation
             "$venv_path/bin/pip" install jiter pydantic-core --prefer-binary --quiet 2>>"$LOG_FILE" || true
@@ -767,19 +876,24 @@ install_hermes() {
         success_msg
     fi
 
-    # Verify final installation
+    # Verify final installation — source .bashrc first because upstream
+    # installer appends PATH there; current shell never sees it otherwise
+    [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" 2>/dev/null || true
+
     local hermes_final_path=""
     hermes_final_path=$(type -P hermes 2>/dev/null || true)
     if [ -z "$hermes_final_path" ] && [ -f "$HOME/.hermes/bin/hermes" ]; then
+        # Add to current session PATH if found on disk but not in PATH
+        export PATH="$HOME/.hermes/bin:$PATH"
         hermes_final_path="$HOME/.hermes/bin/hermes"
     fi
 
     if [ -n "$hermes_final_path" ] && [ -x "$hermes_final_path" ]; then
-        echo -e "\n${GREEN}✅ Hermes successfully ${mode}ed!${NC}"
+        echo -e "\n${GREEN} Hermes successfully ${mode}ed!${NC}"
         echo -e "Path: ${BLUE}$hermes_final_path${NC}"
         echo -e "Run:  ${BLUE}hermes${NC}"
     else
-        echo -e "\n${YELLOW}⚠️  Hermes installation incomplete.${NC}"
+        echo -e "\n${YELLOW}  Hermes installation incomplete.${NC}"
         echo -e "${BLUE}Debugging steps:${NC}"
         echo -e "1. Check upstream errors: ${YELLOW}tail -n 50 $LOG_FILE${NC}"
         echo -e "2. Manual retry: ${BLUE}cd ~/.hermes/hermes-agent \&\& python -m pip install -e '.[termux]' -c constraints-termux.txt${NC}"
@@ -794,7 +908,7 @@ install_hermes() {
 install_paperclip() {
     local mode="full"
     if [ -d "$HOME/paperclip" ] && [ -f "$HOME/paperclip/server/dist/index.js" ]; then
-        echo -e "\n${YELLOW}📎 Paperclip is already installed.${NC}"
+        echo -e "\n${YELLOW} Paperclip is already installed.${NC}"
         echo "1) [R] Repair Config / Rebuild (Fast)"
         echo "2) [U] Update to Latest (Full)"
         echo "3) Back"
@@ -805,11 +919,11 @@ install_paperclip() {
             *) return 0 ;;
         esac
     else
-        echo -e "\n${YELLOW}⚠️  EXPERIMENTAL: Paperclip requires PostgreSQL, pnpm, and ~2GB RAM.${NC}"
+        echo -e "\n${YELLOW}  EXPERIMENTAL: Paperclip requires PostgreSQL, pnpm, and ~2GB RAM.${NC}"
         confirm_action "Install Paperclip (server-only, build from source)" || return 0
     fi
 
-    echo -e "\n${BLUE}📎 $([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") Paperclip...${NC}"
+    echo -e "\n${BLUE} $([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") Paperclip...${NC}"
 
     status_msg "Stopping existing tasks & freeing memory"
     pkill -9 -f "paperclip" 2>/dev/null || true
@@ -1003,7 +1117,7 @@ EOF
             fi
 
             success_msg
-            [ -n "$device_ip" ] && echo -e "${GREEN}📡 LAN access enabled: http://$device_ip:3100${NC}"
+            [ -n "$device_ip" ] && echo -e "${GREEN} LAN access enabled: http://$device_ip:3100${NC}"
         else
             warn_msg "onboard succeeded but config.json not found — LAN/DB settings may need manual configuration"
         fi
@@ -1012,15 +1126,15 @@ EOF
     fi
     success_msg
 
-    echo -e "\n${GREEN}✅ Paperclip successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
-    echo -e "\n${YELLOW}⚠️  NEXT STEPS:${NC}"
+    echo -e "\n${GREEN} Paperclip successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
+    echo -e "\n${YELLOW}  NEXT STEPS:${NC}"
     echo -e "1. Start the server: ${BLUE}cd ~/paperclip && pnpm dev:server${NC}"
     echo -e "2. Or start with PM2: ${BLUE}Option 8${NC} (Recommended for background)"
     echo -e "3. Access locally: ${BLUE}http://localhost:3100${NC}"
     echo -e "4. Access from iPad (same Wi-Fi): ${BLUE}http://<android-ip>:3100${NC}"
     echo -e "\n${RED}🛑 IMPORTANT:${NC}"
     if [ "${UI_SETUP_OK:-false}" != true ]; then
-        echo -e "   ${YELLOW}⚠️ UI assets are MISSING. The API works, but the web dashboard is not available.${NC}"
+        echo -e "   ${YELLOW} UI assets are MISSING. The API works, but the web dashboard is not available.${NC}"
         echo -e "   To fix, upload 'ui-dist-v${VERSION}.tar.gz' to the GitHub release and re-run repair."
     fi
     echo -e "   Keep PostgreSQL running: ${BLUE}pg_ctl -D \$PREFIX/var/lib/postgresql start${NC}"
@@ -1033,7 +1147,7 @@ EOF
 
 manage_service() {
     while true; do
-        echo -e "\n${BLUE}⚙️  BACKGROUND SERVICE MANAGEMENT${NC}"
+        echo -e "\n${BLUE}  BACKGROUND SERVICE MANAGEMENT${NC}"
         echo "1) OpenClaw: Enable/Setup Service"
         echo "2) OpenClaw: Disable/Remove Service"
         echo "3) n8n: Enable/Setup Native Service"
@@ -1117,7 +1231,7 @@ manage_pm2() {
         execute "npm install -g pm2" "Installing PM2 Globally"
     fi
     while true; do
-        echo -e "\n${BLUE}🚀 PM2 PROCESS MANAGEMENT${NC}"
+        echo -e "\n${BLUE}PM2 PROCESS MANAGEMENT${NC}"
         echo -e "${BLUE}── Start Services ──────────────${NC}"
         echo "1) Start OpenClaw"
         echo "2) Start n8n"
@@ -1201,7 +1315,7 @@ manage_pm2() {
 
 uninstall_menu() {
     while true; do
-        echo -e "\n${RED}⚠️  UNINSTALLATION MENU${NC}"
+        echo -e "\n${RED}  UNINSTALLATION MENU${NC}"
         echo "1) Remove OpenClaw"
         echo "2) Remove Gemini CLI"
         echo "3) Remove n8n"
@@ -1247,7 +1361,7 @@ uninstall_menu() {
                 confirm_action "uninstall Paperclip" && { uninstall_paperclip; wait_to_continue; }
                 ;;
             7) 
-                echo -e "\n${RED}🔥 RESET: This will wipe all applications:${NC}"
+                echo -e "\n${RED} RESET: This will wipe all applications:${NC}"
                 echo -e "- OpenClaw, n8n, Gemini CLI, Ollama, Hermes, and Paperclip."
                 echo -e "- All memories, skills, and configurations."
                 echo -e "${BLUE}Note: Core system packages (Node.js, FFmpeg, etc.) are NOT removed.${NC}"
@@ -1276,7 +1390,7 @@ uninstall_openclaw() {
 
     local choice="1"
     if [[ "$force_deep" != "--deep" ]]; then
-        echo -ne "\n${YELLOW}⚠️  DATA PRESERVATION:${NC}\n1) Soft Uninstall (Keep plugins/memory)\n2) Deep Uninstall (Wipe everything)\n"
+        echo -ne "\n${YELLOW}  DATA PRESERVATION:${NC}\n1) Soft Uninstall (Keep plugins/memory)\n2) Deep Uninstall (Wipe everything)\n"
         read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" choice
     else
         choice="2"
@@ -1330,7 +1444,7 @@ full_cleanup() {
     uninstall_ollama
     uninstall_hermes
     uninstall_paperclip
-    echo -e "\n${GREEN}✅ Toolkit software removed. System dependencies were kept intact.${NC}"
+    echo -e "\n${GREEN} Toolkit software removed. System dependencies were kept intact.${NC}"
 }
 
 uninstall_ollama() {
@@ -1366,7 +1480,7 @@ uninstall_paperclip() {
     # Note: PostgreSQL is a shared system service — we do NOT stop it.
     # Other tools or user data may depend on it.
 
-    echo -e "${YELLOW}⚠️  Paperclip process stopped. Source code and database preserved.${NC}"
+    echo -e "${YELLOW}Paperclip process stopped. Source code and database preserved.${NC}"
     echo -e "   Source: ${BLUE}$HOME/paperclip${NC}"
     echo -e "   Database: ${BLUE}postgres://paperclip:paperclip@localhost:5432/paperclip${NC}"
     echo -e "   PostgreSQL is still running. Stop manually if no other services need it:"
@@ -1379,7 +1493,7 @@ uninstall_paperclip() {
 show_menu() {
     clear
     echo -e "${BLUE}====================================================${NC}"
-    echo -e "${BLUE}       🤖 DROID AI TOOLKIT v$VERSION        ${NC}"
+    echo -e "${BLUE}       DROID AI TOOLKIT v$VERSION        ${NC}"
     echo -e "${BLUE}====================================================${NC}"
     echo -e "${GREEN}── Install / Repair ──────────────────────────────${NC}"
     echo -e "1) ${YELLOW}Hermes${NC} Agent"
@@ -1387,12 +1501,13 @@ show_menu() {
     echo -e "3) ${YELLOW}Gemini CLI${NC}"
     echo -e "4) ${BLUE}n8n${NC} Server"
     echo -e "5) ${GREEN}Ollama${NC} (Local LLMs)"
-    echo -e "6) ${MAGENTA}📎 Paperclip${NC} Server ${RED}(EXPERIMENTAL)${NC}"
+    echo -e "6) ${YELLOW}Pi${NC} Coding Agent ${GREEN}(RECOMMENDED)${NC}"
+    echo -e "7) ${MAGENTA}Paperclip${NC} Server ${RED}(EXPERIMENTAL)${NC}"
     echo -e "${BLUE}── Manage ────────────────────────────────────────${NC}"
-    echo -e "7) ${BLUE}GCP${NC} Bridge (for n8n)"
-    echo -e "8) ${YELLOW}PM2${NC} Processes (Recommended)"
-    echo -e "9) ${BLUE}Background Services${NC} (Native)"
-    echo -e "10) ${RED}Uninstall${NC} Software"
+    echo -e "8) ${BLUE}GCP${NC} Bridge (for n8n)"
+    echo -e "9) ${YELLOW}PM2${NC} Processes (Recommended)"
+    echo -e "10) ${BLUE}Background Services${NC} (Native)"
+    echo -e "11) ${RED}Uninstall${NC} Software"
     echo -e "0) Exit"
     echo -e "${BLUE}====================================================${NC}"
 }
@@ -1402,7 +1517,7 @@ ensure_jq
 
 while true; do
     show_menu
-    read -p "What would you like to do? [0-10]: " MAIN_CHOICE
+    read -p "What would you like to do? [0-11]: " MAIN_CHOICE
 
     case $MAIN_CHOICE in
         1) install_hermes ;;
@@ -1410,12 +1525,14 @@ while true; do
         3) install_gemini_cli ;;
         4) install_n8n ;;
         5) install_ollama ;;
-        6) install_paperclip ;;
-        7) setup_n8n_gcp ;;
-        8) manage_pm2 ;;
-        9) manage_service ;;
-        10) uninstall_menu ;;
+        6) install_pi ;;
+        7) install_paperclip ;;
+        8) setup_n8n_gcp ;;
+        9) manage_pm2 ;;
+        10) manage_service ;;
+        11) uninstall_menu ;;
         0) exit 0 ;;
         *) echo -e "${RED}Invalid option.${NC}"; sleep 1 ;;
     esac
 done
+
