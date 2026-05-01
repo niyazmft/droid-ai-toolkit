@@ -40,6 +40,7 @@ export npm_config_force=true
 status_msg() { echo -ne "\r${CLEAR_LINE}${BLUE}==>${NC} $1... "; }
 error_msg() { echo -e "\r${CLEAR_LINE}${RED}Error:${NC} $1"; }
 success_msg() { echo -e "${GREEN}Done.${NC}"; }
+warn_msg() { echo -e "\r${CLEAR_LINE}${YELLOW}Warning:${NC} $1"; }
 wait_to_continue() { read -p "$(printf "\n${BLUE}>>${NC} Press Enter to continue...")" junk; }
 
 ensure_jq() {
@@ -895,13 +896,67 @@ NODE_OPTIONS="--max-old-space-size=$SAFE_LIMIT"
 PAPERCLIP_HOME=$HOME/paperclip
 PAPERCLIP_INSTANCE_ID=default
 EOF
+
+    # --- Onboard + LAN configuration ---
+    # Paperclip's onboard command writes config.json. Without PAPERCLIP_HOME
+    # it writes to ~/.paperclip; we force it to our install directory.
+    status_msg "Configuring Paperclip (onboard + LAN bind)"
+    cd "$HOME/paperclip"
+    export PAPERCLIP_HOME="$HOME/paperclip"
+    export DATABASE_URL="postgres://paperclip:paperclip@localhost:5432/paperclip"
+
+    if pnpm paperclipai onboard --yes --bind lan >> "$LOG_FILE" 2>&1; then
+        # Patch generated config to use external PostgreSQL (embedded-postgres has no Android build)
+        local config_path="$HOME/paperclip/instances/default/config.json"
+        if [ -f "$config_path" ]; then
+            local device_ip
+            device_ip=$(ip addr show wlan0 2>/dev/null | grep 'inet ' | sed -n 's/.*inet \([0-9.]*\).*/\1/p' | head -n1)
+            [ -z "$device_ip" ] && device_ip=$(ip addr show eth0 2>/dev/null | grep 'inet ' | sed -n 's/.*inet \([0-9.]*\).*/\1/p' | head -n1)
+
+            # Build allowedHostnames array: add device IP if found, plus loopback/localhost
+            local hostnames_json='["127.0.0.1","localhost"]'
+            [ -n "$device_ip" ] && hostnames_json="[\"127.0.0.1\",\"localhost\",\"$device_ip\"]"
+
+            # Patch database mode and add connection string + LAN settings
+            jq --arg connStr "$DATABASE_URL" --argjson hosts "$hostnames_json" \
+                '.database.mode = "postgres" |
+                 .database.connectionString = $connStr |
+                 del(.database.embeddedPostgresDataDir) |
+                 del(.database.embeddedPostgresPort) |
+                 .server.bind = "lan" |
+                 .server.host = "0.0.0.0" |
+                 .server.allowedHostnames = $hosts' \
+                "$config_path" > tmp.json && mv tmp.json "$config_path"
+
+            # Also mirror the config to ~/.paperclip as fallback (server may resolve either path)
+            mkdir -p "$HOME/.paperclip/instances/default"
+            cp "$config_path" "$HOME/.paperclip/instances/default/config.json"
+
+            # Copy secrets/env so both homes are consistent
+            if [ -f "$HOME/paperclip/instances/default/.env" ]; then
+                cp "$HOME/paperclip/instances/default/.env" "$HOME/.paperclip/instances/default/.env" 2>/dev/null || true
+            fi
+            if [ -f "$HOME/paperclip/instances/default/secrets/master.key" ]; then
+                mkdir -p "$HOME/.paperclip/instances/default/secrets"
+                cp "$HOME/paperclip/instances/default/secrets/master.key" "$HOME/.paperclip/instances/default/secrets/master.key" 2>/dev/null || true
+            fi
+
+            success_msg
+            [ -n "$device_ip" ] && echo -e "${GREEN}📡 LAN access enabled: http://$device_ip:3100${NC}"
+        else
+            warn_msg "onboard succeeded but config.json not found — LAN/DB settings may need manual configuration"
+        fi
+    else
+        warn_msg "onboard command failed (see log). You may need to run 'pnpm paperclipai onboard --bind lan' manually."
+    fi
     success_msg
 
     echo -e "\n${GREEN}✅ Paperclip successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
     echo -e "\n${YELLOW}⚠️  NEXT STEPS:${NC}"
     echo -e "1. Start the server: ${BLUE}cd ~/paperclip && pnpm dev:server${NC}"
-    echo -e "2. Or start with PM2: ${BLUE}Option 8${NC} (Recommended)"
+    echo -e "2. Or start with PM2: ${BLUE}Option 8${NC} (Recommended for background)"
     echo -e "3. Access locally: ${BLUE}http://localhost:3100${NC}"
+    echo -e "4. Access from iPad (same Wi-Fi): ${BLUE}http://<android-ip>:3100${NC}"
     echo -e "\n${RED}🛑 IMPORTANT:${NC}"
     if [ "${UI_SETUP_OK:-false}" != true ]; then
         echo -e "   ${YELLOW}⚠️ UI assets are MISSING. The API works, but the web dashboard is not available.${NC}"
@@ -1041,12 +1096,12 @@ manage_pm2() {
                 wait_to_continue ;;
             3)
                 local hermes_path=""
-                hermes_path=$(command -v hermes 2>/dev/null || echo "")
+                hermes_path=$(type -P hermes 2>/dev/null || true)
                 if [ -z "$hermes_path" ] && [ -f "$HOME/.hermes/bin/hermes" ]; then
                     hermes_path="$HOME/.hermes/bin/hermes"
                 fi
                 if [ -n "$hermes_path" ]; then
-                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start '$hermes_path' --name hermes && pm2 save" "Starting Hermes in PM2"
+                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start '$hermes_path' --name hermes --interpreter none && pm2 save" "Starting Hermes in PM2"
                 else
                     error_msg "Hermes is not installed."
                 fi
@@ -1067,7 +1122,7 @@ manage_pm2() {
                     fi
                     success_msg
                     # PM2 --env does not load .env files; we embed source directly
-                    execute "pm2 delete paperclip 2>/dev/null || true; cd $HOME/paperclip; pm2 start 'bash -c \"set -a && source config/paperclip.env && set +a && node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js\"' --name paperclip --interpreter none && pm2 save" "Starting Paperclip in PM2"
+                    execute "pm2 delete paperclip 2>/dev/null || true; cd $HOME/paperclip; pm2 start 'bash -c \"set -a && source config/paperclip.env && set +a && export PAPERCLIP_HOME=$HOME/paperclip && node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js\"' --name paperclip --interpreter none && pm2 save" "Starting Paperclip in PM2"
                 else
                     error_msg "Paperclip is not installed. Use Option 6 in the main menu."
                 fi
