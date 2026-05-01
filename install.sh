@@ -702,29 +702,90 @@ install_ollama() {
 # --- 8. HERMES INSTALLATION ---
 
 install_hermes() {
-    if command -v hermes >/dev/null 2>&1; then
+    local mode="install"
+    if command -v hermes >/dev/null 2>&1 || [ -f "$HOME/.hermes/bin/hermes" ]; then
         echo -e "\n${YELLOW}⚡ Hermes is already installed.${NC}"
         echo "1) [R] Reinstall"
         echo "2) Back"
         read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" HM_CHOICE
         case $HM_CHOICE in
-            1) ;;
+            1) mode="reinstall" ;;
             *) return 0 ;;
         esac
     else
         confirm_action "Install Hermes Agent" || return 0
     fi
 
-    echo -e "\n${BLUE}⚡ Installing Hermes Agent...${NC}"
+    echo -e "\n${BLUE}⚡ ${mode^}ing Hermes Agent...${NC}"
 
-    execute "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash" "Downloading and running Hermes installer"
+    # Pre-install build dependencies that upstream often fails on
+    smart_pkg_install python clang rust make pkg-config libffi openssl binutils
 
-    if [ -f "$HOME/.hermes/bin/hermes" ] || command -v hermes >/dev/null 2>&1; then
-        echo -e "\n${GREEN}✅ Hermes successfully installed!${NC}"
-        echo -e "Run: ${BLUE}hermes${NC}"
-    else
-        echo -e "\n${YELLOW}⚠️  Hermes installer completed. Restart your shell or run 'source ~/.bashrc' to activate.${NC}"
+    # Deep clean on reinstall to avoid partial/corrupted state
+    if [ "$mode" == "reinstall" ]; then
+        status_msg "Removing old Hermes installation"
+        pkill -9 -f hermes 2>/dev/null || true
+        rm -rf "$HOME/.hermes"
+        success_msg
     fi
+
+    # Set Rust/Cargo environment for low-RAM Termux builds
+    export CARGO_BUILD_JOBS=1
+    export CARGO_NET_GIT_FETCH_WITH_CLI=true
+    export RUSTFLAGS="-C opt-level=2"
+
+    # Run upstream installer without strict execute wrapper to allow graceful fallback
+    local hermes_tmp_log=$(mktemp)
+    local hermes_exit=0
+    status_msg "Running Hermes upstream installer"
+    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash > "$hermes_tmp_log" 2>&1 || hermes_exit=$?
+    cat "$hermes_tmp_log" >> "$LOG_FILE"
+
+    if [ $hermes_exit -eq 0 ]; then
+        success_msg
+    else
+        printf "\r${CLEAR_LINE}${YELLOW}⚠️  Hermes installer exited with warnings.${NC}\n"
+        echo -e "${BLUE}Attempting manual fallback installation...${NC}"
+        tail -n 20 "$hermes_tmp_log"
+    fi
+    rm -f "$hermes_tmp_log"
+
+    # Fallback: try manual pip install if upstream left a partial source checkout
+    if [ -d "$HOME/.hermes/hermes-agent" ] && { [ ! -f "$HOME/.hermes/bin/hermes" ] || [ $hermes_exit -ne 0 ]; }; then
+        status_msg "Attempting manual Python package fallback"
+        local venv_path="$HOME/.hermes/hermes-agent/venv"
+        if [ -f "$venv_path/bin/pip" ]; then
+            "$venv_path/bin/pip" install --upgrade pip wheel setuptools --quiet 2>>"$LOG_FILE" || true
+            # Prefer pre-built binary wheels where available to skip Rust compilation
+            "$venv_path/bin/pip" install jiter pydantic-core --prefer-binary --quiet 2>>"$LOG_FILE" || true
+            # Retry with Termux-specific constraints
+            if [ -f "$HOME/.hermes/hermes-agent/constraints-termux.txt" ]; then
+                "$venv_path/bin/pip" install -e "$HOME/.hermes/hermes-agent[termux]" \
+                    -c "$HOME/.hermes/hermes-agent/constraints-termux.txt" >> "$LOG_FILE" 2>&1 || true
+            fi
+        fi
+        success_msg
+    fi
+
+    # Verify final installation
+    local hermes_final_path=""
+    hermes_final_path=$(type -P hermes 2>/dev/null || true)
+    if [ -z "$hermes_final_path" ] && [ -f "$HOME/.hermes/bin/hermes" ]; then
+        hermes_final_path="$HOME/.hermes/bin/hermes"
+    fi
+
+    if [ -n "$hermes_final_path" ] && [ -x "$hermes_final_path" ]; then
+        echo -e "\n${GREEN}✅ Hermes successfully ${mode}ed!${NC}"
+        echo -e "Path: ${BLUE}$hermes_final_path${NC}"
+        echo -e "Run:  ${BLUE}hermes${NC}"
+    else
+        echo -e "\n${YELLOW}⚠️  Hermes installation incomplete.${NC}"
+        echo -e "${BLUE}Debugging steps:${NC}"
+        echo -e "1. Check upstream errors: ${YELLOW}tail -n 50 $LOG_FILE${NC}"
+        echo -e "2. Manual retry: ${BLUE}cd ~/.hermes/hermes-agent \&\& python -m pip install -e '.[termux]' -c constraints-termux.txt${NC}"
+        echo -e "3. Ensure Rust works:      ${YELLOW}rustc --version${NC}"
+    fi
+
     wait_to_continue
 }
 
