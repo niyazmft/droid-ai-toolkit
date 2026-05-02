@@ -33,21 +33,22 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.10.0). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version (v1.11.0). `package.json` version (1.0.0) is stale — ignore it.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
 
 ## Install Methods Per Tool
 
-| Tool | Method |
-| --- | --- |
-| OpenClaw | npm/pnpm global + koffi kernel patch + path redirection (`/tmp`, `/bin/npm`, etc.) |
-| Pi Agent | **RECOMMENDED** — npm/pnpm global + `~/.pi/agent/AGENTS.md` context setup |
-| Gemini CLI | npm/pnpm global + `rename` → `copyFile+unlink` patch |
-| n8n | npm/pnpm global + watchdog cron + `NODE_OPTIONS` memory cap + optional GCP bridge |
-| Ollama | `pkg install ollama` (Termux native) |
-| Hermes | curl installer from `hermes-agent.nousresearch.com` |
-| Paperclip | **EXPERIMENTAL** — build from source (git clone + pnpm) + external PostgreSQL (embedded-postgres has no Android builds) |
+| Tool | Method | Architecture Notes |
+| --- | --- | --- |
+| OpenClaw | npm/pnpm global + koffi kernel patch + path redirection (`/tmp`, `/bin/npm`, etc.) | All architectures |
+| Pi Agent | **RECOMMENDED** — npm/pnpm global + `~/.pi/agent/AGENTS.md` context setup | All architectures |
+| Gemini CLI | npm/pnpm global + `rename` → `copyFile+unlink` patch | All architectures |
+| n8n | npm/pnpm global + watchdog cron + `NODE_OPTIONS` memory cap + optional GCP bridge | All architectures |
+| Ollama | `pkg install ollama` (Termux native) | All architectures |
+| Hermes | curl installer from `hermes-agent.nousresearch.com` | ❌ Not supported on `armv8l`/`armv7l` (maturin/jiter incompatibility) |
+| Nanobot | `pip3 install nanobot-ai` with `--no-build-isolation` | ❌ Not supported on `armv8l`/`armv7l` (maturin/jiter incompatibility) |
+| Paperclip | Delegates to `paperclip_manual_install.sh` (clone + pnpm + prebuilt tarballs + PostgreSQL) | All architectures (experimental, ~2GB RAM recommended) |
 
 ## Pi Agent Contextualization
 
@@ -63,9 +64,12 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 ## Patching Details
 
 - **Koffi**: `sed` inside compiled `.node` / `.c` sources replaces `renameat2(...)` with `rename(...)`.
+- **Hermes/Nanobot armv8l/armv7l limitation**: `jiter` (a dependency of `anthropic`, which both Hermes and Nanobot depend on) requires Rust compilation via `maturin`. The `maturin` build tool hard-codes an architecture check that rejects `armv8l` and `armv7l`. Additionally, pre-built `jiter` wheels are compiled for glibc Linux (manylinux) and require `libgcc_s.so.1` and `ld-linux-armhf.so.3`, which do not exist on Android's bionic libc. The only fix is upstream support from the `jiter`/`maturin` projects. The toolkit now displays a graceful error message and skips installation on these architectures.
 - **Path redirection**: `grep -rlE` finds hardcoded `/tmp/openclaw`, `/usr/bin/npm`, `/bin/node` references in installed JS, then `sed` replaces them with `$HOME/.openclaw/tmp` and `$TERMUX_BIN` paths.
 - **Process termination**: uses port-specific signatures (e.g., `pkill -f "autossh.*5678"`).
-- **Paperclip patches**: `embedded-postgres` is removed from `server/package.json` post-clone (it has no Android builds); external PostgreSQL is installed via `pkg`. `SHARP_IGNORE_GLOBAL_LIBVIPS=1` forces sharp to compile from source against Termux's `libvips`. `pnpm-lock.yaml` is deleted after clone. `@paperclipai/plugin-sdk` is built before the server. `noImplicitAny` and `noEmitOnError` are patched to `false` in `server/tsconfig.json` to suppress upstream type errors and ensure `dist/` is always written. The UI is **not built on-device** (Vite/esbuild requires ~4-6GB transient RSS); instead, a prebuilt `ui-dist.tar.gz` tarball is downloaded from the GitHub release, extracted into `server/ui-dist`. If the download fails, a single fallback build attempt is made with `minify: false` and dropped `console/debugger` stripping. PostgreSQL (`pg_ctl`) must be running before starting Paperclip.
+- **Paperclip install**: The inline Paperclip install in `install.sh` has been **replaced by delegation** to `paperclip_manual_install.sh`. This standalone script handles: clone + pre-install patches (remove `embedded-postgres`, drop `ui` workspace, delete stale lockfile), pnpm install with LMK-kill detection and retry, `.bin` symlink repair (`tsc`, `tsx`, `esbuild`), prebuilt `dist/` and `ui-dist` tarball download from GitHub releases, PostgreSQL bootstrap with stale-process cleanup, randomized secret generation, and PM2 ecosystem file creation. The UI is **not built on-device** (Vite/esbuild requires ~4–6 GB transient RSS). Paperclip installs enforce a per-device heap cap (`--max-old-space-size=1024` on 3–4 GB devices), single-concurrency `pnpm install`, deleted `ui` workspace, and sequential workspace builds to survive Android Low Memory Killer (LMK). PostgreSQL (`pg_ctl`) must be running before starting Paperclip.
+
+  **Known gotchas with pnpm in Termux**: pnpm v10 with `--no-frozen-lockfile` + workspace patches sometimes fails to create `.bin` symlinks in the root `node_modules/.bin`. The installer manually repairs `tsc` → `typescript/bin/tsc`, `tsx` → `../.pnpm/tsx@*/tsx/dist/cli.mjs`, and `esbuild` → `esbuild/bin/esbuild`, and ensures `node_modules/.bin` is prepended to `$PATH` before workspace builds. The `sync; sleep 5; node -e "global.gc()"` pattern that was previously used between build steps is **removed entirely** — it was causing LMK kills on loaded systems. The `safe_execute()` helper uses `eval` (no `bash -c` fork) and appends directly to the main log.
 
 ## License Note
 
