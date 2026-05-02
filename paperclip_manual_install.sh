@@ -3,8 +3,12 @@
 # Paperclip Manual Installer for Android/Termux (3-4GB RAM)
 # Consolidated runbook from PAPERCLIP_MANUAL_RUNBOOK.md + PAPERCLIP_INSTALL_NOTES.md
 # ==============================================================================
-set -e
-
+#
+# Do NOT enable set -e. The pnpm install phase on low-RAM devices can get
+# killed by Android LMK — this is expected and recovered from gracefully.
+# set -e would kill the shell mid-install and return the user to the prompt
+# without any recovery path, making debugging impossible on-device.
+#
 cd "$HOME"
 
 PASS=0
@@ -263,9 +267,9 @@ if [ "$DIST_OK" != true ]; then
 
     # Guard against pnpm resolving to bare node (prevents REPL hang)
     PNPM_BIN_PATH=$(command -v pnpm 2>/dev/null || echo "")
-    if [ -z "$PNPM_BIN_PATH" ] || [ "$PNPM_BIN_PATH" = "node" ] || [ "$PNPM_BIN_PATH" = "/data/data/com.termux/files/usr/bin/node" ]; then
+    if [ -z "$PNPM_BIN_PATH" ] || [ "$PNPM_BIN_PATH" = "node" ] || [ "$PNPM_BIN_PATH" = "$PREFIX/bin/node" ]; then
         fail "pnpm resolves to node REPL — fixing PATH..."
-        export PATH=/data/data/com.termux/files/usr/bin:$PATH
+        export PATH="$PREFIX/bin:$PATH"
     fi
 
     if pnpm --filter @paperclipai/plugin-sdk build > build_plugin_sdk.log 2>&1; then
@@ -452,15 +456,15 @@ pass "Environment and secrets created"
 # Create PM2 ecosystem file so user can start with zero manual config
 # Use .cjs extension because paperclip/package.json has "type": "module",
 # which would force .js files to be parsed as ES modules (breaking module.exports).
-cat > "$HOME/paperclip/ecosystem.config.cjs" <<'EOF'
+cat > "$HOME/paperclip/ecosystem.config.cjs" <<EOF
 module.exports = {
   apps: [{
     name: 'paperclip',
     script: 'node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js',
-    cwd: '/data/data/com.termux/files/home/paperclip',
+    cwd: '${HOME}/paperclip',
     interpreter: 'none',
     env: {
-      PAPERCLIP_HOME: '/data/data/com.termux/files/home/paperclip',
+      PAPERCLIP_HOME: '${HOME}/paperclip',
       DATABASE_URL: 'postgres://paperclip:paperclip@localhost:5432/paperclip',
       NODE_OPTIONS: '--max-old-space-size=1024'
     }

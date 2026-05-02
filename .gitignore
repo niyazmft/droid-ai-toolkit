@@ -18,4 +18,4 @@ firebase-debug.log
 
 # Paperclip prebuilt UI tarballs (downloaded from GitHub releases)
 ui-dist-v*.tar.gz
-
+paperclip-dist-*.tar.gz
