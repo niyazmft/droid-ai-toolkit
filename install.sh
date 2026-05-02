@@ -905,244 +905,54 @@ install_hermes() {
 }
 
 # --- 8.5. PAPERCLIP INSTALLATION (EXPERIMENTAL) ---
-
 install_paperclip() {
-    local mode="full"
-    if [ -d "$HOME/paperclip" ] && [ -f "$HOME/paperclip/server/dist/index.js" ]; then
-        echo -e "\n${YELLOW} Paperclip is already installed.${NC}"
-        echo "1) [R] Repair Config / Rebuild (Fast)"
-        echo "2) [U] Update to Latest (Full)"
-        echo "3) Back"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" REPAIR_CHOICE
-        case $REPAIR_CHOICE in
-            1) mode="repair" ;;
-            2) mode="full" ;;
-            *) return 0 ;;
-        esac
-    else
-        echo -e "\n${YELLOW}  EXPERIMENTAL: Paperclip requires PostgreSQL, pnpm, and ~2GB RAM.${NC}"
-        confirm_action "Install Paperclip (server-only, build from source)" || return 0
-    fi
+    # Paperclip installation is delegated entirely to the standalone
+    # paperclip_manual_install.sh, which handles: clone, pre-install patches,
+    # LMK-resilient pnpm install, prebuilt tarball download, symlink repair,
+    # PostgreSQL bootstrap, secret generation, and PM2 ecosystem creation.
+    #
+    # We search multiple locations for the script (local repo checkout,
+    # standalone download, or GitHub raw URL), then execute it.
+    local SCRIPT=""
+    local CANDIDATES=(
+        "$HOME/droid-ai-toolkit/paperclip_manual_install.sh"
+        "$HOME/paperclip_manual_install.sh"
+        "$HOME/droid-ai-toolkit-main/paperclip_manual_install.sh"
+        "$HOME/droid-ai-toolkit/assets/paperclip_manual_install.sh"
+    )
 
-    echo -e "\n${BLUE} $([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") Paperclip...${NC}"
-
-    status_msg "Stopping existing tasks & freeing memory"
-    pkill -9 -f "paperclip" 2>/dev/null || true
-    command -v pm2 >/dev/null 2>&1 && pm2 delete paperclip >> "$LOG_FILE" 2>&1 || true
-    success_msg
-
-    if [[ "$mode" == "full" ]]; then
-        # Core deps: PostgreSQL is NON-NEGOTIABLE (embedded-postgres has no Android builds)
-        smart_pkg_install tur-repo build-essential python3 postgresql libvips git
-        
-        # Ensure pnpm
-        if ! command -v pnpm >/dev/null 2>&1; then
-            execute "npm install -g pnpm@9.15.4" "Installing pnpm (required by Paperclip)"
+    for candidate in "${CANDIDATES[@]}"; do
+        if [ -f "$candidate" ]; then
+            SCRIPT="$candidate"
+            break
         fi
+    done
 
-        # Node.js link fix (same as OpenClaw/n8n)
-        if [ -d "$PREFIX/opt/nodejs-22/bin" ]; then
-            NODE_OPT_BIN="$PREFIX/opt/nodejs-22/bin"
-            execute "ln -sf '$NODE_OPT_BIN/node' '$TERMUX_BIN/node' && ln -sf '$NODE_OPT_BIN/npm' '$TERMUX_BIN/npm'" "Verifying Node.js links"
+    if [ -z "$SCRIPT" ]; then
+        status_msg "Downloading Paperclip standalone installer"
+        SCRIPT="$HOME/paperclip_manual_install.sh"
+        # Use 'main' branch URL (always available) instead of v${VERSION} tag
+        # which may not exist yet at release time.
+        if ! curl -fsSL "https://raw.githubusercontent.com/niyazmft/droid-ai-toolkit/main/paperclip_manual_install.sh" -o "$SCRIPT" 2>>"$LOG_FILE"; then
+            error_msg "Failed to download paperclip_manual_install.sh"
+            echo -e "${YELLOW}Workaround: Manually download the script from:${NC}"
+            echo -e "${BLUE}https://raw.githubusercontent.com/niyazmft/droid-ai-toolkit/main/paperclip_manual_install.sh${NC}"
+            echo -e "Save it to ${BLUE}~/paperclip_manual_install.sh${NC}, then re-run the toolkit."
+            wait_to_continue
+            return 1
         fi
-    fi
-
-    if [[ "$mode" == "full" ]]; then
-        status_msg "Cloning Paperclip repository"
-        rm -rf "$HOME/paperclip"
-        execute "git clone https://github.com/paperclipai/paperclip.git '$HOME/paperclip'" "Cloning Paperclip from GitHub"
         success_msg
     fi
 
-    # --- Build from source ---
-    status_msg "Installing dependencies (this may take several minutes)"
-    cd "$HOME/paperclip"
-    
-    # Prevent embedded-postgres from breaking the install; we use external Postgres
-    export PAPERCLIP_DATABASE_URL="postgres://paperclip:paperclip@localhost:5432/paperclip"
-    export DATABASE_URL="$PAPERCLIP_DATABASE_URL"
-    
-    # Sharp build from source on Android
-    export SHARP_IGNORE_GLOBAL_LIBVIPS=1
-    
-    # Patch out embedded-postgres so pnpm install doesn't fail on missing binary
-    if [ -f "$HOME/paperclip/patches/embedded-postgres@18.1.0-beta.16.patch" ]; then
-        rm -f "$HOME/paperclip/patches/embedded-postgres@18.1.0-beta.16.patch" 2>/dev/null || true
-        # Remove the patchedDependency entry from package.json to avoid pnpm error
-        jq 'del(.pnpm.patchedDependencies["embedded-postgres@18.1.0-beta.16"])' package.json > tmp.json && mv tmp.json package.json
-    fi
-    
-    # Remove embedded-postgres from server deps so it isn't installed
-    if [ -f "$HOME/paperclip/server/package.json" ]; then
-        jq 'del(.dependencies["embedded-postgres"])' server/package.json > tmp.json && mv tmp.json server/package.json
-    fi
-    
-    # The lockfile was generated with embedded-postgres patches; deleting it forces a fresh
-    # resolution that matches our patched package.json. We do NOT use --frozen-lockfile here.
-    execute "rm -f pnpm-lock.yaml && pnpm install" "Installing Paperclip dependencies"
+    status_msg "Delegating to standalone Paperclip installer"
+    echo -e "${BLUE}   Script: $SCRIPT${NC}"
     success_msg
 
-    status_msg "Building workspace dependencies"
-    execute "pnpm --filter @paperclipai/plugin-sdk build && pnpm --filter @paperclipai/db build" "Building Paperclip workspace dependencies"
-    success_msg
-
-    status_msg "Patching server tsconfig for Termux compatibility"
-    if [ -f "$HOME/paperclip/server/tsconfig.json" ]; then
-        jq '.compilerOptions.noImplicitAny = false | .compilerOptions.noEmitOnError = false | .compilerOptions.skipLibCheck = true' "$HOME/paperclip/server/tsconfig.json" > tmp.json && mv tmp.json "$HOME/paperclip/server/tsconfig.json"
-    fi
-    
-    # tsc still exits 2 on type errors; patch the build script so && does not abort
-    if [ -f "$HOME/paperclip/server/package.json" ]; then
-        jq '.scripts.build |= sub("tsc &&"; "tsc; ")' "$HOME/paperclip/server/package.json" > tmp.json && mv tmp.json "$HOME/paperclip/server/package.json"
-    fi
-    success_msg
-
-    status_msg "Building Paperclip server"
-    execute "pnpm --filter @paperclipai/server build" "Building Paperclip server"
-    success_msg
-
-    # --- UI setup ---
-    # Vite/esbuild requires ~4-6GB transient RSS to bundle 5,000+ React modules; Android devices with
-    # 3-4GB total RAM cannot survive it, even with swap. We download a prebuilt ui-dist tarball
-    # built from the identical upstream source to keep the install purely portable.
-    status_msg "Fetching prebuilt Paperclip UI assets"
-    UI_TARBALL_URL="https://github.com/niyazmft/droid-ai-toolkit/releases/download/v${VERSION}/ui-dist-v${VERSION}.tar.gz"
-    UI_TARBALL="$HOME/.paperclip_tmp/ui-dist-v${VERSION}.tar.gz"
-    mkdir -p "$HOME/.paperclip_tmp"
-    
-    if curl -fL --max-time 30 "$UI_TARBALL_URL" -o "$UI_TARBALL" 2>> "$LOG_FILE"; then
-        execute "rm -rf '$HOME/paperclip/server/ui-dist' && mkdir -p '$HOME/paperclip/server/ui-dist' && tar -xzf '$UI_TARBALL' -C '$HOME/paperclip/server'" "Extracting prebuilt UI assets"
-        rm -f "$UI_TARBALL"
-        success_msg
-        UI_SETUP_OK=true
-    else
-        status_msg "Prebuilt tarball unavailable (curl failed — see log). Attempting fallback UI build (this will likely fail on low-RAM devices)"
-        swapon -a 2>/dev/null || true
-        export NODE_OPTIONS="--max-old-space-size=$SAFE_LIMIT"
-        
-        # Disable minification before the single attempt to give it the best chance
-        sed -i 's/minify: "esbuild"/minify: false/' "$HOME/paperclip/ui/vite.config.ts"
-        sed -i '/drop:.*\["console"/d; /legalComments:.*"none"/d' "$HOME/paperclip/ui/vite.config.ts"
-        rm -rf "$HOME/paperclip/ui/dist"
-        
-        if pnpm --filter @paperclipai/ui build >> "$LOG_FILE" 2>&1 && pnpm --filter @paperclipai/server exec pnpm run prepare:ui-dist >> "$LOG_FILE" 2>&1; then
-            success_msg
-            UI_SETUP_OK=true
-        else
-            error_msg "UI build failed. Paperclip server is installed but the web UI will not be available."
-            echo -e "${YELLOW}The API server is functional. You can still use Paperclip via its REST API.${NC}"
-            UI_SETUP_OK=false
-        fi
-    fi
-    
-    # --- PostgreSQL setup ---
-    status_msg "Configuring PostgreSQL database"
-    if ! pg_isready -q 2>/dev/null; then
-        pg_ctl -D "$PREFIX/var/lib/postgresql" initdb 2>/dev/null || true
-        pg_ctl -D "$PREFIX/var/lib/postgresql" start -l "$HOME/paperclip/postgres.log" 2>/dev/null || true
-        sleep 3
-    fi
-    
-    # Create user/db if they don't exist
-    psql postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='paperclip'" 2>/dev/null | grep -q 1 || \
-        psql postgres -c "CREATE USER paperclip WITH PASSWORD 'paperclip';" 2>/dev/null || true
-    psql postgres -tAc "SELECT 1 FROM pg_database WHERE datname='paperclip'" 2>/dev/null | grep -q 1 || \
-        psql postgres -c "CREATE DATABASE paperclip OWNER paperclip;" 2>/dev/null || true
-    success_msg
-
-    # --- Environment setup ---
-    status_msg "Creating Paperclip environment"
-    SAFE_LIMIT=$(get_mem_limit)
-    mkdir -p "$HOME/paperclip/config"
-    
-    local auth_secret="paperclip-dev-secret-$(openssl rand -hex 8)"
-    # Preserve existing auth secret across repairs to avoid invalidating sessions
-    if [ -f "$HOME/paperclip/config/paperclip.env" ]; then
-        local existing_secret
-        existing_secret=$(grep '^BETTER_AUTH_SECRET=' "$HOME/paperclip/config/paperclip.env" 2>/dev/null | cut -d= -f2-)
-        [ -n "$existing_secret" ] && auth_secret="$existing_secret"
-    fi
-    
-    cat <<EOF > "$HOME/paperclip/config/paperclip.env"
-DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
-PORT=3100
-SERVE_UI=true
-BETTER_AUTH_SECRET=$auth_secret
-NODE_OPTIONS="--max-old-space-size=$SAFE_LIMIT"
-PAPERCLIP_HOME=$HOME/paperclip
-PAPERCLIP_INSTANCE_ID=default
-EOF
-
-    # --- Onboard + LAN configuration ---
-    # Paperclip's onboard command writes config.json. Without PAPERCLIP_HOME
-    # it writes to ~/.paperclip; we force it to our install directory.
-    status_msg "Configuring Paperclip (onboard + LAN bind)"
-    cd "$HOME/paperclip"
-    export PAPERCLIP_HOME="$HOME/paperclip"
-    export DATABASE_URL="postgres://paperclip:paperclip@localhost:5432/paperclip"
-
-    if pnpm paperclipai onboard --yes --bind lan >> "$LOG_FILE" 2>&1; then
-        # Patch generated config to use external PostgreSQL (embedded-postgres has no Android build)
-        local config_path="$HOME/paperclip/instances/default/config.json"
-        if [ -f "$config_path" ]; then
-            local device_ip
-            device_ip=$(ip addr show wlan0 2>/dev/null | grep 'inet ' | sed -n 's/.*inet \([0-9.]*\).*/\1/p' | head -n1)
-            [ -z "$device_ip" ] && device_ip=$(ip addr show eth0 2>/dev/null | grep 'inet ' | sed -n 's/.*inet \([0-9.]*\).*/\1/p' | head -n1)
-
-            # Build allowedHostnames array: add device IP if found, plus loopback/localhost
-            local hostnames_json='["127.0.0.1","localhost"]'
-            [ -n "$device_ip" ] && hostnames_json="[\"127.0.0.1\",\"localhost\",\"$device_ip\"]"
-
-            # Patch database mode and add connection string + LAN settings
-            jq --arg connStr "$DATABASE_URL" --argjson hosts "$hostnames_json" \
-                '.database.mode = "postgres" |
-                 .database.connectionString = $connStr |
-                 del(.database.embeddedPostgresDataDir) |
-                 del(.database.embeddedPostgresPort) |
-                 .server.bind = "lan" |
-                 .server.host = "0.0.0.0" |
-                 .server.allowedHostnames = $hosts' \
-                "$config_path" > tmp.json && mv tmp.json "$config_path"
-
-            # Also mirror the config to ~/.paperclip as fallback (server may resolve either path)
-            mkdir -p "$HOME/.paperclip/instances/default"
-            cp "$config_path" "$HOME/.paperclip/instances/default/config.json"
-
-            # Copy secrets/env so both homes are consistent
-            if [ -f "$HOME/paperclip/instances/default/.env" ]; then
-                cp "$HOME/paperclip/instances/default/.env" "$HOME/.paperclip/instances/default/.env" 2>/dev/null || true
-            fi
-            if [ -f "$HOME/paperclip/instances/default/secrets/master.key" ]; then
-                mkdir -p "$HOME/.paperclip/instances/default/secrets"
-                cp "$HOME/paperclip/instances/default/secrets/master.key" "$HOME/.paperclip/instances/default/secrets/master.key" 2>/dev/null || true
-            fi
-
-            success_msg
-            [ -n "$device_ip" ] && echo -e "${GREEN} LAN access enabled: http://$device_ip:3100${NC}"
-        else
-            warn_msg "onboard succeeded but config.json not found — LAN/DB settings may need manual configuration"
-        fi
-    else
-        warn_msg "onboard command failed (see log). You may need to run 'pnpm paperclipai onboard --bind lan' manually."
-    fi
-    success_msg
-
-    echo -e "\n${GREEN} Paperclip successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
-    echo -e "\n${YELLOW}  NEXT STEPS:${NC}"
-    echo -e "1. Start the server: ${BLUE}cd ~/paperclip && pnpm dev:server${NC}"
-    echo -e "2. Or start with PM2: ${BLUE}Option 8${NC} (Recommended for background)"
-    echo -e "3. Access locally: ${BLUE}http://localhost:3100${NC}"
-    echo -e "4. Access from iPad (same Wi-Fi): ${BLUE}http://<android-ip>:3100${NC}"
-    echo -e "\n${RED}🛑 IMPORTANT:${NC}"
-    if [ "${UI_SETUP_OK:-false}" != true ]; then
-        echo -e "   ${YELLOW} UI assets are MISSING. The API works, but the web dashboard is not available.${NC}"
-        echo -e "   To fix, upload 'ui-dist-v${VERSION}.tar.gz' to the GitHub release and re-run repair."
-    fi
-    echo -e "   Keep PostgreSQL running: ${BLUE}pg_ctl -D \$PREFIX/var/lib/postgresql start${NC}"
-    echo -e "   This is EXPERIMENTAL. Report issues upstream: github.com/paperclipai/paperclip"
-    wait_to_continue
-    cd - >/dev/null 2>&1 || true
+    bash "$SCRIPT"
+    return $?
 }
+
+# --- 9. SERVICE MANAGEMENT ---
 
 # --- 9. SERVICE MANAGEMENT ---
 
