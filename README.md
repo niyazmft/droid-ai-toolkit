@@ -264,7 +264,7 @@ pnpm paperclipai configure     # Enable LAN access
 pm2 start ecosystem.config.cjs # Start server
 ```
 
-> **Requirements:** ~2GB free RAM, 2GB+ storage, pnpm 9.15+, PostgreSQL running. UI is pre-built and downloaded as a tarball — never built on-device (Vite/esbuild requires ~4–6 GB transient RSS).
+> ⚠️ **Reinstalling Paperclip wipes `config.json` and secrets.** The installer deletes `~/paperclip` and reclones, which removes `instances/default/config.json` and `config/paperclip.env`. **Your database (workflows, users, history) survives** in PostgreSQL, but you must **re-run `pnpm paperclipai onboard`** after reinstall to regenerate config and secrets. Back up `~/paperclip/instances/default/` before reinstalling if you want to preserve settings. **Requirements:** ~2GB free RAM, 2GB+ storage, pnpm 9.15+, PostgreSQL running. UI is pre-built and downloaded as a tarball — never built on-device (Vite/esbuild requires ~4–6 GB transient RSS).
 
 ---
 

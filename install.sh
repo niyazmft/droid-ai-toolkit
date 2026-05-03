@@ -789,7 +789,7 @@ fi
 if [ -f ~/n8n_server/config/tunnel.conf ]; then
     source ~/n8n_server/config/tunnel.conf
     if ! pgrep -f "autossh.*-R 5678:localhost:5678" > /dev/null; then
-        echo "[$(date)] 🌐 Tunnel not found. Re-establishing..." >> "$LOG_FILE"
+        echo "[$(date)] [TUNNEL] Tunnel not found. Re-establishing..." >> "$LOG_FILE"
         tmux kill-session -t "$TUNNEL_SESSION" 2>/dev/null
         tmux new-session -d -s "$TUNNEL_SESSION" "$TUNNEL_CMD"
     fi
@@ -809,7 +809,7 @@ EOF
 
 setup_n8n_gcp() {
     confirm_action "Configure GCP Bridge" || return 0
-    echo -e "\n${BLUE}🌐 GCP BRIDGE (SSH TUNNEL) CONFIGURATION${NC}"
+    echo -e "\n${BLUE}[GCP] GCP BRIDGE (SSH TUNNEL) CONFIGURATION${NC}"
     
     read -p "Enter your GCP VM IP (e.g., 35.192.123.45): " GCP_IP
     read -p "Enter your GCP VM Username (e.g., n8n_admin): " GCP_USER
@@ -1149,18 +1149,18 @@ install_paperclip() {
 manage_service() {
     while true; do
         local choice
-        choice=$(show_whi_menu "Native Background Services" \
-            "openclaw-setup"   "OpenClaw: Enable/Setup Service" \
-            "openclaw-remove"  "OpenClaw: Disable/Remove Service" \
-            "n8n-setup"        "n8n: Enable/Setup Native Service" \
-            "n8n-remove"       "n8n: Disable/Remove Native Service" \
-            "back"             "Back") || return
+        choice=$(show_whi_menu "Native Background Services  |  Use ↑/↓ to navigate, Enter to select" \
+            "OPENCLAW-SETUP"   "[+]  OpenClaw   — Enable/Setup Service" \
+            "OPENCLAW-REMOVE"  "[-]  OpenClaw   — Disable/Remove Service" \
+            "N8N-SETUP"        "[+]  n8n        — Enable/Setup Native Service" \
+            "N8N-REMOVE"       "[-]  n8n        — Disable/Remove Native Service" \
+            "BACK"             "<--  BACK TO SERVICES MENU") || return
         case "$choice" in
-            openclaw-setup)  whiptail_confirm "Set up OpenClaw background service?" && { setup_service_files; whiptail_msg "OpenClaw service configured."; } ;;
-            openclaw-remove) whiptail_confirm "Remove OpenClaw background service?" && { remove_service_files; whiptail_msg "OpenClaw service removed."; } ;;
-            n8n-setup)       whiptail_confirm "Set up n8n background service?" && { setup_n8n_service_files; whiptail_msg "n8n service configured."; } ;;
-            n8n-remove)      whiptail_confirm "Remove n8n background service?" && { remove_n8n_service_files; whiptail_msg "n8n service removed."; } ;;
-            back|*)           return ;;
+            OPENCLAW-SETUP)  whiptail_confirm "Set up OpenClaw background service?" && { setup_service_files; whiptail_msg "OpenClaw service configured."; } ;;
+            OPENCLAW-REMOVE) whiptail_confirm "Remove OpenClaw background service?" && { remove_service_files; whiptail_msg "OpenClaw service removed."; } ;;
+            N8N-SETUP)       whiptail_confirm "Set up n8n background service?" && { setup_n8n_service_files; whiptail_msg "n8n service configured."; } ;;
+            N8N-REMOVE)      whiptail_confirm "Remove n8n background service?" && { remove_n8n_service_files; whiptail_msg "n8n service removed."; } ;;
+            BACK|*)           return ;;
         esac
     done
 }
@@ -1235,90 +1235,98 @@ manage_pm2() {
     fi
     while true; do
         local choice
-        choice=$(show_whi_menu "PM2 Process Management" \
-            "openclaw"  "Start OpenClaw" \
-            "n8n"       "Start n8n" \
-            "gemini"    "Start Gemini CLI" \
-            "hermes"    "Start Hermes" \
-            "ollama"    "Start Ollama" \
-            "pi"        "Start Pi" \
-            "paperclip" "Start Paperclip" \
-            "nanobot"   "Start Nanobot" \
-            "logs"      "View Logs (Live)" \
-            "status"    "View Status (Table)" \
-            "restart"   "Restart All" \
-            "stop"      "Stop/Kill PM2" \
-            "back"      "Back") || return
+        choice=$(show_whi_menu "PM2 Management  |  Use ↑/↓ and Enter" \
+            "OPENCLAW"  "[+]  Start OpenClaw" \
+            "N8N"       "[+]  Start n8n" \
+            "GEMINI"    "[+]  Start Gemini CLI" \
+            "HERMES"    "[+]  Start Hermes" \
+            "OLLAMA"    "[+]  Start Ollama" \
+            "PI"        "[+]  Start Pi" \
+            "PAPERCLIP" "[+]  Start Paperclip" \
+            "NANOBOT"   "[+]  Start Nanobot" \
+            "LOGS"      "[i]  View Logs (Live)" \
+            "STATUS"    "[i]  View Status (Table)" \
+            "RESTART"   "[~]  Restart All Apps" \
+            "STOP"      "[-]  Stop All Apps" \
+            "BACK"      "<--  BACK TO SERVICES MENU") || return
         case "$choice" in
-            openclaw)
-                if command -v openclaw >/dev/null 2>&1; then
-                    status_msg "Clearing ports and stale processes"
+            OPENCLAW)
+                local openclaw_bin=""
+                openclaw_bin=$(type -P openclaw 2>/dev/null || true)
+                if [ -n "$openclaw_bin" ]; then
+                    status_msg "Preparing OpenClaw environment"
+                    pm2 stop openclaw 2>/dev/null || true
                     pm2 delete openclaw 2>/dev/null || true
-                    pkill -9 -f openclaw 2>/dev/null || true
                     rm -f "$HOME/.openclaw/tmp/openclaw.lock"
                     success_msg
+                    
                     PNPM_NODE_PATH=$(pnpm_root_g || true)
                     SAFE_LIMIT=$(get_mem_limit)
-                    execute "sleep 5; NODE_OPTIONS='--dns-result-order=ipv4first --max-old-space-size=$SAFE_LIMIT' OPENCLAW_TMP='$HOME/.openclaw/tmp' NODE_PATH='$PREFIX/lib/node_modules${PNPM_NODE_PATH:+:$PNPM_NODE_PATH}' npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH' pm2 start \"openclaw gateway run\" --name openclaw --interpreter none && pm2 save" "Starting OpenClaw in PM2 (Clean Start)"
+                    
+                    execute "NODE_OPTIONS='--dns-result-order=ipv4first --max-old-space-size=$SAFE_LIMIT' OPENCLAW_TMP='$HOME/.openclaw/tmp' NODE_PATH='$PREFIX/lib/node_modules${PNPM_NODE_PATH:+:$PNPM_NODE_PATH}' npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH' pm2 start '$openclaw_bin' --name openclaw -- gateway run && pm2 save" "Starting OpenClaw in PM2"
                 else
                     error_msg "OpenClaw is not installed."
                 fi
                 ;;
-            n8n)
-                if command -v n8n >/dev/null 2>&1; then
+            N8N)
+                local n8n_bin=""
+                n8n_bin=$(type -P n8n 2>/dev/null || true)
+                if [ -n "$n8n_bin" ]; then
                     local n8n_env=""
                     [ -f "$HOME/n8n_server/config/n8n.env" ] && n8n_env="--env '$HOME/n8n_server/config/n8n.env'"
-                    execute "pkill -9 -f n8n 2>/dev/null || true; sleep 2; pm2 start n8n --name n8n $n8n_env --interpreter none && pm2 save" "Starting n8n in PM2"
+                    pm2 stop n8n 2>/dev/null || true
+                    execute "pm2 delete n8n 2>/dev/null || true; pm2 start '$n8n_bin' --name n8n $n8n_env && pm2 save" "Starting n8n in PM2"
                 else
                     error_msg "n8n is not installed."
                 fi
                 ;;
-            gemini)
+            GEMINI)
                 local gemini_path=""
                 gemini_path=$(type -P gemini 2>/dev/null || true)
                 if [ -n "$gemini_path" ]; then
-                    execute "pm2 delete gemini 2>/dev/null || true; pm2 start '$gemini_path' --name gemini --interpreter none && pm2 save" "Starting Gemini CLI in PM2"
+                    execute "pm2 delete gemini 2>/dev/null || true; pm2 start '$gemini_path' --name gemini && pm2 save" "Starting Gemini CLI in PM2"
                 else
                     error_msg "Gemini CLI is not installed."
                 fi
                 ;;
-            hermes)
+            HERMES)
                 local hermes_path=""
                 hermes_path=$(type -P hermes 2>/dev/null || true)
                 if [ -z "$hermes_path" ] && [ -f "$HOME/.hermes/bin/hermes" ]; then
                     hermes_path="$HOME/.hermes/bin/hermes"
                 fi
                 if [ -n "$hermes_path" ]; then
-                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start '$hermes_path' --name hermes --interpreter none && pm2 save" "Starting Hermes in PM2"
+                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start '$hermes_path' --name hermes && pm2 save" "Starting Hermes in PM2"
                 else
                     error_msg "Hermes is not installed."
                 fi
                 ;;
-            ollama)
-                if command -v ollama >/dev/null 2>&1; then
-                    execute "pm2 delete ollama 2>/dev/null || true; pm2 start ollama serve --name ollama --interpreter none && pm2 save" "Starting Ollama in PM2"
+            OLLAMA)
+                local ollama_bin=""
+                ollama_bin=$(type -P ollama 2>/dev/null || true)
+                if [ -n "$ollama_bin" ]; then
+                    execute "pm2 delete ollama 2>/dev/null || true; pm2 start '$ollama_bin' --name ollama --interpreter none -- serve && pm2 save" "Starting Ollama in PM2"
                 else
                     error_msg "Ollama is not installed."
                 fi
                 ;;
-            pi)
+            PI)
                 local pi_path=""
                 pi_path=$(type -P pi 2>/dev/null || true)
                 if [ -n "$pi_path" ]; then
-                    execute "pm2 delete pi 2>/dev/null || true; pm2 start '$pi_path' --name pi --interpreter none && pm2 save" "Starting Pi in PM2"
+                    execute "pm2 delete pi 2>/dev/null || true; pm2 start '$pi_path' --name pi && pm2 save" "Starting Pi in PM2"
                 else
                     error_msg "Pi is not installed."
                 fi
                 ;;
-            paperclip)
+            PAPERCLIP)
                 if [ -f "$HOME/paperclip/server/dist/index.js" ]; then
                     status_msg "Checking PostgreSQL before Paperclip start"
                     if ! timeout 3 psql -d postgres -c "SELECT 1" >/dev/null 2>&1; then
-                        # Stale ghost process detection (no postmaster.pid but port held)
                         STALE_PID=$(pgrep -f "postgres -D $PREFIX/var/lib/postgresql" 2> /dev/null || true)
                         if [ -n "$STALE_PID" ]; then
-                            warn_msg "Stale PostgreSQL process detected (PID $STALE_PID) — stopping it"
-                            kill -9 "$STALE_PID" 2> /dev/null || true
+                            warn_msg "Stale PostgreSQL process detected — stopping it cleanly"
+                            kill "$STALE_PID" 2>/dev/null || true 
                             sleep 1
                         fi
                         rm -f "$PREFIX/var/lib/postgresql/postmaster.pid" "$PREFIX/tmp/.s.PGSQL.5432"* 2>/dev/null || true
@@ -1326,25 +1334,25 @@ manage_pm2() {
                         sleep 2
                     fi
                     success_msg
-                    execute "pm2 delete paperclip 2>/dev/null || true; cd $HOME/paperclip; pm2 start ecosystem.config.cjs && pm2 save" "Starting Paperclip in PM2"
+                    execute "pm2 stop paperclip 2>/dev/null || true; pm2 delete paperclip 2>/dev/null || true; cd $HOME/paperclip; pm2 start ecosystem.config.cjs && pm2 save" "Starting Paperclip in PM2"
                 else
-                    error_msg "Paperclip is not installed. Select WORKFLOWS -> Paperclip from the main menu to install."
+                    error_msg "Paperclip is not installed."
                 fi
                 ;;
-            nanobot)
+            NANOBOT)
                 local nb_path=""
                 nb_path=$(type -P nanobot 2>/dev/null || true)
                 if [ -n "$nb_path" ]; then
-                    execute "pm2 delete nanobot 2>/dev/null || true; pm2 start '$nb_path' --name nanobot --interpreter none && pm2 save" "Starting Nanobot in PM2"
+                    execute "pm2 delete nanobot 2>/dev/null || true; pm2 start '$nb_path' --name nanobot && pm2 save" "Starting Nanobot in PM2"
                 else
                     error_msg "Nanobot is not installed."
                 fi
                 ;;
-            logs)    pm2 logs ;;
-            status)  pm2 status; ;;
-            restart) execute "pm2 stop all; pkill -9 -f 'openclaw|n8n|gemini|hermes|ollama|pi|paperclip|nanobot' 2>/dev/null || true; sleep 2; pm2 start all && pm2 save" "Restarting all processes safely" ;;
-            stop)    execute "pm2 kill" "Stopping PM2" ;;
-            back|*)  return ;;
+            LOGS)    pm2 logs ;;
+            STATUS)  pm2 status; ;;
+            RESTART) execute "pm2 restart all && pm2 save" "Restarting all running PM2 processes" ;;
+            STOP)    execute "pm2 stop all && pm2 save" "Stopping all PM2 apps (Daemon remains active)" ;;
+            BACK|*)  return ;;
         esac
     done
 }
@@ -1481,7 +1489,7 @@ uninstall_paperclip() {
     echo -e "${YELLOW}Cleaning up Paperclip...${NC}"
     # Stop processes
     execute "sv down '$PAPERCLIP_SERVICE_DIR' 2>/dev/null || true" "Stopping Paperclip service"
-    pkill -9 -f "paperclip" 2>/dev/null || true
+    pkill -9 -f "node.*server/dist/index.js" 2>/dev/null || true
     command -v pm2 >/dev/null 2>&1 && pm2 delete paperclip >> "$LOG_FILE" 2>&1 || true
     # Note: PostgreSQL is a shared system service — we do NOT stop it.
     # Other tools or user data may depend on it.
@@ -1569,6 +1577,7 @@ menu_item() {
 
 # show_menu <title> <items...>
 # items are passed as tag desc pairs, without dynamic status prefixing.
+# --nocancel removes ESC/Cancel button, --no-item hides "OK" button text
 show_whi_menu() {
     local title="$1"; shift
     local items=()
@@ -1576,14 +1585,21 @@ show_whi_menu() {
         items+=("$1" "$2")
         shift 2
     done
-    whiptail --title "Droid AI Toolkit v$VERSION" --menu "$title" $WHI_ROWS $WHI_COLS $(( ${#items[@]} / 2 )) \
+    whiptail --title "Droid AI Toolkit v$VERSION" --nocancel --ok-button "Enter" --menu "$title" $WHI_ROWS $WHI_COLS $(( ${#items[@]} / 2 )) \
         "${items[@]}" 3>&1 1>&2 2>&3
 }
 
 # yesno <text>
+# Changed buttons: Yes → Exit (exits script), No → Back (returns to previous menu)
+# When user clicks Exit, we exit the script. When they click Back, we return to menu.
 whiptail_confirm() {
     local text="$1"
-    whiptail --title "Confirm" --yesno "$text" 8 $WHI_COLS 3>&1 1>&2 2>&3
+    if ! whiptail --title "Confirm" --yes-button "Exit" --no-button "Back" --yesno "$text" 8 $WHI_COLS 3>&1 1>&2 2>&3; then
+        return 1  # User pressed Back (No) - return to menu
+    fi
+    # User pressed Exit (Yes) - exit the entire script
+    echo -e "${YELLOW}Exiting...${NC}"
+    exit 0
 }
 
 # msgbox <text>
@@ -1596,81 +1612,81 @@ whiptail_msg() {
 
 menu_agents() {
     while true; do
-        local oc_bull="○" hb_bull="○" nb_bull="○" ol_bull="○"
-        is_installed "openclaw" && oc_bull="●"
-        (type -P hermes >/dev/null 2>&1 || [ -f "$HOME/.hermes/bin/hermes" ]) && hb_bull="●"
-        command -v nanobot >/dev/null 2>&1 && nb_bull="●"
-        command -v ollama >/dev/null 2>&1 && ol_bull="●"
+        local oc_bull="[ ]" hb_bull="[ ]" nb_bull="[ ]" ol_bull="[ ]"
+        is_installed "openclaw" && oc_bull="[*]"
+        (type -P hermes >/dev/null 2>&1 || [ -f "$HOME/.hermes/bin/hermes" ]) && hb_bull="[*]"
+        command -v nanobot >/dev/null 2>&1 && nb_bull="[*]"
+        command -v ollama >/dev/null 2>&1 && ol_bull="[*]"
         local choice menu_exit=0
-        choice=$(show_whi_menu "AI Agents & LLMs" \
-            "openclaw"   "$oc_bull OpenClaw — AI Gateway (Node.js)" \
-            "hermes"     "$hb_bull Hermes — Coding Agent (Rust/Python)" \
-            "nanobot"    "$nb_bull Nanobot — Python AI Agent" \
-            "ollama"     "$ol_bull Ollama — Local LLM Runner (ARM)" \
-            "back"       "← Back to Main Menu") || menu_exit=$?
+        choice=$(show_whi_menu "AI Agents & LLMs  |  Use ↑/↓ to navigate, Enter to select" \
+            "OPENCLAW"   "$oc_bull  OpenClaw   — AI Gateway (Node.js)" \
+            "HERMES"     "$hb_bull  Hermes     — Coding Agent (Rust/Python)" \
+            "NANOBOT"    "$nb_bull  Nanobot    — Python AI Agent" \
+            "OLLAMA"     "$ol_bull  Ollama     — Local LLM Runner (ARM)" \
+            "BACK"       "<--  BACK TO MAIN MENU") || menu_exit=$?
         [ $menu_exit -ne 0 ] && return
         case "$choice" in
-            openclaw) install_openclaw ;;
-            hermes)   install_hermes ;;
-            nanobot)  install_nanobot ;;
-            ollama)   install_ollama ;;
-            back|*)    return ;;
+            OPENCLAW) install_openclaw ;;
+            HERMES)   install_hermes ;;
+            NANOBOT)  install_nanobot ;;
+            OLLAMA)   install_ollama ;;
+            BACK|*)    return ;;
         esac
     done
 }
 
 menu_workflows() {
     while true; do
-        local n8_bull="○" pc_bull="○"
-        is_installed "n8n" && n8_bull="●"
-        [ -f "$HOME/paperclip/server/dist/index.js" ] && pc_bull="●"
+        local n8_bull="[ ]" pc_bull="[ ]"
+        is_installed "n8n" && n8_bull="[*]"
+        [ -f "$HOME/paperclip/server/dist/index.js" ] && pc_bull="[*]"
         local choice
-        choice=$(show_whi_menu "Workflows & Automation" \
-            "n8n"       "$n8_bull n8n — Automation Server" \
-            "paperclip" "$pc_bull Paperclip — Workflow Server (⚠️ 2GB+ RAM)" \
-            "gcp"       "☁ GCP Bridge (SSH Tunnel for n8n)" \
-            "back"      "← Back to Main Menu") || :
+        choice=$(show_whi_menu "Workflows & Automation  |  Use ↑/↓ to navigate, Enter to select" \
+            "N8N"       "$n8_bull  n8n         — Automation Server" \
+            "PAPERCLIP" "$pc_bull  Paperclip  — Workflow Server ([!] 2GB+ RAM)" \
+            "GCP"       "[i]  GCP Bridge  — SSH Tunnel for n8n" \
+            "BACK"      "<--  BACK TO MAIN MENU") || :
         case "$choice" in
-            n8n)       install_n8n ;;
-            paperclip) install_paperclip ;;
-            gcp)       setup_n8n_gcp ;;
-            back|*)    return ;;
+            N8N)       install_n8n ;;
+            PAPERCLIP) install_paperclip ;;
+            GCP)       setup_n8n_gcp ;;
+            BACK|*)    return ;;
         esac
     done
 }
 
 menu_utilities() {
     while true; do
-        local gm_bull="○" pi_bull="○"
-        is_installed "gemini-cli" && gm_bull="●"
-        is_installed "@mariozechner/pi-coding-agent" && pi_bull="●"
+        local gm_bull="[ ]" pi_bull="[ ]"
+        is_installed "gemini-cli" && gm_bull="[*]"
+        is_installed "@mariozechner/pi-coding-agent" && pi_bull="[*]"
         local choice
-        choice=$(show_whi_menu "Developer Utilities" \
-            "gemini" "$gm_bull Gemini CLI (Google AI)" \
-            "pi"     "$pi_bull Pi — Coding Agent by Mario Zechner (Recommended)" \
-            "back"   "← Back to Main Menu") || return
+        choice=$(show_whi_menu "Developer Utilities  |  Use ↑/↓ to navigate, Enter to select" \
+            "GEMINI" "$gm_bull  Gemini CLI — Google AI (Beta)" \
+            "PI"     "$pi_bull  Pi         — Coding Agent by Mario Zechner" \
+            "BACK"   "<--  BACK TO MAIN MENU") || return
         case "$choice" in
-            gemini) install_gemini_cli ;;
-            pi)     install_pi ;;
-            back|*)  return ;;
+            GEMINI) install_gemini_cli ;;
+            PI)     install_pi ;;
+            BACK|*)  return ;;
         esac
     done
 }
 
 menu_services() {
     while true; do
-        local pm2_bull="○" sv_bull="○"
-        command -v pm2 >/dev/null 2>&1 && pm2_bull="●"
-        [ -d "$SERVICE_DIR" ] && sv_bull="●"
+        local pm2_bull="[ ]" sv_bull="[ ]"
+        command -v pm2 >/dev/null 2>&1 && pm2_bull="[*]"
+        [ -d "$SERVICE_DIR" ] && sv_bull="[*]"
         local choice
-        choice=$(show_whi_menu "System & Background Services" \
-            "pm2"    "$pm2_bull PM2 Process Management" \
-            "native" "$sv_bull Native Background Services" \
-            "back"   "← Back to Main Menu") || return
+        choice=$(show_whi_menu "System & Background Services  |  Use ↑/↓ to navigate, Enter to select" \
+            "PM2"    "$pm2_bull  PM2         — Process Manager (Recommended)" \
+            "NATIVE" "$sv_bull  Native      — Termux Services (sv)" \
+            "BACK"   "<--  BACK TO MAIN MENU") || return
         case "$choice" in
-            pm2)    manage_pm2 ;;
-            native) manage_service ;;
-            back|*) return ;;
+            PM2)    manage_pm2 ;;
+            NATIVE) manage_service ;;
+            BACK|*) return ;;
         esac
     done
 }
@@ -1678,37 +1694,37 @@ menu_services() {
 menu_uninstall() {
     while true; do
         local choice
-        choice=$(show_whi_menu "Uninstall Software" \
-            "openclaw" "Remove OpenClaw" \
-            "n8n"      "Remove n8n" \
-            "gemini"   "Remove Gemini CLI" \
-            "hermes"   "Remove Hermes" \
-            "ollama"   "Remove Ollama" \
-            "pi"       "Remove Pi" \
-            "paperclip" "Remove Paperclip" \
-            "nanobot"  "Remove Nanobot" \
-            "wipe"     "Wipe Software Stack (Reset)" \
-            "back"     "Back to Main Menu") || return
+        choice=$(show_whi_menu "Uninstall Software  |  Use ↑/↓ to navigate, Enter to select" \
+            "OPENCLAW"   "[-]  OpenClaw   — Remove AI Gateway" \
+            "N8N"        "[-]  n8n        — Remove Automation Server" \
+            "GEMINI"     "[-]  Gemini CLI — Remove Google AI Tool" \
+            "HERMES"     "[-]  Hermes     — Remove Coding Agent" \
+            "OLLAMA"     "[-]  Ollama     — Remove Local LLM Runner" \
+            "PI"         "[-]  Pi         — Remove Coding Agent" \
+            "PAPERCLIP"  "[-]  Paperclip  — Remove Workflow Server" \
+            "NANOBOT"    "[-]  Nanobot   — Remove Python AI Agent" \
+            "WIPE"       "[!]  WIPE ALL   — Reset Software Stack" \
+            "BACK"       "<--  BACK TO MAIN MENU") || return
         case "$choice" in
-            openclaw)
+            OPENCLAW)
                 whiptail_confirm "This will remove the OpenClaw global package and background services." && { uninstall_openclaw; whiptail_msg "OpenClaw removed."; } ;;
-            n8n)
+            N8N)
                 whiptail_confirm "This will remove n8n and its watchdog." && { uninstall_n8n; whiptail_msg "n8n removed."; } ;;
-            gemini)
+            GEMINI)
                 whiptail_confirm "This will remove the Gemini CLI global package." && { uninstall_gemini; whiptail_msg "Gemini CLI removed."; } ;;
-            hermes)
+            HERMES)
                 whiptail_confirm "This will remove the Hermes agent installation." && { uninstall_hermes; whiptail_msg "Hermes removed."; } ;;
-            ollama)
+            OLLAMA)
                 whiptail_confirm "This will remove Ollama and downloaded models." && { uninstall_ollama; whiptail_msg "Ollama removed."; } ;;
-            pi)
+            PI)
                 whiptail_confirm "This will remove the Pi Coding Agent." && { uninstall_pi; whiptail_msg "Pi removed."; } ;;
-            paperclip)
+            PAPERCLIP)
                 whiptail_confirm "Paperclip soft-uninstall preserves source code and database. For deep uninstall (wipe everything), use UNINSTALL -> Wipe Software Stack." && { uninstall_paperclip; whiptail_msg "Paperclip removed (soft)."; } ;;
-            nanobot)
+            NANOBOT)
                 whiptail_confirm "This will remove Nanobot AI." && { uninstall_nanobot; whiptail_msg "Nanobot AI removed."; } ;;
-            wipe)
+            WIPE)
                 whiptail_confirm "This will WIPE ALL applications and data. Core system packages are NOT removed." && { full_cleanup; whiptail_msg "All toolkit software removed."; } ;;
-            back|*) return ;;
+            BACK|*) return ;;
         esac
     done
 }
@@ -1717,18 +1733,19 @@ check_termux
 ensure_deps
 
 while true; do
-    choice=$(show_whi_menu "Main Menu" \
-        "AGENTS"     "🤖 AI Agents & LLMs" \
-        "WORKFLOWS"  "⚙️ Workflows & Automation" \
-        "UTILITIES"  "🛠 Developer Utilities" \
-        "SERVICES"   "🔧 System & Background Services" \
-        "UNINSTALL"  "🗑  Uninstall Software") || exit 0
+    choice=$(show_whi_menu "Main Menu  |  Use ↑/↓ to navigate, Enter to select" \
+        "AGENTS"     "AI Agents    — OpenClaw, Hermes, Nanobot, Ollama" \
+        "WORKFLOWS"  "Workflows    — n8n, Paperclip, GCP Bridge" \
+        "UTILITIES"  "Developer    — Gemini CLI, Pi" \
+        "SERVICES"   "Background   — PM2, Native Services" \
+        "UNINSTALL"  "Uninstall    — Remove Tools & Reset" \
+        "EXIT"       "[X]  EXIT TOOLKIT") || exit 0
     case "$choice" in
         AGENTS)     menu_agents ;;
         WORKFLOWS)  menu_workflows ;;
         UTILITIES)  menu_utilities ;;
         SERVICES)   menu_services ;;
         UNINSTALL)  menu_uninstall ;;
-        *)          exit 0 ;;
+        EXIT|*)     exit 0 ;;
     esac
 done

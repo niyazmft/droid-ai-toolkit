@@ -456,6 +456,10 @@ pass "Environment and secrets created"
 # Create PM2 ecosystem file so user can start with zero manual config
 # Use .cjs extension because paperclip/package.json has "type": "module",
 # which would force .js files to be parsed as ES modules (breaking module.exports).
+#
+# IMPORTANT: Use OLD format with interpreter: 'none' + combined script string.
+# The NEW format (script: 'server/dist/index.js' + node_args) fails on Termux
+# because PM2 auto-detects interpreter and misapplies node_args.
 cat > "$HOME/paperclip/ecosystem.config.cjs" <<EOF
 module.exports = {
   apps: [{
