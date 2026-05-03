@@ -145,6 +145,7 @@ ensure_jiter_armv8l() {
     py_tag="$(python3 -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}-cp{sys.version_info.major}{sys.version_info.minor}")' 2>/dev/null || true)"
     if [ -z "$py_tag" ]; then return 0; fi
 
+    # NOTE: Last verified 2025-05. Update this version when jiter releases new wheels.
     jiter_ver="0.14.0"
     whl="jiter-${jiter_ver}-${py_tag}-manylinux_2_17_armv7l.manylinux2014_armv7l.whl"
 
@@ -195,7 +196,7 @@ ensure_jiter_armv8l() {
 
     status_msg "Extracting jiter wheel to site-packages (bypassing pip tag check)"
     local extract_dir
-    extract_dir="$TMPDIR/jiter_extract_$$"
+    extract_dir="${TMPDIR:-$PREFIX/tmp}/jiter_extract_$$"
     mkdir -p "$extract_dir"
     if ! "$py_interp" -m zipfile -e "$tmp_wheel" "$extract_dir" >> "$LOG_FILE" 2>&1; then
         rm -rf "$extract_dir" "$tmp_wheel"
@@ -810,10 +811,40 @@ EOF
 setup_n8n_gcp() {
     confirm_action "Configure GCP Bridge" || return 0
     echo -e "\n${BLUE}[GCP] GCP BRIDGE (SSH TUNNEL) CONFIGURATION${NC}"
-    
-    read -p "Enter your GCP VM IP (e.g., 35.192.123.45): " GCP_IP
-    read -p "Enter your GCP VM Username (e.g., n8n_admin): " GCP_USER
-    
+
+    local valid_ip=0
+    while [ $valid_ip -eq 0 ]; do
+        read -p "Enter your GCP VM IP (e.g., 35.192.123.45): " GCP_IP
+        if [[ "$GCP_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            local oct1 oct2 oct3 oct4
+            IFS='.' read -r oct1 oct2 oct3 oct4 <<< "$GCP_IP"
+            # Strip leading zeros to prevent octal interpretation in bash
+            oct1=${oct1#0}; oct2=${oct2#0}; oct3=${oct3#0}; oct4=${oct4#0}
+            # Use pattern matching to avoid octal issues
+            if [[ "$oct1" =~ ^[0-9]+$ ]] && [[ "$oct2" =~ ^[0-9]+$ ]] && [[ "$oct3" =~ ^[0-9]+$ ]] && [[ "$oct4" =~ ^[0-9]+$ ]]; then
+                if [ "$oct1" -le 255 ] && [ "$oct2" -le 255 ] && [ "$oct3" -le 255 ] && [ "$oct4" -le 255 ]; then
+                    valid_ip=1
+                else
+                    error_msg "Invalid IP address octets"
+                fi
+            else
+                error_msg "Invalid IP address octets"
+            fi
+        else
+            error_msg "Invalid IP format (use x.x.x.x)"
+        fi
+    done
+
+    local valid_user=0
+    while [ $valid_user -eq 0 ]; do
+        read -p "Enter your GCP VM Username (e.g., n8n_admin): " GCP_USER
+        if [[ "$GCP_USER" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]]; then
+            valid_user=1
+        else
+            error_msg "Invalid username (alphanumeric, dash, underscore only)"
+        fi
+    done
+
     status_msg "Creating tunnel configuration"
     cat <<EOF > "$HOME/n8n_server/config/tunnel.conf"
 TUNNEL_CMD="autossh -M 0 -o 'ServerAliveInterval 30' -o 'ServerAliveCountMax 3' -o 'StrictHostKeyChecking=no' -i ~/.ssh/gcp_vm -N -R 5678:localhost:5678 ${GCP_USER}@${GCP_IP}"
@@ -829,6 +860,7 @@ EOF
 # --- 7. OLLAMA INSTALLATION ---
 
 install_ollama() {
+    local mode="install"
     if is_installed "ollama"; then
         echo -e "\n${YELLOW}Ollama is already installed.${NC}"
         echo "1) [R] Reinstall"
@@ -842,7 +874,6 @@ install_ollama() {
         esac
     else
         confirm_action "Install Ollama" || return 0
-        mode="install"
     fi
 
     echo -e "\n${BLUE}${mode^}ing Ollama...${NC}"
