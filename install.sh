@@ -671,11 +671,11 @@ install_gemini_cli() {
         fi
     fi
 
-    # Apply patches to prevent ENOENT errors during registry writes
+# Apply patches to prevent ENOENT errors during registry writes
     GEMINI_ROOT="$(get_global_node_path)"
-    if [ -d "$GEMINI_ROOT" ]; then
+    if command -v gemini >/dev/null 2>&1 || [ -d "$GEMINI_ROOT" ]; then
         status_msg "Patching Gemini CLI for Android"
-        find -L "$GEMINI_ROOT" -type f -name "projectRegistry.js" -exec sed -i 's|await fs.promises.rename(\([^,]*\), \([^)]*\))|await fs.promises.copyFile(\1, \2); await fs.promises.unlink(\1)|g' {} + 2>/dev/null || true
+        find -L "$GEMINI_ROOT" -type f -name 'projectRegistry.js' -exec sed -i 's|await fs.promises.rename(\([^,]*\), \([^)]*\))|await fs.promises.copyFile(\1, \2); await fs.promises.unlink(\1)|g' {} + 2>/dev/null || true
         success_msg
 
         echo -e "${GREEN}\nGemini CLI successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
@@ -1290,11 +1290,20 @@ manage_pm2() {
                     pm2 delete openclaw 2>/dev/null || true
                     rm -f "$HOME/.openclaw/tmp/openclaw.lock"
                     success_msg
-                    
+
                     PNPM_NODE_PATH=$(pnpm_root_g || true)
                     SAFE_LIMIT=$(get_mem_limit)
-                    
-                    execute "NODE_OPTIONS='--dns-result-order=ipv4first --max-old-space-size=$SAFE_LIMIT' OPENCLAW_TMP='$HOME/.openclaw/tmp' NODE_PATH='$PREFIX/lib/node_modules${PNPM_NODE_PATH:+:$PNPM_NODE_PATH}' npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH' pm2 start '$openclaw_bin' --name openclaw -- gateway run && pm2 save" "Starting OpenClaw in PM2"
+
+                    # If using pnpm shim, find actual binary to avoid PM2 interpreting bash as JS
+                    local openclaw_path="$openclaw_bin"
+                    if [[ "$openclaw_bin" == *".local/share/pnpm"* ]]; then
+                        local pnpm_root
+                        pnpm_root=$(pnpm_root_g 2>/dev/null)
+                        [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
+                        openclaw_path="$pnpm_root/openclaw/openclaw.mjs"
+                    fi
+
+                    execute "NODE_OPTIONS='--dns-result-order=ipv4first --max-old-space-size=$SAFE_LIMIT' OPENCLAW_TMP='$HOME/.openclaw/tmp' NODE_PATH='$PREFIX/lib/node_modules${PNPM_NODE_PATH:+:$PNPM_NODE_PATH}' npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH' pm2 start '$openclaw_path' --name openclaw --interpreter none -- gateway run && pm2 save" "Starting OpenClaw in PM2"
                 else
                     error_msg "OpenClaw is not installed."
                 fi
@@ -1306,7 +1315,16 @@ manage_pm2() {
                     local n8n_env=""
                     [ -f "$HOME/n8n_server/config/n8n.env" ] && n8n_env="--env '$HOME/n8n_server/config/n8n.env'"
                     pm2 stop n8n 2>/dev/null || true
-                    execute "pm2 delete n8n 2>/dev/null || true; pm2 start '$n8n_bin' --name n8n $n8n_env && pm2 save" "Starting n8n in PM2"
+
+                    local n8n_path="$n8n_bin"
+                    if [[ "$n8n_bin" == *".local/share/pnpm"* ]]; then
+                        local pnpm_root
+                        pnpm_root=$(pnpm_root_g 2>/dev/null)
+                        [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
+                        n8n_path="$pnpm_root/n8n/packages/cli/bin/n8n"
+                    fi
+
+                    execute "pm2 delete n8n 2>/dev/null || true; pm2 start '$n8n_path' --name n8n --interpreter none $n8n_env && pm2 save" "Starting n8n in PM2"
                 else
                     error_msg "n8n is not installed."
                 fi
@@ -1315,7 +1333,16 @@ manage_pm2() {
                 local gemini_path=""
                 gemini_path=$(type -P gemini 2>/dev/null || true)
                 if [ -n "$gemini_path" ]; then
-                    execute "pm2 delete gemini 2>/dev/null || true; pm2 start '$gemini_path' --name gemini && pm2 save" "Starting Gemini CLI in PM2"
+
+                    local gemini_bin="$gemini_path"
+                    if [[ "$gemini_path" == *".local/share/pnpm"* ]]; then
+                        local pnpm_root
+                        pnpm_root=$(pnpm_root_g 2>/dev/null)
+                        [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
+                        gemini_bin="$pnpm_root/@google/gemini-cli/bundle/gemini.js"
+                    fi
+
+                    execute "pm2 delete gemini 2>/dev/null || true; pm2 start '$gemini_bin' --name gemini --interpreter none && pm2 save" "Starting Gemini CLI in PM2"
                 else
                     error_msg "Gemini CLI is not installed."
                 fi
@@ -1345,7 +1372,16 @@ manage_pm2() {
                 local pi_path=""
                 pi_path=$(type -P pi 2>/dev/null || true)
                 if [ -n "$pi_path" ]; then
-                    execute "pm2 delete pi 2>/dev/null || true; pm2 start '$pi_path' --name pi && pm2 save" "Starting Pi in PM2"
+
+                    local pi_bin="$pi_path"
+                    if [[ "$pi_path" == *".local/share/pnpm"* ]]; then
+                        local pnpm_root
+                        pnpm_root=$(pnpm_root_g 2>/dev/null)
+                        [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
+                        pi_bin="$pnpm_root/@mariozechner/pi-coding-agent/dist/cli.js"
+                    fi
+
+                    execute "pm2 delete pi 2>/dev/null || true; pm2 start '$pi_bin' --name pi --interpreter none && pm2 save" "Starting Pi in PM2"
                 else
                     error_msg "Pi is not installed."
                 fi
