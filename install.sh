@@ -988,7 +988,7 @@ install_hermes() {
     local hermes_exit=0
     status_msg "Running Hermes upstream installer (this takes 15-45 minutes on Termux)"
     # Stream output to both terminal and log file
-    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash 2>&1 | tee "$hermes_tmp_log"
+    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash 2>&1 | tee "$hermes_tmp_log"
     hermes_exit=${PIPESTATUS[1]}
     cat "$hermes_tmp_log" >> "$LOG_FILE"
 
