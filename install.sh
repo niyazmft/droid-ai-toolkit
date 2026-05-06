@@ -946,6 +946,9 @@ install_hermes() {
     fi
 
     echo -e "\n${BLUE}${mode^}ing Hermes Agent...${NC}"
+    echo -e "${YELLOW}NOTE: Hermes requires compiling Rust dependencies which takes${NC}"
+    echo -e "${YELLOW}15-45 minutes on Termux. This is normal - please be patient.${NC}"
+    echo -e "${YELLOW}You will see compilation progress in the output below.${NC}"
 
     # Pre-install build dependencies that upstream often fails on
     smart_pkg_install python clang rust make pkg-config libffi openssl binutils
@@ -980,11 +983,13 @@ install_hermes() {
     export ANDROID_API_LEVEL=${android_api_level}
     export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=clang
 
-    # Run upstream installer without strict execute wrapper to allow graceful fallback
+    # Run upstream installer - stream output to terminal so user can see progress
     local hermes_tmp_log; hermes_tmp_log=$(mktemp)
     local hermes_exit=0
-    status_msg "Running Hermes upstream installer"
-    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash > "$hermes_tmp_log" 2>&1 || hermes_exit=$?
+    status_msg "Running Hermes upstream installer (this takes 15-45 minutes on Termux)"
+    # Stream output to both terminal and log file
+    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash 2>&1 | tee "$hermes_tmp_log"
+    hermes_exit=${PIPESTATUS[1]}
     cat "$hermes_tmp_log" >> "$LOG_FILE"
 
     # Upstream installer may return 0 even when pip fails inside it (maturin/jiter error).
@@ -1019,10 +1024,11 @@ install_hermes() {
             ensure_jiter_armv8l "$venv_path/bin/pip"
             # Prefer pre-built binary wheels where available to skip Rust compilation
             "$venv_path/bin/pip" install jiter pydantic-core --prefer-binary --no-build-isolation --quiet 2>>"$LOG_FILE" || true
-            # Retry with Termux-specific constraints
+            # Retry with Termux-specific constraints - stream output to see progress
             if [ -f "$HOME/.hermes/hermes-agent/constraints-termux.txt" ]; then
+                echo -e "${YELLOW}Compiling Hermes Python package (this takes 10-20 minutes)...${NC}"
                 "$venv_path/bin/pip" install -e "$HOME/.hermes/hermes-agent[termux]" \
-                    -c "$HOME/.hermes/hermes-agent/constraints-termux.txt" --no-build-isolation >> "$LOG_FILE" 2>&1 || true
+                    -c "$HOME/.hermes/hermes-agent/constraints-termux.txt" --no-build-isolation 2>&1 | tee -a "$LOG_FILE" || true
             fi
         fi
         success_msg
@@ -1354,7 +1360,7 @@ manage_pm2() {
                     hermes_path="$HOME/.hermes/bin/hermes"
                 fi
                 if [ -n "$hermes_path" ]; then
-                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start '$hermes_path' --name hermes && pm2 save" "Starting Hermes in PM2"
+                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start 'hermes gateway' --name hermes && pm2 save" "Starting Hermes in PM2"
                 else
                     error_msg "Hermes is not installed."
                 fi
@@ -1657,16 +1663,14 @@ show_whi_menu() {
 }
 
 # yesno <text>
-# Changed buttons: Yes → Exit (exits script), No → Back (returns to previous menu)
-# When user clicks Exit, we exit the script. When they click Back, we return to menu.
+# Standard confirmation dialog: Yes → proceed, No → cancel
+# Returns 0 if user confirms (Yes), 1 if user cancels (No)
 whiptail_confirm() {
     local text="$1"
-    if ! whiptail --title "Confirm" --yes-button "Exit" --no-button "Back" --yesno "$text" 8 $WHI_COLS 3>&1 1>&2 2>&3; then
-        return 1  # User pressed Back (No) - return to menu
+    if ! whiptail --title "Confirm" --yes-button "Yes" --no-button "No" --yesno "$text" 8 $WHI_COLS 3>&1 1>&2 2>&3; then
+        return 1  # User pressed No - return to menu
     fi
-    # User pressed Exit (Yes) - exit the entire script
-    echo -e "${YELLOW}Exiting...${NC}"
-    exit 0
+    return 0  # User pressed Yes - proceed
 }
 
 # msgbox <text>
