@@ -1658,7 +1658,7 @@ show_whi_menu() {
         items+=("$1" "$2")
         shift 2
     done
-    whiptail --title "Droid AI Toolkit v$VERSION" --nocancel --ok-button "Enter" --menu "$title" $WHI_ROWS $WHI_COLS $(( ${#items[@]} / 2 )) \
+    whiptail --title "Droid AI Toolkit v$VERSION" --nocancel --ok-button "Enter" --menu "$title" "$WHI_ROWS" "$WHI_COLS" $(( ${#items[@]} / 2 )) \
         "${items[@]}" 3>&1 1>&2 2>&3
 }
 
@@ -1667,7 +1667,7 @@ show_whi_menu() {
 # Returns 0 if user confirms (Yes), 1 if user cancels (No)
 whiptail_confirm() {
     local text="$1"
-    if ! whiptail --title "Confirm" --yes-button "Yes" --no-button "No" --yesno "$text" 8 $WHI_COLS 3>&1 1>&2 2>&3; then
+    if ! whiptail --title "Confirm" --yes-button "Yes" --no-button "No" --yesno "$text" 8 "$WHI_COLS" 3>&1 1>&2 2>&3; then
         return 1  # User pressed No - return to menu
     fi
     return 0  # User pressed Yes - proceed
@@ -1676,7 +1676,7 @@ whiptail_confirm() {
 # msgbox <text>
 whiptail_msg() {
     local text="$1"
-    whiptail --title "Droid AI Toolkit" --msgbox "$text" 12 $WHI_COLS 3>&1 1>&2 2>&3
+    whiptail --title "Droid AI Toolkit" --msgbox "$text" 12 "$WHI_COLS" 3>&1 1>&2 2>&3
 }
 
 # --- Sub-Menus ---

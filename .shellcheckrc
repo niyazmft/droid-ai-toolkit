@@ -1,0 +1,4 @@
+# Disable warnings that are intentional in our script
+# SC2155: local var=$(cmd) - common pattern in function declarations
+# SC2086: Whiptail numeric args - always integers
+disable=SC2059,SC2162,SC2034,SC1091,SC2046,SC1003,SC2155,SC2086

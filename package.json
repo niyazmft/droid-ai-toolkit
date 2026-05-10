@@ -8,7 +8,8 @@
     "lint:js": "eslint '**/*.{js,mjs}'",
     "lint:css": "stylelint '**/*.css' --allow-empty-input",
     "lint:md": "markdownlint '**/*.md'",
-    "lint:all": "pnpm run lint:js && pnpm run lint:css && pnpm run lint:md",
+    "lint:sh": "npx shellcheck *.sh",
+    "lint:all": "pnpm run lint:js && pnpm run lint:css && pnpm run lint:md && pnpm run lint:sh",
     "prepare": "husky"
   },
   "keywords": [],

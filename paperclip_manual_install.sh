@@ -9,7 +9,7 @@
 # set -e would kill the shell mid-install and return the user to the prompt
 # without any recovery path, making debugging impossible on-device.
 #
-cd "$HOME"
+cd "$HOME" || exit 1
 
 PASS=0
 FAIL=0
@@ -61,7 +61,7 @@ else
     exit 1
 fi
 
-cd "$HOME/paperclip"
+cd "$HOME/paperclip" || exit 1
 
 # --- Step 4: Pre-Install Patches ---
 info "Step 4/12: Applying pre-install patches..."
