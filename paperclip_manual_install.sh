@@ -230,6 +230,61 @@ else
 fi
 info "Versions: tsc=$TSC_V, tsx=$TSX_V, esbuild=$ESB_V"
 
+# --- Step 6.5: Register paperclipai globally (fast path with prebuilt CLI dist) ---
+info "Step 6.5/12: Registering paperclipai globally (prebuilt dist)..."
+
+CLI_DIST_URL="https://github.com/niyazmft/droid-ai-toolkit/releases/download/v1.11.0/cli-dist-v0.3.1.tar.gz"
+CLI_DIST_TMP="$HOME/.cli-dist.tar.gz"
+CLI_DIST_OK=false
+
+for attempt in 1 2 3; do
+    info "CLI dist download attempt $attempt/3..."
+    if curl -fL --max-time 60 --connect-timeout 30 "$CLI_DIST_URL" -o "$CLI_DIST_TMP" 2>/dev/null; then
+        CLI_DIST_OK=true
+        break
+    fi
+    info "Attempt $attempt failed, retrying in 3s..."
+    sleep 3
+done
+
+if [ "$CLI_DIST_OK" = true ]; then
+    mkdir -p "$HOME/paperclip/cli/dist"
+    if tar -xzf "$CLI_DIST_TMP" -C "$HOME/paperclip/cli/dist" 2>/dev/null; then
+        pass "CLI dist unpacked to cli/dist/"
+        rm -f "$CLI_DIST_TMP"
+    else
+        warn "CLI dist unpack failed, falling back to pnpm paperclipai"
+        CLI_DIST_OK=false
+    fi
+else
+    warn "Could not download CLI dist, falling back to pnpm paperclipai"
+fi
+
+mkdir -p "$PREFIX/bin"
+if [ "$CLI_DIST_OK" = true ]; then
+    cat > "$PREFIX/bin/paperclipai" <<'WRAPPER'
+#!/bin/bash
+cd "$HOME/paperclip" && node ./cli/dist/index.js "$@"
+WRAPPER
+    chmod +x "$PREFIX/bin/paperclipai"
+    if [ -f "$PREFIX/bin/paperclipai" ]; then
+        pass "paperclipai registered globally (\$PREFIX/bin/paperclipai) — instant startup"
+    else
+        fail "Failed to register paperclipai global wrapper"
+    fi
+else
+    cat > "$PREFIX/bin/paperclipai" <<'WRAPPER'
+#!/bin/bash
+cd "$HOME/paperclip" && pnpm paperclipai "$@"
+WRAPPER
+    chmod +x "$PREFIX/bin/paperclipai"
+    if [ -f "$PREFIX/bin/paperclipai" ]; then
+        pass "paperclipai registered globally (\$PREFIX/bin/paperclipai) — pnpm fallback"
+    else
+        fail "Failed to register paperclipai global wrapper"
+    fi
+fi
+
 # --- Step 7: Download Prebuilt dist/ (PRIMARY: fast, ~2 min) ---
 info "Step 7/12: Downloading prebuilt dist/ tarball (PRIMARY path)..."
 
@@ -527,10 +582,27 @@ echo ""
 echo -e "\033[1;35mNEXT STEPS:\033[0m"
 echo ""
 echo -e "\033[1;34m1) ONBOARD\033[0m \033[0;33m(one-time setup):\033[0m"
-echo -e "   \033[0;37mcd ~/paperclip\033[0m"
-echo -e "   \033[0;37mexport PAPERCLIP_HOME=~/paperclip\033[0m"
-echo -e "   \033[0;37mexport DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip\033[0m"
-echo -e "   \033[0;37mpnpm paperclipai onboard\033[0m"
+echo -e "   \033[0;37mpaperclipai onboard\033[0m \033[0;33m← globally available from any directory${NC}"
+echo ""
+echo -e "\033[1;34m2) START SERVER\033[0m \033[0;33m(after onboarding):\033[0m"
+echo ""
+echo -e "   \033[0;33mManual (no PM2):\033[0m"
+echo -e "     \033[0;37mcd ~/paperclip \u0026\u0026 source config/paperclip.env \u0026\u0026 export PAPERCLIP_HOME=~/paperclip\033[0m"
+echo -e "     \033[0;37mnode --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js\033[0m"
+echo ""
+echo -e "   \033[0;32mWith PM2 (recommended):\033[0m"
+echo -e "     \033[0;37mpm2 start ~/paperclip/ecosystem.config.cjs\033[0m"
+echo -e "     \033[0;37mpm2 save\033[0m"
+echo ""
+echo -e "\033[1;34m3) LAN ACCESS (optional)\033[0m \033[0;33m(if IP changes):\033[0m"
+echo -e "     \033[0;37mpaperclipai configure\033[0m"
+echo -e "     \033[0;37m  → Server → Reachability: Private network\033[0m"
+echo -e "     \033[0;37m  → Allowed hostnames: 192.168.x.x (find your IP: ip addr show wlan0)\033[0m"
+echo ""
+echo -e "\033[1;33mTIPS:\033[0m"
+echo -e "   • The script defaults to loopback-only (127.0.0.1) for security."
+echo -e "   • Run 'configure' whenever your device gets a new IP (DHCP lease change)."
+echo -e "   • Or set a static IP in your router to avoid re-configuring."
 echo ""
 echo -e "\033[1;34m2) START SERVER\033[0m \033[0;33m(after onboarding):\033[0m"
 echo ""

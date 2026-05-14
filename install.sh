@@ -577,7 +577,7 @@ apply_patches() {
 
 install_pi() {
     local mode="full"
-    if is_installed "@mariozechner/pi-coding-agent"; then
+    if is_installed "@earendil-works/pi-coding-agent" || is_installed "@mariozechner/pi-coding-agent"; then
         echo -e "\n${YELLOW}Pi Coding Agent is already installed.${NC}"
         echo "1) [R] Repair / Reinstall"
         echo "2) [U] Update to Latest"
@@ -601,14 +601,7 @@ install_pi() {
         success_msg
     fi
 
-    PKG_MANAGER=$(select_package_manager "@mariozechner/pi-coding-agent")
-    [[ "$PKG_MANAGER" == "back" ]] && return 0
-
-    if [ "$PKG_MANAGER" == "npm" ]; then
-        execute "npm install -g @mariozechner/pi-coding-agent@latest" "Installing Pi Coding Agent via npm"
-    else
-        execute "pnpm add -g @mariozechner/pi-coding-agent@latest --force" "Installing Pi Coding Agent via pnpm"
-    fi
+    execute "npm uninstall -g @mariozechner/pi-coding-agent 2>/dev/null || true; npm install -g @earendil-works/pi-coding-agent@latest" "Installing Pi Coding Agent via npm"
 
     status_msg "Optimizing Pi environment context"
     mkdir -p "$HOME/.pi/agent"
@@ -1384,7 +1377,8 @@ manage_pm2() {
                         local pnpm_root
                         pnpm_root=$(pnpm_root_g 2>/dev/null)
                         [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
-                        pi_bin="$pnpm_root/@mariozechner/pi-coding-agent/dist/cli.js"
+                        pi_bin="$pnpm_root/@earendil-works/pi-coding-agent/dist/cli.js"
+                        [ ! -f "$pi_bin" ] && pi_bin="$pnpm_root/@mariozechner/pi-coding-agent/dist/cli.js"
                     fi
 
                     execute "pm2 delete pi 2>/dev/null || true; pm2 start '$pi_bin' --name pi --interpreter none && pm2 save" "Starting Pi in PM2"
@@ -1546,11 +1540,12 @@ uninstall_pi() {
     echo -e "${YELLOW}Cleaning up Pi Coding Agent...${NC}"
     pkill -9 -f "pi-coding-agent" 2>/dev/null || true
     command -v pm2 >/dev/null 2>&1 && pm2 delete pi >> "$LOG_FILE" 2>&1 || true
-    local pm=$(detect_package_manager "@mariozechner/pi-coding-agent")
+    local pm=$(detect_package_manager "@earendil-works/pi-coding-agent")
+    [ "$pm" == "none" ] && pm=$(detect_package_manager "@mariozechner/pi-coding-agent")
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm remove -g @mariozechner/pi-coding-agent" "Uninstalling Pi via pnpm"
+        execute "pnpm remove -g @earendil-works/pi-coding-agent @mariozechner/pi-coding-agent 2>/dev/null || true" "Uninstalling Pi via pnpm"
     else
-        execute "npm uninstall -g @mariozechner/pi-coding-agent" "Uninstalling Pi via npm"
+        execute "npm uninstall -g @earendil-works/pi-coding-agent @mariozechner/pi-coding-agent 2>/dev/null || true" "Uninstalling Pi via npm"
     fi
     set_config "pm_pi" "null"
     rm -rf "$HOME/.pi" 2>/dev/null || true
@@ -1730,7 +1725,7 @@ menu_utilities() {
     while true; do
         local gm_bull="[ ]" pi_bull="[ ]"
         is_installed "gemini-cli" && gm_bull="[*]"
-        is_installed "@mariozechner/pi-coding-agent" && pi_bull="[*]"
+        (is_installed "@earendil-works/pi-coding-agent" || is_installed "@mariozechner/pi-coding-agent") && pi_bull="[*]"
         local choice
         choice=$(show_whi_menu "Developer Utilities  |  Use ↑/↓ to navigate, Enter to select" \
             "GEMINI" "$gm_bull  Gemini CLI — Google AI (Beta)" \
