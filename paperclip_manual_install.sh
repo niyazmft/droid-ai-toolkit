@@ -309,9 +309,14 @@ if [ "$DIST_OK" == true ] && [ -f "$DIST_TMP" ]; then
         DIST_OK=false
     else
         info "Unpacking prebuilt dist/..."
-        tar -xzf "$DIST_TMP" -C ~/paperclip 2>/dev/null
-        rm -f "$DIST_TMP"
-        pass "Prebuilt dist/ unpacked — skipped all tsc builds"
+        if tar -xzf "$DIST_TMP" -C ~/paperclip 2>>"$LOG_FILE"; then
+            rm -f "$DIST_TMP"
+            pass "Prebuilt dist/ unpacked — skipped all tsc builds"
+        else
+            fail "Failed to unpack dist tarball"
+            rm -f "$DIST_TMP"
+            DIST_OK=false
+        fi
     fi
 fi
 
@@ -461,9 +466,7 @@ pass "Environment and secrets created"
 # Use .cjs extension because paperclip/package.json has "type": "module",
 # which would force .js files to be parsed as ES modules (breaking module.exports).
 #
-# IMPORTANT: Use OLD format with interpreter: 'none' + combined script string.
-# The NEW format (script: 'server/dist/index.js' + node_args) fails on Termux
-# because PM2 auto-detects interpreter and misapplies node_args.
+# Use standard PM2 format with interpreter: 'node'.
 cat > "$HOME/paperclip/ecosystem.config.cjs" <<EOF
 module.exports = {
   apps: [{

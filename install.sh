@@ -607,7 +607,6 @@ install_pi() {
     fi
 
     PKG_MANAGER=$(select_package_manager "pi-coding-agent")
-    [[ "$PKG_MANAGER" == "back" ]] && return 0
 
     if [ "$PKG_MANAGER" == "npm" ]; then
         execute "npm uninstall -g @mariozechner/pi-coding-agent 2>/dev/null || true; npm install -g @earendil-works/pi-coding-agent@latest" "Installing Pi Coding Agent via npm"
