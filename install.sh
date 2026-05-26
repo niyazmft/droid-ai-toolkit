@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # DROID AI TOOLKIT (Termux)
-# Version: 1.11.0
+# Version: 1.12.1
 # Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
 #          Hermes, Paperclip) on Android via Termux with kernel patches and path fixes.
 # ==============================================================================
@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.12.0"
+VERSION="1.12.1"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -38,6 +38,11 @@ TERMUX_BIN="$PREFIX/bin"
 # Force correct npm path and bypass platform checks for LanceDB (Android support)
 export npm_execpath="$TERMUX_BIN/npm"
 export npm_config_force=true
+export PNPM_HOME="$HOME/.local/share/pnpm"
+case ":$PATH:" in
+  *":$PNPM_HOME:"*) ;;
+  *) export PATH="$PNPM_HOME:$PATH" ;;
+esac
 
 # --- 2. HELPER FUNCTIONS ---
 
@@ -237,7 +242,7 @@ ensure_peer_deps() {
     
     status_msg "Checking peer dependencies"
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm add -g ${deps[*]} --prefer-offline || pnpm add -g ${deps[*]}" "Installing missing channel and UI dependencies"
+        execute "pnpm add -g ${deps[*]} --prefer-offline --ignore-scripts || pnpm add -g ${deps[*]} --ignore-scripts" "Installing missing channel and UI dependencies"
     else
         execute "npm install -g ${deps[*]} --silent" "Installing missing channel and UI dependencies"
     fi
@@ -479,7 +484,7 @@ install_openclaw() {
         if [ "$PKG_MANAGER" == "npm" ]; then
             execute "npm install -g openclaw@latest" "Installing OpenClaw via npm"
         else
-            execute "pnpm add -g openclaw@latest --force" "Installing OpenClaw via pnpm"
+            execute "pnpm add -g openclaw@latest --force --ignore-scripts" "Installing OpenClaw via pnpm"
         fi
     fi
 
@@ -601,7 +606,13 @@ install_pi() {
         success_msg
     fi
 
-    execute "npm uninstall -g @mariozechner/pi-coding-agent 2>/dev/null || true; npm install -g @earendil-works/pi-coding-agent@latest" "Installing Pi Coding Agent via npm"
+    PKG_MANAGER=$(select_package_manager "pi-coding-agent")
+
+    if [ "$PKG_MANAGER" == "npm" ]; then
+        execute "npm uninstall -g @mariozechner/pi-coding-agent 2>/dev/null || true; npm install -g @earendil-works/pi-coding-agent@latest" "Installing Pi Coding Agent via npm"
+    else
+        execute "pnpm remove -g @mariozechner/pi-coding-agent 2>/dev/null || true; pnpm add -g @earendil-works/pi-coding-agent@latest --force --ignore-scripts" "Installing Pi Coding Agent via pnpm"
+    fi
 
     status_msg "Optimizing Pi environment context"
     mkdir -p "$HOME/.pi/agent"
@@ -660,7 +671,7 @@ install_gemini_cli() {
         if [ "$PKG_MANAGER" == "npm" ]; then
             execute "npm install -g @google/gemini-cli@latest" "Installing Gemini CLI via npm"
         else
-            execute "pnpm add -g @google/gemini-cli@latest --force" "Installing Gemini CLI via pnpm"
+            execute "pnpm add -g @google/gemini-cli@latest --force --ignore-scripts" "Installing Gemini CLI via pnpm"
         fi
     fi
 
@@ -734,7 +745,7 @@ install_n8n() {
         if [ "$PKG_MANAGER" == "npm" ]; then
             execute "npm install -g n8n@latest" "Installing n8n globally via npm"
         else
-            execute "pnpm add -g n8n@latest --force" "Installing n8n globally via pnpm"
+            execute "pnpm add -g n8n@latest --force --ignore-scripts" "Installing n8n globally via pnpm"
         fi
     fi
 

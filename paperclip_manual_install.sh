@@ -191,7 +191,7 @@ fi
 # tsx: try find first, then fallback to known versioned paths
 TSX_MJS=""
 if [ -z "$TSX_MJS" ]; then
-    TSX_MJS=$(find node_modules/.pnpm -maxdepth 3 -path '*/tsx/dist/cli.mjs' 2>/dev/null | head -n1 | sed 's|^node_modules/||')
+    TSX_MJS=$(find node_modules/.pnpm -maxdepth 5 -path '*/tsx/dist/cli.mjs' 2>/dev/null | head -n1 | sed 's|^node_modules/||')
 fi
 # Fallback: hardcoded known paths from install notes
 if [ -z "$TSX_MJS" ] && [ -f node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/cli.mjs ]; then
@@ -309,66 +309,20 @@ if [ "$DIST_OK" == true ] && [ -f "$DIST_TMP" ]; then
         DIST_OK=false
     else
         info "Unpacking prebuilt dist/..."
-        tar -xzf "$DIST_TMP" -C ~/paperclip --strip-components=0 2>/dev/null
-        rm -f "$DIST_TMP"
-        pass "Prebuilt dist/ unpacked — skipped all tsc builds"
+        if tar -xzf "$DIST_TMP" -C ~/paperclip 2>>"$LOG_FILE"; then
+            rm -f "$DIST_TMP"
+            pass "Prebuilt dist/ unpacked — skipped all tsc builds"
+        else
+            fail "Failed to unpack dist tarball"
+            rm -f "$DIST_TMP"
+            DIST_OK=false
+        fi
     fi
 fi
 
 if [ "$DIST_OK" != true ]; then
-    # FALLBACK: build locally (slow, ~65 min on 3-4GB devices)
-    warn "Dist tarball unavailable — falling back to local build (SLOW, expect 1+ hour)"
-    warn "   Primary path for fast install: download paperclip-dist-v0.3.1.tar.gz to releases/"
-
-    # Guard against pnpm resolving to bare node (prevents REPL hang)
-    PNPM_BIN_PATH=$(command -v pnpm 2>/dev/null || echo "")
-    if [ -z "$PNPM_BIN_PATH" ] || [ "$PNPM_BIN_PATH" = "node" ] || [ "$PNPM_BIN_PATH" = "$PREFIX/bin/node" ]; then
-        fail "pnpm resolves to node REPL — fixing PATH..."
-        export PATH="$PREFIX/bin:$PATH"
-    fi
-
-    if pnpm --filter @paperclipai/plugin-sdk build > build_plugin_sdk.log 2>&1; then
-        pass "plugin-sdk build OK"
-    else
-        fail "plugin-sdk build FAILED (see build_plugin_sdk.log)"
-        # Check for REPL symptom
-        if grep -q "Welcome to Node.js" build_plugin_sdk.log 2>/dev/null; then
-            fail "   SYMPTOM: pnpm resolved to Node.js REPL — this is a PATH bug"
-            fail "   FIX: re-run script, or manually build with absolute pnpm path"
-        fi
-        exit 1
-    fi
-
-    if pnpm --filter @paperclipai/db build > build_db.log 2>&1; then
-        pass "db build OK"
-    else
-        fail "db build FAILED (see build_db.log)"
-        if grep -q "Welcome to Node.js" build_db.log 2>/dev/null; then
-            fail "   SYMPTOM: pnpm resolved to Node.js REPL — this is a PATH bug"
-            fail "   FIX: re-run script, or manually build with absolute pnpm path"
-        fi
-        exit 1
-    fi
-
-    # Patch server tsconfig for Termux
-    jq '.compilerOptions.noImplicitAny = false | .compilerOptions.noEmitOnError = false | .compilerOptions.skipLibCheck = true' server/tsconfig.json > tmp.json && mv tmp.json server/tsconfig.json
-    jq '.scripts.build |= sub("tsc &&"; "tsc; ")' server/package.json > tmp.json && mv tmp.json server/package.json
-
-    if pnpm --filter @paperclipai/server build > build_server.log 2>&1; then
-        pass "server build OK"
-    else
-        fail "server build FAILED (see build_server.log)"
-        if grep -q "Welcome to Node.js" build_server.log 2>/dev/null; then
-            fail "   SYMPTOM: pnpm resolved to Node.js REPL — this is a PATH bug"
-            fail "   FIX: re-run script, or manually build with absolute pnpm path"
-        fi
-        exit 1
-    fi
-
-    if [ ! -f server/dist/index.js ]; then
-        fail "server/dist/index.js MISSING after build"
-        exit 1
-    fi
+    fail "Could not download prebuilt dist tarball. Cannot proceed."
+    exit 1
 fi
 
 # --- Step 8: UI Tarball ---
@@ -512,16 +466,14 @@ pass "Environment and secrets created"
 # Use .cjs extension because paperclip/package.json has "type": "module",
 # which would force .js files to be parsed as ES modules (breaking module.exports).
 #
-# IMPORTANT: Use OLD format with interpreter: 'none' + combined script string.
-# The NEW format (script: 'server/dist/index.js' + node_args) fails on Termux
-# because PM2 auto-detects interpreter and misapplies node_args.
+# Use standard PM2 format with interpreter: 'node'.
 cat > "$HOME/paperclip/ecosystem.config.cjs" <<EOF
 module.exports = {
   apps: [{
     name: 'paperclip',
-    script: 'node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js',
+    script: 'server/dist/index.js',
+    interpreter: 'node',
     cwd: '${HOME}/paperclip',
-    interpreter: 'none',
     env: {
       PAPERCLIP_HOME: '${HOME}/paperclip',
       DATABASE_URL: 'postgres://paperclip:paperclip@localhost:5432/paperclip',
