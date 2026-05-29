@@ -10,6 +10,7 @@ openclaw.json
 node_modules/
 *.log
 npm-debug.log*
+.antigravitycli/
 
 # Temp files
 *.tmp
