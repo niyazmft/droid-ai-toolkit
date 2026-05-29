@@ -436,8 +436,8 @@ install_openclaw() {
 
     if is_installed "openclaw"; then
         echo -e "\n${YELLOW}OpenClaw is already installed.${NC}"
-        echo "1) [R] Repair Patches (Fast - 2s)"
-        echo "2) [U] Update to Latest (Full - 1m)"
+        echo "1) [R] Repair Patches (Fast)"
+        echo "2) [U] Update to Latest (Full)"
         echo "3) Back"
         read -p "$(printf "${BLUE}>>${NC} Select Option [1-3]: ")" REPAIR_CHOICE
         case $REPAIR_CHOICE in
@@ -510,7 +510,7 @@ install_openclaw() {
             .plugins.entries.telegram = {"enabled": true, "path": "builtin:telegram", "description": "Telegram channel"} |
             .plugins.entries.ollama = {"enabled": true, "path": "builtin:ollama", "description": "Ollama plugin"} |
             .plugins.entries["memory-core"] = {"enabled": true, "path": "builtin:memory", "description": "Memory plugin"} |
-            del(.plugins.entries.kimi-coding, .plugins.entries.speech-core, .plugins.entries["image-generation-core"], .plugins.entries["video-generation-core"], .plugins.entries["media-understanding-core"]) |
+            del(.plugins.entries["kimi-coding"], .plugins.entries["speech-core"], .plugins.entries["image-generation-core"], .plugins.entries["video-generation-core"], .plugins.entries["media-understanding-core"]) |
             .plugins.entries = (if (.plugins.entries | type) == "object" then (.plugins.entries) else {} end) |
             .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= if (.enabled? | type) == "boolean" then . else . + {"enabled": false} end)) |
             .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= . + {"enabled": false})) |
@@ -583,6 +583,7 @@ apply_patches() {
 
         # Repair workspace symlinks (pnpm v9 may not create them on Android)
         if [ -d "$HOME/paperclip/node_modules/.pnpm" ]; then
+            find -L "$HOME/paperclip/node_modules/.bin" -type l -delete 2>/dev/null || true
             mkdir -p "$HOME/paperclip/node_modules/@paperclipai"
             declare -A PC_PKG_MAP=(
                 ["db"]="packages/db"
@@ -631,6 +632,15 @@ module.exports.Database = Database;
 JSEOF
             cp "$SQLITE3_DIR/lib/sqlite3.js" "$SQLITE3_DIR/index.js"
             cp "$SQLITE3_DIR/lib/sqlite3.js" "$SQLITE3_DIR/build/node_sqlite3.node"
+        fi
+    fi
+
+    # 4. OpenClaw Hardlink Patch (EACCES on Android)
+    if [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ]; then
+        if [[ "$silent" != "silent" ]]; then
+            execute "find -L '$OPENCLAW_ROOT' -type f -name '*.js' -exec sed -i -E 's/promises\.link\(/promises.copyFile(/g; s/fs\.linkSync\(/fs.copyFileSync(/g; s/\bfs\.link\(/fs.copyFile(/g' {} + 2>/dev/null || true" "Patching OpenClaw native hardlinks"
+        else
+            find -L "$OPENCLAW_ROOT" -type f -name '*.js' -exec sed -i -E 's/promises\.link\(/promises.copyFile(/g; s/fs\.linkSync\(/fs.copyFileSync(/g; s/\bfs\.link\(/fs.copyFile(/g' {} + 2>/dev/null || true
         fi
     fi
 }
@@ -692,7 +702,8 @@ EOF
     if command -v pi >/dev/null 2>&1; then
         echo -e "\n${GREEN}Pi Coding Agent successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
         health_check "Pi Coding Agent" "command -v pi" || true
-        echo -e "Run:  ${BLUE}pi --help${NC}"
+        echo -e "\n${YELLOW}NEXT STEPS:${NC}"
+        echo -e "1. Run interactively: ${BLUE}pi --help${NC}"
     else
         error_msg "Installation finished but 'pi' command not found in PATH."
     fi
@@ -741,7 +752,8 @@ install_gemini_cli() {
 
         echo -e "${GREEN}\nGemini CLI successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
         health_check "Gemini CLI" "command -v gemini" || true
-        echo -e "You can now run: ${BLUE}gemini --help${NC}"
+        echo -e "\n${YELLOW}NEXT STEPS:${NC}"
+        echo -e "1. Run interactively: ${BLUE}gemini --help${NC}"
     else
         error_msg "Installation finished but 'gemini' command not found in PATH."
     fi
@@ -944,9 +956,11 @@ install_ollama() {
     if command -v ollama >/dev/null 2>&1; then
         echo -e "\n${GREEN}Ollama successfully installed!${NC}"
         health_check "Ollama" "command -v ollama" || true
-        echo -e "Start the server: ${BLUE}ollama serve${NC}"
-        echo -e "Pull a model:      ${BLUE}ollama pull llama3${NC}"
-        echo -e "Run a model:       ${BLUE}ollama run llama3${NC}"
+        echo -e "\n${YELLOW}NEXT STEPS:${NC}"
+        echo -e "1. Start server: ${BLUE}ollama serve${NC}"
+        echo -e "   Or start background service via ${BLUE}SERVICES${NC} -> ${BLUE}PM2${NC} menu."
+        echo -e "2. Pull a model: ${BLUE}ollama pull llama3${NC}"
+        echo -e "3. Run a model:  ${BLUE}ollama run llama3${NC}"
     else
         error_msg "Ollama installation failed."
     fi
@@ -1008,7 +1022,7 @@ install_hermes() {
 
     echo -e "\n${BLUE}${mode^}ing Hermes Agent...${NC}"
     echo -e "${YELLOW}NOTE: Hermes requires compiling Rust dependencies which takes${NC}"
-    echo -e "${YELLOW}15-45 minutes on Termux. This is normal - please be patient.${NC}"
+    echo -e "${YELLOW}a significant amount of time. This is normal - please be patient.${NC}"
     echo -e "${YELLOW}You will see compilation progress in the output below.${NC}"
 
     # Pre-install build dependencies that upstream often fails on
@@ -1047,7 +1061,7 @@ install_hermes() {
     # Run upstream installer - stream output to terminal so user can see progress
     local hermes_tmp_log; hermes_tmp_log=$(mktemp)
     local hermes_exit=0
-    status_msg "Running Hermes upstream installer (this takes 15-45 minutes on Termux)"
+    status_msg "Running Hermes upstream installer (this will take a while)"
     # Stream output to both terminal and log file
     curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash 2>&1 | tee "$hermes_tmp_log"
     hermes_exit=${PIPESTATUS[1]}
@@ -1087,7 +1101,7 @@ install_hermes() {
             "$venv_path/bin/pip" install jiter pydantic-core --prefer-binary --no-build-isolation --quiet 2>>"$LOG_FILE" || true
             # Retry with Termux-specific constraints - stream output to see progress
             if [ -f "$HOME/.hermes/hermes-agent/constraints-termux.txt" ]; then
-                echo -e "${YELLOW}Compiling Hermes Python package (this takes 10-20 minutes)...${NC}"
+                echo -e "${YELLOW}Compiling Hermes Python package (this will take a while)...${NC}"
                 "$venv_path/bin/pip" install -e "$HOME/.hermes/hermes-agent[termux]" \
                     -c "$HOME/.hermes/hermes-agent/constraints-termux.txt" --no-build-isolation 2>&1 | tee -a "$LOG_FILE" || true
             fi
@@ -1186,7 +1200,9 @@ install_nanobot() {
     if command -v nanobot >/dev/null 2>&1; then
         echo -e "\n${GREEN}Nanobot AI successfully ${mode}ed!${NC}"
         health_check "Nanobot" "command -v nanobot" || true
-        echo -e "Run: ${BLUE}nanobot --help${NC}"
+        echo -e "\n${YELLOW}NEXT STEPS:${NC}"
+        echo -e "1. Run interactively: ${BLUE}nanobot --help${NC}"
+        echo -e "2. Or start background service via ${BLUE}SERVICES${NC} -> ${BLUE}PM2${NC} menu."
     else
         echo -e "\n${YELLOW}Nanobot AI installation may be incomplete.${NC}"
     fi
@@ -1336,10 +1352,8 @@ manage_pm2() {
         choice=$(show_whi_menu "PM2 Management  |  Use ↑/↓ and Enter" \
             "OPENCLAW"  "[+]  Start OpenClaw" \
             "N8N"       "[+]  Start n8n" \
-            "GEMINI"    "[+]  Start Gemini CLI" \
             "HERMES"    "[+]  Start Hermes" \
             "OLLAMA"    "[+]  Start Ollama" \
-            "PI"        "[+]  Start Pi" \
             "PAPERCLIP" "[+]  Start Paperclip" \
             "NANOBOT"   "[+]  Start Nanobot" \
             "LOGS"      "[i]  View Logs (Live)" \
@@ -1396,24 +1410,6 @@ manage_pm2() {
                     error_msg "n8n is not installed."
                 fi
                 ;;
-            GEMINI)
-                local gemini_path=""
-                gemini_path=$(type -P gemini 2>/dev/null || true)
-                if [ -n "$gemini_path" ]; then
-
-                    local gemini_bin="$gemini_path"
-                    if [[ "$gemini_path" == *".local/share/pnpm"* ]]; then
-                        local pnpm_root
-                        pnpm_root=$(pnpm_root_g 2>/dev/null)
-                        [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
-                        gemini_bin="$pnpm_root/@google/gemini-cli/bundle/gemini.js"
-                    fi
-
-                    execute "pm2 delete gemini 2>/dev/null || true; pm2 start '$gemini_bin' --name gemini --interpreter none && pm2 save" "Starting Gemini CLI in PM2"
-                else
-                    error_msg "Gemini CLI is not installed."
-                fi
-                ;;
             HERMES)
                 local hermes_path=""
                 hermes_path=$(type -P hermes 2>/dev/null || true)
@@ -1433,25 +1429,6 @@ manage_pm2() {
                     execute "pm2 delete ollama 2>/dev/null || true; pm2 start '$ollama_bin' --name ollama --interpreter none -- serve && pm2 save" "Starting Ollama in PM2"
                 else
                     error_msg "Ollama is not installed."
-                fi
-                ;;
-            PI)
-                local pi_path=""
-                pi_path=$(type -P pi 2>/dev/null || true)
-                if [ -n "$pi_path" ]; then
-
-                    local pi_bin="$pi_path"
-                    if [[ "$pi_path" == *".local/share/pnpm"* ]]; then
-                        local pnpm_root
-                        pnpm_root=$(pnpm_root_g 2>/dev/null)
-                        [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
-                        pi_bin="$pnpm_root/@earendil-works/pi-coding-agent/dist/cli.js"
-                        [ ! -f "$pi_bin" ] && pi_bin="$pnpm_root/@mariozechner/pi-coding-agent/dist/cli.js"
-                    fi
-
-                    execute "pm2 delete pi 2>/dev/null || true; pm2 start '$pi_bin' --name pi --interpreter none && pm2 save" "Starting Pi in PM2"
-                else
-                    error_msg "Pi is not installed."
                 fi
                 ;;
             PAPERCLIP)
@@ -1753,24 +1730,21 @@ whiptail_msg() {
 
 menu_agents() {
     while true; do
-        local oc_bull="[ ]" hb_bull="[ ]" nb_bull="[ ]" ol_bull="[ ]"
+        local oc_bull="[ ]" hb_bull="[ ]" nb_bull="[ ]"
         is_installed "openclaw" && oc_bull="[*]"
         (type -P hermes >/dev/null 2>&1 || [ -f "$HOME/.hermes/bin/hermes" ]) && hb_bull="[*]"
         command -v nanobot >/dev/null 2>&1 && nb_bull="[*]"
-        command -v ollama >/dev/null 2>&1 && ol_bull="[*]"
         local choice menu_exit=0
         choice=$(show_whi_menu "AI Agents & LLMs  |  Use ↑/↓ to navigate, Enter to select" \
-            "OPENCLAW"   "$oc_bull  OpenClaw   — AI Gateway (Node.js)" \
-            "HERMES"     "$hb_bull  Hermes     — Coding Agent (Rust/Python)" \
-            "NANOBOT"    "$nb_bull  Nanobot    — Python AI Agent" \
-            "OLLAMA"     "$ol_bull  Ollama     — Local LLM Runner (ARM)" \
+            "OPENCLAW"   "$oc_bull  OpenClaw   — Multi-Channel Agent Gateway" \
+            "HERMES"     "$hb_bull  Hermes     — Autonomous Agent (Nous Research)" \
+            "NANOBOT"    "$nb_bull  Nanobot    — Lightweight Python Agent (HKUDS)" \
             "BACK"       "<--  BACK TO MAIN MENU") || menu_exit=$?
         [ $menu_exit -ne 0 ] && return
         case "$choice" in
             OPENCLAW) install_openclaw ;;
             HERMES)   install_hermes ;;
             NANOBOT)  install_nanobot ;;
-            OLLAMA)   install_ollama ;;
             BACK|*)    return ;;
         esac
     done
@@ -1783,14 +1757,12 @@ menu_workflows() {
         [ -f "$HOME/paperclip/server/dist/index.js" ] && pc_bull="[*]"
         local choice
         choice=$(show_whi_menu "Workflows & Automation  |  Use ↑/↓ to navigate, Enter to select" \
-            "N8N"       "$n8_bull  n8n         — Automation Server" \
-            "PAPERCLIP" "$pc_bull  Paperclip  — Workflow Server ([!] 2GB+ RAM)" \
-            "GCP"       "[i]  GCP Bridge  — SSH Tunnel for n8n" \
+            "N8N"       "$n8_bull  n8n         — Automation & Integration Server" \
+            "PAPERCLIP" "$pc_bull  Paperclip   — Multi-Agent Virtual Company ([!] 2GB+ RAM)" \
             "BACK"      "<--  BACK TO MAIN MENU") || :
         case "$choice" in
             N8N)       install_n8n ;;
             PAPERCLIP) install_paperclip ;;
-            GCP)       setup_n8n_gcp ;;
             BACK|*)    return ;;
         esac
     done
@@ -1798,17 +1770,22 @@ menu_workflows() {
 
 menu_utilities() {
     while true; do
-        local gm_bull="[ ]" pi_bull="[ ]"
+        local gm_bull="[ ]" pi_bull="[ ]" ol_bull="[ ]"
         is_installed "gemini-cli" && gm_bull="[*]"
         (is_installed "@earendil-works/pi-coding-agent" || is_installed "@mariozechner/pi-coding-agent") && pi_bull="[*]"
+        command -v ollama >/dev/null 2>&1 && ol_bull="[*]"
         local choice
         choice=$(show_whi_menu "Developer Utilities  |  Use ↑/↓ to navigate, Enter to select" \
-            "GEMINI" "$gm_bull  Gemini CLI — Google AI (Beta)" \
-            "PI"     "$pi_bull  Pi         — Coding Agent by Mario Zechner" \
-            "BACK"   "<--  BACK TO MAIN MENU") || return
+            "GEMINI"   "$gm_bull  Gemini CLI — Google AI Developer Tool" \
+            "PI"       "$pi_bull  Pi         — Minimalist Coding Agent (M. Zechner)" \
+            "OLLAMA"   "$ol_bull  Ollama     — Local LLM Runner (ARM)" \
+            "GCP"      "[i]  GCP Bridge — SSH Tunnel for n8n" \
+            "BACK"     "<--  BACK TO MAIN MENU") || return
         case "$choice" in
-            GEMINI) install_gemini_cli ;;
-            PI)     install_pi ;;
+            GEMINI)   install_gemini_cli ;;
+            PI)       install_pi ;;
+            OLLAMA)   install_ollama ;;
+            GCP)      setup_n8n_gcp ;;
             BACK|*)  return ;;
         esac
     done
@@ -1875,9 +1852,9 @@ ensure_deps
 
 while true; do
     choice=$(show_whi_menu "Main Menu  |  Use ↑/↓ to navigate, Enter to select" \
-        "AGENTS"     "AI Agents    — OpenClaw, Hermes, Nanobot, Ollama" \
-        "WORKFLOWS"  "Workflows    — n8n, Paperclip, GCP Bridge" \
-        "UTILITIES"  "Developer    — Gemini CLI, Pi" \
+        "AGENTS"     "AI Agents    — OpenClaw, Hermes, Nanobot" \
+        "WORKFLOWS"  "Workflows    — n8n, Paperclip" \
+        "UTILITIES"  "Developer    — Gemini CLI, Pi, Ollama, GCP Bridge" \
         "SERVICES"   "Background   — PM2, Native Services" \
         "UNINSTALL"  "Uninstall    — Remove Tools & Reset" \
         "EXIT"       "[X]  EXIT TOOLKIT") || exit 0
