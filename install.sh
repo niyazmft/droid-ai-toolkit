@@ -436,8 +436,8 @@ install_openclaw() {
 
     if is_installed "openclaw"; then
         echo -e "\n${YELLOW}OpenClaw is already installed.${NC}"
-        echo "1) [R] Repair Patches (Fast - 2s)"
-        echo "2) [U] Update to Latest (Full - 1m)"
+        echo "1) [R] Repair Patches (Fast)"
+        echo "2) [U] Update to Latest (Full)"
         echo "3) Back"
         read -p "$(printf "${BLUE}>>${NC} Select Option [1-3]: ")" REPAIR_CHOICE
         case $REPAIR_CHOICE in
@@ -583,7 +583,7 @@ apply_patches() {
 
         # Repair workspace symlinks (pnpm v9 may not create them on Android)
         if [ -d "$HOME/paperclip/node_modules/.pnpm" ]; then
-            find -L "$HOME/paperclip/node_modules/.bin" -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+            find -L "$HOME/paperclip/node_modules/.bin" -type l -delete 2>/dev/null || true
             mkdir -p "$HOME/paperclip/node_modules/@paperclipai"
             declare -A PC_PKG_MAP=(
                 ["db"]="packages/db"
@@ -638,9 +638,9 @@ JSEOF
     # 4. OpenClaw Hardlink Patch (EACCES on Android)
     if [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ]; then
         if [[ "$silent" != "silent" ]]; then
-            execute "find -L '$OPENCLAW_ROOT' -type f -name '*.js' -exec sed -i -E 's/promises\.link\(/promises.rename(/g; s/fs\.linkSync\(/fs.renameSync(/g; s/\bfs\.link\(/fs.rename(/g' {} + 2>/dev/null || true" "Patching OpenClaw native hardlinks"
+            execute "find -L '$OPENCLAW_ROOT' -type f -name '*.js' -exec sed -i -E 's/promises\.link\(/promises.copyFile(/g; s/fs\.linkSync\(/fs.copyFileSync(/g; s/\bfs\.link\(/fs.copyFile(/g' {} + 2>/dev/null || true" "Patching OpenClaw native hardlinks"
         else
-            find -L "$OPENCLAW_ROOT" -type f -name '*.js' -exec sed -i -E 's/promises\.link\(/promises.rename(/g; s/fs\.linkSync\(/fs.renameSync(/g; s/\bfs\.link\(/fs.rename(/g' {} + 2>/dev/null || true
+            find -L "$OPENCLAW_ROOT" -type f -name '*.js' -exec sed -i -E 's/promises\.link\(/promises.copyFile(/g; s/fs\.linkSync\(/fs.copyFileSync(/g; s/\bfs\.link\(/fs.copyFile(/g' {} + 2>/dev/null || true
         fi
     fi
 }
@@ -1022,7 +1022,7 @@ install_hermes() {
 
     echo -e "\n${BLUE}${mode^}ing Hermes Agent...${NC}"
     echo -e "${YELLOW}NOTE: Hermes requires compiling Rust dependencies which takes${NC}"
-    echo -e "${YELLOW}15-45 minutes on Termux. This is normal - please be patient.${NC}"
+    echo -e "${YELLOW}a significant amount of time. This is normal - please be patient.${NC}"
     echo -e "${YELLOW}You will see compilation progress in the output below.${NC}"
 
     # Pre-install build dependencies that upstream often fails on
@@ -1061,7 +1061,7 @@ install_hermes() {
     # Run upstream installer - stream output to terminal so user can see progress
     local hermes_tmp_log; hermes_tmp_log=$(mktemp)
     local hermes_exit=0
-    status_msg "Running Hermes upstream installer (this takes 15-45 minutes on Termux)"
+    status_msg "Running Hermes upstream installer (this will take a while)"
     # Stream output to both terminal and log file
     curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash 2>&1 | tee "$hermes_tmp_log"
     hermes_exit=${PIPESTATUS[1]}
@@ -1101,7 +1101,7 @@ install_hermes() {
             "$venv_path/bin/pip" install jiter pydantic-core --prefer-binary --no-build-isolation --quiet 2>>"$LOG_FILE" || true
             # Retry with Termux-specific constraints - stream output to see progress
             if [ -f "$HOME/.hermes/hermes-agent/constraints-termux.txt" ]; then
-                echo -e "${YELLOW}Compiling Hermes Python package (this takes 10-20 minutes)...${NC}"
+                echo -e "${YELLOW}Compiling Hermes Python package (this will take a while)...${NC}"
                 "$venv_path/bin/pip" install -e "$HOME/.hermes/hermes-agent[termux]" \
                     -c "$HOME/.hermes/hermes-agent/constraints-termux.txt" --no-build-isolation 2>&1 | tee -a "$LOG_FILE" || true
             fi
