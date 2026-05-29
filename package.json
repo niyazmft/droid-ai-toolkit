@@ -18,13 +18,13 @@
   "packageManager": "pnpm@10.32.1",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.1.0",
-    "eslint-plugin-jsonc": "^3.1.2",
-    "globals": "^17.4.0",
+    "eslint": "^10.4.0",
+    "eslint-plugin-jsonc": "^3.2.0",
+    "globals": "^17.6.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
     "markdownlint-cli": "^0.48.0",
-    "stylelint": "^17.5.0",
+    "stylelint": "^17.12.0",
     "stylelint-config-standard": "^40.0.0"
   },
   "lint-staged": {

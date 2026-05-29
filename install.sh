@@ -572,9 +572,66 @@ apply_patches() {
         find -L "$GEMINI_ROOT" -type f -name "projectRegistry.js" -exec sed -i 's|await fs.promises.rename(\([^,]*\), \([^)]*\))|await fs.promises.copyFile(\1, \2); await fs.promises.unlink(\1)|g' {} + 2>/dev/null || true
     fi
 
-    # 3. Paperclip Path Patch (if installed)
-    if [ -f "$HOME/paperclip/server/dist/index.js" ] && [[ "$silent" != "silent" ]]; then
-        execute "sed -i 's|/tmp/|${HOME}/.tmp/|g; s|/usr/local/bin|${PREFIX}/bin|g' '${HOME}/paperclip/server/dist/index.js'" "Patching Paperclip paths"
+    # 3. Paperclip Repair (if installed)
+    if [ -f "$HOME/paperclip/server/dist/index.js" ]; then
+        # Path redirection: /tmp -> ~/.tmp, /usr/local/bin -> $PREFIX/bin
+        if [[ "$silent" != "silent" ]]; then
+            execute "sed -i 's|/tmp/|${HOME}/.tmp/|g; s|/usr/local/bin|${PREFIX}/bin|g' '${HOME}/paperclip/server/dist/index.js'" "Patching Paperclip paths"
+        else
+            sed -i 's|/tmp/|'"${HOME}"'/.tmp/|g; s|/usr/local/bin|'"${PREFIX}"'/bin|g' "$HOME/paperclip/server/dist/index.js" 2>/dev/null || true
+        fi
+
+        # Repair workspace symlinks (pnpm v9 may not create them on Android)
+        if [ -d "$HOME/paperclip/node_modules/.pnpm" ]; then
+            mkdir -p "$HOME/paperclip/node_modules/@paperclipai"
+            declare -A PC_PKG_MAP=(
+                ["db"]="packages/db"
+                ["shared"]="packages/shared"
+                ["adapter-utils"]="packages/adapter-utils"
+                ["mcp-server"]="packages/mcp-server"
+                ["skills-catalog"]="packages/skills-catalog"
+                ["plugin-sdk"]="packages/plugins/sdk"
+                ["adapter-acpx-local"]="packages/adapters/acpx-local"
+                ["adapter-claude-local"]="packages/adapters/claude-local"
+                ["adapter-codex-local"]="packages/adapters/codex-local"
+                ["adapter-cursor-cloud"]="packages/adapters/cursor-cloud"
+                ["adapter-cursor-local"]="packages/adapters/cursor-local"
+                ["adapter-gemini-local"]="packages/adapters/gemini-local"
+                ["adapter-grok-local"]="packages/adapters/grok-local"
+                ["adapter-openclaw-gateway"]="packages/adapters/openclaw-gateway"
+                ["adapter-opencode-local"]="packages/adapters/opencode-local"
+                ["adapter-pi-local"]="packages/adapters/pi-local"
+                ["create-paperclip-plugin"]="packages/plugins/create-paperclip-plugin"
+                ["plugin-fake-sandbox"]="packages/plugins/paperclip-plugin-fake-sandbox"
+                ["plugin-workspace-diff"]="packages/plugins/plugin-workspace-diff"
+            )
+            for name in "${!PC_PKG_MAP[@]}"; do
+                target="${PC_PKG_MAP[$name]}"
+                [ -d "$HOME/paperclip/$target" ] && ln -sf "../../$target" "$HOME/paperclip/node_modules/@paperclipai/$name" 2>/dev/null || true
+            done
+        fi
+
+        # Stub sqlite3 (native module can't compile on Android)
+        SQLITE3_DIR="$HOME/paperclip/node_modules/.pnpm/sqlite3@5.1.7/node_modules/sqlite3"
+        if [ -d "$SQLITE3_DIR" ] && [ ! -f "$SQLITE3_DIR/build/node_sqlite3.node" ]; then
+            mkdir -p "$SQLITE3_DIR/build" "$SQLITE3_DIR/lib"
+            cat > "$SQLITE3_DIR/package.json" << 'PKGEOF'
+{"name":"sqlite3","version":"5.1.7","main":"./lib/sqlite3.js","type":"commonjs"}
+PKGEOF
+            cat > "$SQLITE3_DIR/lib/sqlite3.js" << 'JSEOF'
+const Database = function() {};
+Database.prototype.run = function() { return this; };
+Database.prototype.get = function() { return this; };
+Database.prototype.all = function() { return []; };
+Database.prototype.close = function() {};
+Database.prototype.serialize = function(fn) { if (fn) fn(); };
+Database.prototype.parallelize = function(fn) { if (fn) fn(); };
+module.exports = Database;
+module.exports.Database = Database;
+JSEOF
+            cp "$SQLITE3_DIR/lib/sqlite3.js" "$SQLITE3_DIR/index.js"
+            cp "$SQLITE3_DIR/lib/sqlite3.js" "$SQLITE3_DIR/build/node_sqlite3.node"
+        fi
     fi
 }
 
@@ -1404,7 +1461,7 @@ manage_pm2() {
                         STALE_PID=$(pgrep -f "postgres -D $PREFIX/var/lib/postgresql" 2> /dev/null || true)
                         if [ -n "$STALE_PID" ]; then
                             warn_msg "Stale PostgreSQL process detected — stopping it cleanly"
-                            kill "$STALE_PID" 2>/dev/null || true 
+                            kill "$STALE_PID" 2>/dev/null || true
                             sleep 1
                         fi
                         rm -f "$PREFIX/var/lib/postgresql/postmaster.pid" "$PREFIX/tmp/.s.PGSQL.5432"* 2>/dev/null || true
@@ -1412,7 +1469,21 @@ manage_pm2() {
                         sleep 2
                     fi
                     success_msg
-                    execute "pm2 stop paperclip 2>/dev/null || true; pm2 delete paperclip 2>/dev/null || true; cd $HOME/paperclip; pm2 start ecosystem.config.cjs && pm2 save" "Starting Paperclip in PM2"
+                    # Kill any existing Paperclip process
+                    pkill -f "node.*server/dist/index.js" 2>/dev/null || true
+                    sleep 1
+                    # PM2 cannot start Paperclip (sqlite3 native addon hook issue on Android)
+                    # Use nohup directly instead
+                    cd "$HOME/paperclip/server" || { error_msg "Cannot cd to ~/paperclip/server"; exit 1; }
+                    DATABASE_URL="postgres://paperclip:paperclip@localhost:5432/paperclip" \
+                    nohup node --max-old-space-size=1024 dist/index.js > "$HOME/paperclip/paperclip.log" 2>&1 &
+                    PC_PID=$!
+                    sleep 5
+                    if kill -0 "$PC_PID" 2>/dev/null && curl -s http://localhost:3100/api/health >/dev/null 2>&1; then
+                        success_msg "Paperclip started (PID $PC_PID, port 3100)"
+                    else
+                        warn_msg "Paperclip process started but may still be initializing. Check: tail -f ~/paperclip/paperclip.log"
+                    fi
                 else
                     error_msg "Paperclip is not installed."
                 fi
