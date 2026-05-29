@@ -223,8 +223,8 @@ else
         if [ -f "$HOME/paperclip/package.json" ] && command -v jq >/dev/null 2>&1; then
             jq --arg tsx "$TSX_BIN" \
                '.scripts.paperclipai = ($tsx + " cli/src/index.ts")' \
-               "$HOME/paperclip/package.json" > /tmp/pkg_tmp.json 2>/dev/null \
-               && mv /tmp/pkg_tmp.json "$HOME/paperclip/package.json" 2>/dev/null || true
+               "$HOME/paperclip/package.json" > "$HOME/paperclip/pkg_tmp.json" 2>/dev/null \
+               && mv "$HOME/paperclip/pkg_tmp.json" "$HOME/paperclip/package.json" 2>/dev/null || true
         fi
         pass "tsx installed globally as fallback"
     else
@@ -514,12 +514,16 @@ cat > "$HOME/paperclip/ecosystem.config.cjs" <<EOF
 module.exports = {
   apps: [{
     name: 'paperclip',
-    script: 'server/dist/index.js',
+    script: 'npm',
+    args: 'run paperclipai -- run',
+    interpreter: 'none',
     cwd: '${HOME}/paperclip',
     env: {
       DATABASE_URL: 'postgres://paperclip:paperclip@localhost:5432/paperclip',
       NODE_OPTIONS: '--max-old-space-size=1024',
-      PAPERCLIP_HOME: '${HOME}/paperclip'
+      PAPERCLIP_HOME: '${HOME}/paperclip',
+      NODE_ENV: 'production',
+      PAPERCLIP_MIGRATION_AUTO_APPLY: 'true'
     }
   }]
 };
@@ -546,7 +550,7 @@ if [ -f "$HOME/paperclip/package.json" ] && command -v jq >/dev/null 2>&1; then
         && mv "$HOME/paperclip/pkg_tmp.json" "$HOME/paperclip/package.json" 2>/dev/null || true
 fi
 # Export PAPERCLIP_HOME persistently so the CLI always resolves ~/paperclip/
-for rc_file in "$HOME/.bashrc" "$HOME/.profile"; do
+for rc_file in "$HOME/.bashrc" "$HOME/.profile" "$HOME/.zshrc"; do
     [ -f "$rc_file" ] && grep -q 'PAPERCLIP_HOME' "$rc_file" 2>/dev/null || \
         printf 'export PAPERCLIP_HOME="%s/paperclip"\n' "$HOME" >> "$rc_file" 2>/dev/null || true
 done

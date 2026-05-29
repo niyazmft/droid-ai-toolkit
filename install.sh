@@ -1470,20 +1470,13 @@ manage_pm2() {
                     fi
                     success_msg
                     # Kill any existing Paperclip process
-                    pkill -f "node.*server/dist/index.js" 2>/dev/null || true
+                    pm2 delete paperclip 2>/dev/null || true
+                    pkill -f "paperclipai" 2>/dev/null || true
                     sleep 1
-                    # PM2 cannot start Paperclip (sqlite3 native addon hook issue on Android)
-                    # Use nohup directly instead
-                    cd "$HOME/paperclip/server" || { error_msg "Cannot cd to ~/paperclip/server"; exit 1; }
-                    DATABASE_URL="postgres://paperclip:paperclip@localhost:5432/paperclip" \
-                    nohup node --max-old-space-size=1024 dist/index.js > "$HOME/paperclip/paperclip.log" 2>&1 &
-                    PC_PID=$!
-                    sleep 5
-                    if kill -0 "$PC_PID" 2>/dev/null && curl -s http://localhost:3100/api/health >/dev/null 2>&1; then
-                        success_msg "Paperclip started (PID $PC_PID, port 3100)"
-                    else
-                        warn_msg "Paperclip process started but may still be initializing. Check: tail -f ~/paperclip/paperclip.log"
-                    fi
+                    
+                    cd "$HOME/paperclip" || { error_msg "Cannot cd to ~/paperclip"; exit 1; }
+                    
+                    execute "DATABASE_URL='postgres://paperclip:paperclip@localhost:5432/paperclip' NODE_ENV='production' NODE_OPTIONS='--max-old-space-size=1024' PAPERCLIP_MIGRATION_AUTO_APPLY='true' PAPERCLIP_HOME='$HOME/paperclip' pm2 start npm --name paperclip --interpreter none -- run paperclipai -- run && pm2 save" "Starting Paperclip in PM2"
                 else
                     error_msg "Paperclip is not installed."
                 fi
