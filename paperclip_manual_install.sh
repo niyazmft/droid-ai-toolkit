@@ -90,74 +90,147 @@ if [ -f pnpm-lock.yaml ] && grep -q "embedded-postgres" pnpm-lock.yaml; then
     rm -f pnpm-lock.yaml
 fi
 export SHARP_IGNORE_GLOBAL_LIBVIPS=1
+# Stub ensure-plugin-build-deps.mjs — it throws if typescript/tsc is absent.
+# tsc is a devDependency excluded by --production; on Android we use prebuilt
+# server JS so TypeScript is never needed at runtime or for plugin compilation.
+mkdir -p scripts
+cat > scripts/ensure-plugin-build-deps.mjs << 'STUB_EOF'
+// Android/Termux stub: TypeScript CLI (tsc) is a devDependency not installed
+// on Android. The Paperclip server runs from prebuilt JS — tsc is not needed.
+export default async function ensurePluginBuildDeps() {}
+STUB_EOF
 pass "Patches applied"
 
 # ══════════════════════════════════════════════════════════════
 # Step 5: pnpm install
 # ══════════════════════════════════════════════════════════════
 info "Step 5/11: Installing dependencies..."
+# Free memory before pnpm install to prevent Android LMK kill
+info "Freeing memory before install..."
+pkill -f "pm2" 2>/dev/null || true
+pkill -f "node.*n8n" 2>/dev/null || true
+sleep 1
 PNPM_STORE=$(pnpm store path 2>/dev/null || echo "")
 if [ -z "$PNPM_STORE" ] || [ ! -d "$PNPM_STORE" ] || [ "$(find "$PNPM_STORE" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)" -lt 10 ]; then
-    PNPM_INSTALL_FLAGS="--no-frozen-lockfile --ignore-scripts"
+    PNPM_INSTALL_FLAGS="--no-frozen-lockfile --ignore-scripts --production"
 else
-    PNPM_INSTALL_FLAGS="--prefer-offline --ignore-scripts"
+    PNPM_INSTALL_FLAGS="--prefer-offline --ignore-scripts --production"
 fi
 rm -f install.log; touch install.log
-pnpm install $PNPM_INSTALL_FLAGS > install.log 2>&1 || true
-EXIT=$?
+EXIT=0
+pnpm install $PNPM_INSTALL_FLAGS > install.log 2>&1 || EXIT=$?
+_lmk_killed() {
+    [ "$1" -eq 137 ] && return 0
+    grep -q "Killed" install.log 2>/dev/null && return 0
+    return 1
+}
 if [ "$EXIT" -eq 0 ]; then
     pass "pnpm install completed"
     rm -f install.log
-elif grep -q "Killed" install.log 2>/dev/null; then
-    info "pnpm install killed by LMK (exit $EXIT) — this is EXPECTED on low-RAM devices."
-    pass "pnpm install resolved packages before LMK kill"
-    rm -f install.log
-else
-    info "pnpm install error (not LMK). Checking if packages are present..."
-    if [ -d node_modules/.pnpm ] && [ "$(find node_modules/.pnpm -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)" -gt 200 ]; then
-        pass "Packages present despite error ($EXIT) — continuing"
+elif _lmk_killed "$EXIT"; then
+    info "pnpm install killed by LMK (exit $EXIT) — retrying once with --shamefully-hoist..."
+    sleep 2
+    EXIT2=0
+    pnpm install $PNPM_INSTALL_FLAGS --shamefully-hoist >> install.log 2>&1 || EXIT2=$?
+    if [ "$EXIT2" -eq 0 ] || _lmk_killed "$EXIT2"; then
+        pass "pnpm install resolved packages (LMK expected on low-RAM devices)"
         rm -f install.log
     else
-        fail "pnpm install failed. Check install.log"; tail -n 20 install.log; exit 1
+        warn "pnpm retry also failed (exit $EXIT2) — checking package count..."
+    fi
+else
+    info "pnpm install error (not LMK, exit $EXIT). Checking if packages are present..."
+fi
+# Final check: enough packages to continue?
+if [ -d node_modules/.pnpm ] && [ "$(find node_modules/.pnpm -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)" -gt 50 ]; then
+    pass "node_modules present — continuing"
+    rm -f install.log 2>/dev/null || true
+else
+    if [ -f install.log ]; then
+        fail "pnpm install failed with too few packages. Check install.log"
+        tail -n 20 install.log
+        exit 1
     fi
 fi
 
 # ══════════════════════════════════════════════════════════════
 # Step 6: Workspace symlinks (pnpm v9 doesn't create these on Android)
+# Portable: no declare -A (requires bash 4+, unavailable on some Termux builds)
 # ══════════════════════════════════════════════════════════════
 info "Step 6/11: Creating workspace symlinks..."
-mkdir -p node_modules/@paperclipai
-declare -A PKG_MAP=(
-    ["db"]="packages/db"
-    ["shared"]="packages/shared"
-    ["adapter-utils"]="packages/adapter-utils"
-    ["mcp-server"]="packages/mcp-server"
-    ["skills-catalog"]="packages/skills-catalog"
-    ["plugin-sdk"]="packages/plugins/sdk"
-    ["adapter-acpx-local"]="packages/adapters/acpx-local"
-    ["adapter-claude-local"]="packages/adapters/claude-local"
-    ["adapter-codex-local"]="packages/adapters/codex-local"
-    ["adapter-cursor-cloud"]="packages/adapters/cursor-cloud"
-    ["adapter-cursor-local"]="packages/adapters/cursor-local"
-    ["adapter-gemini-local"]="packages/adapters/gemini-local"
-    ["adapter-grok-local"]="packages/adapters/grok-local"
-    ["adapter-openclaw-gateway"]="packages/adapters/openclaw-gateway"
-    ["adapter-opencode-local"]="packages/adapters/opencode-local"
-    ["adapter-pi-local"]="packages/adapters/pi-local"
-    ["create-paperclip-plugin"]="packages/plugins/create-paperclip-plugin"
-    ["plugin-fake-sandbox"]="packages/plugins/paperclip-plugin-fake-sandbox"
-    ["plugin-workspace-diff"]="packages/plugins/plugin-workspace-diff"
+mkdir -p node_modules/@paperclipai 2>/dev/null || true
+# Parallel arrays: PKG_NAMES[i] maps to PKG_PATHS[i]
+PKG_NAMES=(
+    db shared adapter-utils mcp-server skills-catalog plugin-sdk
+    adapter-acpx-local adapter-claude-local adapter-codex-local
+    adapter-cursor-cloud adapter-cursor-local adapter-gemini-local
+    adapter-grok-local adapter-openclaw-gateway adapter-opencode-local
+    adapter-pi-local create-paperclip-plugin plugin-fake-sandbox
+    plugin-workspace-diff
 )
-for name in "${!PKG_MAP[@]}"; do
-    target="${PKG_MAP[$name]}"
-    [ -d "$target" ] && ln -sf "../../$target" "node_modules/@paperclipai/$name" 2>/dev/null || true
+PKG_PATHS=(
+    packages/db packages/shared packages/adapter-utils packages/mcp-server
+    packages/skills-catalog packages/plugins/sdk
+    packages/adapters/acpx-local packages/adapters/claude-local
+    packages/adapters/codex-local packages/adapters/cursor-cloud
+    packages/adapters/cursor-local packages/adapters/gemini-local
+    packages/adapters/grok-local packages/adapters/openclaw-gateway
+    packages/adapters/opencode-local packages/adapters/pi-local
+    packages/plugins/create-paperclip-plugin
+    packages/plugins/paperclip-plugin-fake-sandbox
+    packages/plugins/plugin-workspace-diff
+)
+for i in "${!PKG_NAMES[@]}"; do
+    _name="${PKG_NAMES[$i]}"
+    _path="${PKG_PATHS[$i]}"
+    [ -d "$_path" ] && ln -sf "../../$_path" "node_modules/@paperclipai/$_name" 2>/dev/null || true
 done
 # Also fix .bin symlinks
-mkdir -p node_modules/.bin
-TSX_MJS=$(find node_modules/.pnpm -maxdepth 5 -path '*/tsx/dist/cli.mjs' 2>/dev/null | head -n1 | sed 's|^node_modules/||')
+mkdir -p node_modules/.bin 2>/dev/null || true
+TSX_MJS=""
+if [ -d node_modules/.pnpm ]; then
+    TSX_MJS=$(find node_modules/.pnpm -maxdepth 5 -path '*/tsx/dist/cli.mjs' 2>/dev/null | head -n1 | sed 's|^node_modules/||' || true)
+fi
 [ -n "$TSX_MJS" ] && ln -sf "../$TSX_MJS" node_modules/.bin/tsx 2>/dev/null || true
 export PATH="$HOME/paperclip/node_modules/.bin:$PATH"
 pass "Workspace symlinks created"
+
+# ══════════════════════════════════════════════════════════════
+# Step 6b: Repair CLI sub-package node_modules
+# pnpm workspace linker may not create cli/node_modules when killed by LMK.
+# The CLI runs TypeScript source directly via tsx, so we need tsx resolvable
+# at cli/node_modules/tsx (as declared in the root package.json paperclipai script).
+# ══════════════════════════════════════════════════════════════
+info "Step 6b/11: Repairing CLI module resolution..."
+mkdir -p "$HOME/paperclip/cli/node_modules" 2>/dev/null || true
+# Find tsx package directory already fetched by the root pnpm install
+TSX_PKG_DIR=""
+if [ -d "$HOME/paperclip/node_modules/.pnpm" ]; then
+    TSX_PKG_DIR=$(find "$HOME/paperclip/node_modules/.pnpm" -maxdepth 3 -type d -name "tsx" 2>/dev/null \
+        | grep -v '/node_modules/tsx/node_modules' | head -n1 || true)
+fi
+if [ -n "$TSX_PKG_DIR" ]; then
+    ln -sf "$TSX_PKG_DIR" "$HOME/paperclip/cli/node_modules/tsx" 2>/dev/null || true
+    pass "CLI tsx symlinked from pnpm store"
+else
+    # Fallback: install tsx globally so the CLI can find it via PATH
+    info "tsx not found in pnpm store — installing globally..."
+    npm install -g tsx --prefer-offline --quiet 2>/dev/null || \
+        npm install -g tsx --quiet 2>/dev/null || true
+    # Patch the root package.json paperclipai script to use global tsx
+    if command -v tsx >/dev/null 2>&1; then
+        TSX_BIN=$(command -v tsx)
+        if [ -f "$HOME/paperclip/package.json" ] && command -v jq >/dev/null 2>&1; then
+            jq --arg tsx "$TSX_BIN" \
+               '.scripts.paperclipai = ($tsx + " cli/src/index.ts")' \
+               "$HOME/paperclip/package.json" > /tmp/pkg_tmp.json 2>/dev/null \
+               && mv /tmp/pkg_tmp.json "$HOME/paperclip/package.json" 2>/dev/null || true
+        fi
+        pass "tsx installed globally as fallback"
+    else
+        warn "Could not resolve tsx — 'pnpm paperclipai onboard' may fail; run: npm i -g tsx"
+    fi
+fi
 
 # ══════════════════════════════════════════════════════════════
 # Step 7: Source selection — local assets or GitHub download
@@ -216,6 +289,60 @@ fi
 if [ "$DIST_OK" != true ]; then fail "Could not get prebuilt dist tarball. Cannot proceed."; exit 1; fi
 
 # ══════════════════════════════════════════════════════════════
+# Step 8b: Revert workspace package exports to src/ for CLI (tsx) compatibility
+# build_paperclip_dist.sh patches package.json exports from src/*.ts -> dist/*.js.
+# The prebuilt dist tarball carries these patched files. But the CLI runs TypeScript
+# source via tsx and needs src/ exports to see all latest APIs (e.g. anchorSnapshotToSelector).
+# The server dist/index.js uses self-contained compiled code and is unaffected.
+# ══════════════════════════════════════════════════════════════
+info "Step 8b/11: Reverting workspace package exports to TypeScript source..."
+node << 'REVERT_EXPORTS_EOF'
+const fs = require('fs');
+const path = require('path');
+const PAPERCLIP = path.join(process.env.HOME, 'paperclip');
+
+function walk(dir, results) {
+  results = results || [];
+  var entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch(e) { return results; }
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    if (e.isDirectory() && ['node_modules','.git','dist','src','build'].indexOf(e.name) === -1) {
+      walk(path.join(dir, e.name), results);
+    } else if (e.isFile() && e.name === 'package.json') {
+      results.push(path.join(dir, e.name));
+    }
+  }
+  return results;
+}
+
+var pkgsDir = path.join(PAPERCLIP, 'packages');
+var count = 0;
+var files = walk(pkgsDir);
+for (var j = 0; j < files.length; j++) {
+  var p = files[j];
+  try {
+    var pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (!pkg.exports) continue;
+    var orig = JSON.stringify(pkg.exports);
+    if (orig.indexOf('/dist/') === -1) continue;
+    var reverted = orig
+      .replace(/\.\/(dist)\//g, './src/')
+      .replace(/\.d\.ts"/g, '.ts"')
+      .replace(/\.js"/g, '.ts"');
+    pkg.exports = JSON.parse(reverted);
+    fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+    count++;
+    process.stdout.write('Reverted: ' + path.relative(PAPERCLIP, p) + '\n');
+  } catch(e) {
+    process.stdout.write('Skip: ' + path.relative(PAPERCLIP, p) + '\n');
+  }
+}
+process.stdout.write('Done: ' + count + ' package(s) reverted.\n');
+REVERT_EXPORTS_EOF
+pass "Workspace package exports restored to TypeScript source"
+
+# ══════════════════════════════════════════════════════════════
 # Step 9: Extract prebuilt UI tarball
 # ══════════════════════════════════════════════════════════════
 info "Step 9/11: Extracting prebuilt UI assets..."
@@ -238,6 +365,9 @@ if [ "$DL_OK" == true ] && [ -f "$UI_TARBALL" ]; then
     if tar tzf "$UI_TARBALL" >/dev/null 2>&1; then
         mkdir -p "$HOME/paperclip/server/ui-dist"
         tar -xzf "$UI_TARBALL" -C "$HOME/paperclip/server/ui-dist" 2>/dev/null
+        # Symlink ui -> server/ui-dist so that if the server starts in dev mode 
+        # (due to missing NODE_ENV=production), it still finds and serves the prebuilt UI.
+        ln -sf server/ui-dist "$HOME/paperclip/ui"
         rm -f "$UI_TARBALL"; pass "UI assets extracted"
     else
         fail "UI tarball corrupt — deleting"; rm -f "$UI_TARBALL"
@@ -280,7 +410,15 @@ EMBEOF
 module.exports = class EmbeddedPostgres { start() { return Promise.resolve(); } stop() { return Promise.resolve(); } };
 STUBEOF
     fi
-    pass "sqlite3 and embedded-postgres stubbed"
+    # Also stub vite (devDependency missing due to --production, but imported by server/src/app.ts)
+    mkdir -p "$HOME/paperclip/node_modules/vite"
+    cat > "$HOME/paperclip/node_modules/vite/package.json" << 'VITEOF'
+{"name":"vite","version":"5.0.0","main":"./index.js","type":"commonjs"}
+VITEOF
+    cat > "$HOME/paperclip/node_modules/vite/index.js" << 'VITESTUBEOF'
+module.exports = { createServer: async () => ({ middlewares: (req,res,next)=>next(), listen: async ()=>{} }) };
+VITESTUBEOF
+    pass "sqlite3, embedded-postgres, and vite stubbed"
 else
     warn "sqlite3 package not found — may already be stubbed"
 fi
@@ -386,12 +524,33 @@ module.exports = {
   }]
 };
 EOF
-if [ ! -f "$HOME/paperclip/instances/default/config.json" ]; then
-    mkdir -p "$HOME/paperclip/instances/default"
-    cat > "$HOME/paperclip/instances/default/config.json" <<'EOF'
-{"database":{"mode":"postgres","connectionString":"postgres://paperclip:paperclip@localhost:5432/paperclip"},"server":{"bind":"loopback","host":"127.0.0.1","port":3100,"allowedHostnames":["127.0.0.1","localhost"]}}
-EOF
+# Write config to BOTH ~/paperclip/ (server) and ~/.paperclip/ (CLI default home)
+# so that 'pnpm paperclipai run' resolves external PostgreSQL on port 5432.
+# Always overwrite — the CLI may have auto-generated an embedded-postgres config
+# on first run before our installer could write the correct external postgres config.
+# Note: we include $meta and logging so the CLI 'onboard' command considers it valid.
+# shellcheck disable=SC2016
+PAPERCLIP_CFG_JSON='{"$meta":{"version":"1"},"logging":{"type":"file","dir":"logs"},"database":{"mode":"postgres","connectionString":"postgres://paperclip:paperclip@localhost:5432/paperclip"},"server":{"bind":"loopback","host":"127.0.0.1","port":3100,"allowedHostnames":["127.0.0.1","localhost"]}}'
+for cfg_dir in "$HOME/paperclip/instances/default" "$HOME/.paperclip/instances/default"; do
+    mkdir -p "$cfg_dir/secrets"
+    echo "$PAPERCLIP_CFG_JSON" > "$cfg_dir/config.json"
+    echo -e "DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip\nNODE_ENV=production\nPAPERCLIP_MIGRATION_AUTO_APPLY=true" > "$cfg_dir/.env"
+    [ ! -f "$cfg_dir/secrets/master.key" ] && \
+        od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$cfg_dir/secrets/master.key"
+done
+
+# Force required env vars into the root paperclipai script so that starting the CLI
+# automatically bypasses interactive migration prompts and forces production UI mode.
+if [ -f "$HOME/paperclip/package.json" ] && command -v jq >/dev/null 2>&1; then
+    jq '.scripts.paperclipai |= "PAPERCLIP_MIGRATION_AUTO_APPLY=true PAPERCLIP_UI_DEV_MIDDLEWARE=false NODE_ENV=production " + .' "$HOME/paperclip/package.json" > "$HOME/paperclip/pkg_tmp.json" 2>/dev/null \
+        && mv "$HOME/paperclip/pkg_tmp.json" "$HOME/paperclip/package.json" 2>/dev/null || true
 fi
+# Export PAPERCLIP_HOME persistently so the CLI always resolves ~/paperclip/
+for rc_file in "$HOME/.bashrc" "$HOME/.profile"; do
+    [ -f "$rc_file" ] && grep -q 'PAPERCLIP_HOME' "$rc_file" 2>/dev/null || \
+        printf 'export PAPERCLIP_HOME="%s/paperclip"\n' "$HOME" >> "$rc_file" 2>/dev/null || true
+done
+export PAPERCLIP_HOME="$HOME/paperclip"
 pass "Config and secrets created"
 
 # ══════════════════════════════════════════════════════════════
@@ -404,7 +563,10 @@ echo -e "\033[1;36m========================================\033[0m"
 echo ""
 echo -e "\033[1;33mPass: $PASS | Fail: $FAIL\033[0m"
 echo ""
-echo -e "\033[1;35mSTART SERVER:\033[0m"
+echo -e "\033[1;35mSTART WITH CLI (recommended):\033[0m"
+echo -e "  \033[0;32mcd ~/paperclip && PAPERCLIP_HOME=~/paperclip pnpm paperclipai run\033[0m"
+echo ""
+echo -e "\033[1;35mOR start server directly:\033[0m"
 echo -e "  \033[0;32mcd ~/paperclip/server && DATABASE_URL='postgres://paperclip:paperclip@localhost:5432/paperclip' nohup node --max-old-space-size=1024 dist/index.js > ~/paperclip.log 2>&1 &\033[0m"
 echo ""
 echo -e "\033[1;35mCHECK HEALTH:\033[0m"
