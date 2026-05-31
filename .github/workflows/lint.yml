@@ -28,3 +28,5 @@ jobs:
 
       - name: Run Lint Audit
         run: pnpm run lint:all
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
