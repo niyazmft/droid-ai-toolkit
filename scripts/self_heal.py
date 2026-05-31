@@ -19,8 +19,10 @@ def self_heal_js(file_path):
 
 if __name__ == "__main__":
     # Walk through the project and heal JS/MJS files
-    for root, _, files in os.walk("."):
-        if "node_modules" in root: continue
+    for root, dirs, files in os.walk("."):
+        # ⚡ Bolt Optimization: Mutate dirs in-place to prevent os.walk from traversing node_modules
+        if "node_modules" in dirs:
+            dirs.remove("node_modules")
         for file in files:
             if file.endswith((".js", ".mjs")):
                 self_heal_js(os.path.join(root, file))
