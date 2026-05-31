@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # DROID AI TOOLKIT (Termux)
-# Version: 1.12.1
+# Version: 1.13.0
 # Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
 #          Hermes, Paperclip) on Android via Termux with kernel patches and path fixes.
 # ==============================================================================
@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.12.1"
+VERSION="1.13.0"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -61,6 +61,9 @@ ensure_deps() {
     if ! command -v whiptail >/dev/null 2>&1; then
         pkgs+=(whiptail)
     fi
+    if ! command -v gum >/dev/null 2>&1; then
+        pkgs+=(gum)
+    fi
     if [ ${#pkgs[@]} -gt 0 ]; then
         status_msg "Installing required toolkit dependencies (${pkgs[*]})"
         pkg update -y -o Dpkg::Options::=--force-confold >/dev/null 2>&1 || true
@@ -73,6 +76,8 @@ ensure_deps() {
 set_config() {
     local key=$1
     local value=$2
+    local varname="_CACHED_CONFIG_${key//-/_}"
+    eval "$varname=\"\$value\""
     local tmp; tmp=$(mktemp)
     mkdir -p "$(dirname "$TOOLKIT_CONFIG")"
     if [ ! -f "$TOOLKIT_CONFIG" ]; then echo "{}" > "$TOOLKIT_CONFIG"; fi
@@ -81,11 +86,19 @@ set_config() {
 
 get_config() {
     local key=$1
-    if [ -f "$TOOLKIT_CONFIG" ]; then
-        jq -r --arg k "$key" '.[$k] // "null"' "$TOOLKIT_CONFIG"
-    else
-        echo "null"
+    local varname="_CACHED_CONFIG_${key//-/_}"
+    local val="${!varname}"
+    if [ -n "$val" ]; then
+        echo "$val"
+        return
     fi
+    if [ -f "$TOOLKIT_CONFIG" ]; then
+        val=$(jq -r --arg k "$key" '.[$k] // "null"' "$TOOLKIT_CONFIG")
+    else
+        val="null"
+    fi
+    eval "$varname=\"\$val\""
+    echo "$val"
 }
 
 health_check() {
@@ -118,7 +131,10 @@ get_mem_limit() {
 # pnpm (v10+) may print warnings to stdout when npm_config_force=true.
 # This helper isolates the actual path by taking the last non-empty line.
 pnpm_root_g() {
-    pnpm root -g 2>/dev/null | sed -n '$p'
+    if [ -z "$_CACHED_PNPM_ROOT" ]; then
+        _CACHED_PNPM_ROOT=$(pnpm root -g 2>/dev/null | sed -n '$p')
+    fi
+    echo "$_CACHED_PNPM_ROOT"
 }
 
 get_global_node_path() {
@@ -1268,8 +1284,10 @@ manage_service() {
             "OPENCLAW-REMOVE"  "[-]  OpenClaw   — Disable/Remove Service" \
             "N8N-SETUP"        "[+]  n8n        — Enable/Setup Native Service" \
             "N8N-REMOVE"       "[-]  n8n        — Disable/Remove Native Service" \
+            ""                 "" \
             "BACK"             "<--  BACK TO SERVICES MENU") || return
         case "$choice" in
+            "") continue ;;
             OPENCLAW-SETUP)  whiptail_confirm "Set up OpenClaw background service?" && { setup_service_files; whiptail_msg "OpenClaw service configured."; } ;;
             OPENCLAW-REMOVE) whiptail_confirm "Remove OpenClaw background service?" && { remove_service_files; whiptail_msg "OpenClaw service removed."; } ;;
             N8N-SETUP)       whiptail_confirm "Set up n8n background service?" && { setup_n8n_service_files; whiptail_msg "n8n service configured."; } ;;
@@ -1356,12 +1374,15 @@ manage_pm2() {
             "OLLAMA"    "[+]  Start Ollama" \
             "PAPERCLIP" "[+]  Start Paperclip" \
             "NANOBOT"   "[+]  Start Nanobot" \
+            ""          "" \
             "LOGS"      "[i]  View Logs (Live)" \
             "STATUS"    "[i]  View Status (Table)" \
             "RESTART"   "[~]  Restart All Apps" \
             "STOP"      "[-]  Stop All Apps" \
+            ""          "" \
             "BACK"      "<--  BACK TO SERVICES MENU") || return
         case "$choice" in
+            "") continue ;;
             OPENCLAW)
                 local openclaw_bin=""
                 openclaw_bin=$(type -P openclaw 2>/dev/null || true)
@@ -1697,16 +1718,36 @@ menu_item() {
 
 # show_menu <title> <items...>
 # items are passed as tag desc pairs, without dynamic status prefixing.
-# --nocancel removes ESC/Cancel button, --no-item hides "OK" button text
 show_whi_menu() {
     local title="$1"; shift
-    local items=()
+    local -a items=() tags=() descs=()
     while [ $# -gt 0 ]; do
         items+=("$1" "$2")
+        tags+=("$1")
+        if [ "$1" = "" ]; then
+            descs+=(" ")  # Use blank space for separator
+        else
+            descs+=("$2")
+        fi
         shift 2
     done
-    whiptail --title "Droid AI Toolkit v$VERSION" --nocancel --ok-button "Enter" --menu "$title" "$WHI_ROWS" "$WHI_COLS" $(( ${#items[@]} / 2 )) \
-        "${items[@]}" 3>&1 1>&2 2>&3
+
+    if command -v gum >/dev/null 2>&1; then
+        clear >&2
+        gum style --border double --margin "1" --padding "1" --border-foreground 212 "Droid AI Toolkit v$VERSION" >&2
+        local choice_desc
+        choice_desc=$(gum choose --header "$title" --cursor="> " "${descs[@]}") || return 1
+        for i in "${!descs[@]}"; do
+            if [ "${descs[$i]}" = "$choice_desc" ]; then
+                echo "${tags[$i]}"
+                return 0
+            fi
+        done
+        return 1
+    else
+        whiptail --title "Droid AI Toolkit v$VERSION" --nocancel --ok-button "Enter" --menu "$title" "$WHI_ROWS" "$WHI_COLS" $(( ${#items[@]} / 2 )) \
+            "${items[@]}" 3>&1 1>&2 2>&3
+    fi
 }
 
 # yesno <text>
@@ -1714,16 +1755,28 @@ show_whi_menu() {
 # Returns 0 if user confirms (Yes), 1 if user cancels (No)
 whiptail_confirm() {
     local text="$1"
-    if ! whiptail --title "Confirm" --yes-button "Yes" --no-button "No" --yesno "$text" 8 "$WHI_COLS" 3>&1 1>&2 2>&3; then
-        return 1  # User pressed No - return to menu
+    if command -v gum >/dev/null 2>&1; then
+        gum confirm "$text"
+        return $?
+    else
+        if ! whiptail --title "Confirm" --yes-button "Yes" --no-button "No" --yesno "$text" 8 "$WHI_COLS" 3>&1 1>&2 2>&3; then
+            return 1
+        fi
+        return 0
     fi
-    return 0  # User pressed Yes - proceed
 }
 
 # msgbox <text>
 whiptail_msg() {
     local text="$1"
-    whiptail --title "Droid AI Toolkit" --msgbox "$text" 12 "$WHI_COLS" 3>&1 1>&2 2>&3
+    if command -v gum >/dev/null 2>&1; then
+        echo ""
+        gum style --border normal --border-foreground 212 --padding "1 2" "$text"
+        echo -n "Press Enter to continue..."
+        read -r
+    else
+        whiptail --title "Notice" --msgbox "$text" 8 "$WHI_COLS" 3>&1 1>&2 2>&3
+    fi
 }
 
 # --- Sub-Menus ---
@@ -1739,9 +1792,11 @@ menu_agents() {
             "OPENCLAW"   "$oc_bull  OpenClaw   — Multi-Channel Agent Gateway" \
             "HERMES"     "$hb_bull  Hermes     — Autonomous Agent (Nous Research)" \
             "NANOBOT"    "$nb_bull  Nanobot    — Lightweight Python Agent (HKUDS)" \
+            ""           "" \
             "BACK"       "<--  BACK TO MAIN MENU") || menu_exit=$?
         [ $menu_exit -ne 0 ] && return
         case "$choice" in
+            "") continue ;;
             OPENCLAW) install_openclaw ;;
             HERMES)   install_hermes ;;
             NANOBOT)  install_nanobot ;;
@@ -1759,8 +1814,10 @@ menu_workflows() {
         choice=$(show_whi_menu "Workflows & Automation  |  Use ↑/↓ to navigate, Enter to select" \
             "N8N"       "$n8_bull  n8n         — Automation & Integration Server" \
             "PAPERCLIP" "$pc_bull  Paperclip   — Multi-Agent Virtual Company ([!] 2GB+ RAM)" \
+            ""          "" \
             "BACK"      "<--  BACK TO MAIN MENU") || :
         case "$choice" in
+            "") continue ;;
             N8N)       install_n8n ;;
             PAPERCLIP) install_paperclip ;;
             BACK|*)    return ;;
@@ -1780,8 +1837,10 @@ menu_utilities() {
             "PI"       "$pi_bull  Pi         — Minimalist Coding Agent (M. Zechner)" \
             "OLLAMA"   "$ol_bull  Ollama     — Local LLM Runner (ARM)" \
             "GCP"      "[i]  GCP Bridge — SSH Tunnel for n8n" \
+            ""         "" \
             "BACK"     "<--  BACK TO MAIN MENU") || return
         case "$choice" in
+            "") continue ;;
             GEMINI)   install_gemini_cli ;;
             PI)       install_pi ;;
             OLLAMA)   install_ollama ;;
@@ -1800,8 +1859,10 @@ menu_services() {
         choice=$(show_whi_menu "System & Background Services  |  Use ↑/↓ to navigate, Enter to select" \
             "PM2"    "$pm2_bull  PM2         — Process Manager (Recommended)" \
             "NATIVE" "$sv_bull  Native      — Termux Services (sv)" \
+            ""       "" \
             "BACK"   "<--  BACK TO MAIN MENU") || return
         case "$choice" in
+            "") continue ;;
             PM2)    manage_pm2 ;;
             NATIVE) manage_service ;;
             BACK|*) return ;;
@@ -1821,9 +1882,12 @@ menu_uninstall() {
             "PI"         "[-]  Pi         — Remove Coding Agent" \
             "PAPERCLIP"  "[-]  Paperclip  — Remove Workflow Server" \
             "NANOBOT"    "[-]  Nanobot   — Remove Python AI Agent" \
+            ""           "" \
             "WIPE"       "[!]  WIPE ALL   — Reset Software Stack" \
+            ""           "" \
             "BACK"       "<--  BACK TO MAIN MENU") || return
         case "$choice" in
+            "") continue ;;
             OPENCLAW)
                 whiptail_confirm "This will remove the OpenClaw global package and background services." && { uninstall_openclaw; whiptail_msg "OpenClaw removed."; } ;;
             N8N)
@@ -1856,9 +1920,12 @@ while true; do
         "WORKFLOWS"  "Workflows    — n8n, Paperclip" \
         "UTILITIES"  "Developer    — Gemini CLI, Pi, Ollama, GCP Bridge" \
         "SERVICES"   "Background   — PM2, Native Services" \
+        ""           "" \
         "UNINSTALL"  "Uninstall    — Remove Tools & Reset" \
+        ""           "" \
         "EXIT"       "[X]  EXIT TOOLKIT") || exit 0
     case "$choice" in
+        "") continue ;;
         AGENTS)     menu_agents ;;
         WORKFLOWS)  menu_workflows ;;
         UTILITIES)  menu_utilities ;;
