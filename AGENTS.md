@@ -8,11 +8,11 @@ Bash scripting toolkit. Main deliverable is `install.sh`. No app runtime here �
 
 ```bash
 pnpm install               # Install linter deps (pnpm@10.32.1 enforced via packageManager field)
-pnpm run lint:all          # Full lint gate: ESLint → Stylelint → Markdownlint (read-only, does NOT --fix)
+pnpm run lint:all          # Full lint gate: ESLint → Stylelint → Markdownlint → shellcheck (read-only, does NOT --fix)
 python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS only
 ```
 
-- Lint config: `eslint.config.mjs` (flat/v10, Node/browser/jest globals), `.stylelintrc.json` (Tailwind-aware), `.markdownlint.json` (line length & inline HTML allowed).
+- Lint config: `eslint.config.mjs` (flat/v10, Node/browser/jest globals), `.stylelintrc.json` (Tailwind-aware), `.markdownlint.json` (line length & inline HTML allowed), `.shellcheckrc` (bash linting).
 - CI (`lint.yml`) runs on Node 22 and blocks PRs to `main`/`master`.
 
 ## Quality Gate & Workflow
@@ -25,15 +25,17 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 - **Never use native update commands** (`openclaw update`, etc.) — they overwrite Android patches.
 - Safe update path: re-run `install.sh`, choose **[R] Repair** (2-second patch-only) or **[U] Update** (latest verified version).
+- **UI Engine**: v1.13.0+ uses `gum` (charm.sh) for color-rich, touch-friendly menus with visual separators; falls back to `whiptail` if unavailable. `ensure_deps` auto-installs `gum`.
 - Uses `$PREFIX` dynamically; never hardcode `/data/data/com.termux/files/usr`.
 - Memory guard: Node.js heap limit is set to `min(2048, max(512, RAM * 0.75))` via `--max-old-space-size`.
 - PM2 is killed during updates to prevent OOM on low-RAM devices.
+- **Zero-latency navigation**: v1.13.0+ caches Bash variables for `get_config` and `pnpm_root_g`, and eliminates redundant Node.js / `jq` spawns during menu rendering.
 - Koffi kernel patch: `renameat2` → `rename` to avoid kernel crashes.
 - Gemini CLI patch: `fs.promises.rename` → `copyFile + unlink` to avoid Android `ENOENT`.
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.12.0). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version (v1.13.0). `package.json` version (1.0.0) is stale — ignore it.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
 
@@ -42,7 +44,7 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 | Tool | Method | Architecture Notes |
 | --- | --- | --- |
 | OpenClaw | npm/pnpm global + koffi kernel patch + path redirection (`/tmp`, `/bin/npm`, etc.) | All architectures |
-| Pi Agent | **RECOMMENDED** — npm/pnpm global + `~/.pi/agent/AGENTS.md` context setup | All architectures |
+| Pi Agent | **RECOMMENDED** — npm/pnpm global (`@earendil-works/pi-coding-agent`) + `~/.pi/agent/AGENTS.md` context setup. Legacy `@mariozechner/pi-coding-agent` is detected and migrated. | All architectures |
 | Gemini CLI | npm/pnpm global + `rename` → `copyFile+unlink` patch | All architectures |
 | n8n | npm/pnpm global + watchdog cron + `NODE_OPTIONS` memory cap + optional GCP bridge | All architectures |
 | Ollama | `pkg install ollama` (Termux native) | All architectures |
@@ -58,7 +60,7 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 ## Workflows
 
 - **Smart Repair**: Detects existing installs and offers **[R] Repair** or **[U] Update**.
-- **Uninstallation**: Modular menu (Option 10). Preserves system `pkg` packages. Deep vs Soft uninstalls available.
+- **Uninstallation**: Modular menu (UNINSTALL → individual tool or WIPE ALL). Preserves system `pkg` packages. Deep vs Soft uninstalls available.
 - **n8n bridge**: Option 7 configures `autossh` tunnel to a GCP VM. Monitor script is at `~/n8n_server/scripts/n8n-monitor.sh`.
 
 ## Patching Details
