@@ -8,6 +8,9 @@
 #
 # Falls back to ~/assets/ if download fails (for offline/rsync installs).
 # Build tarballs locally: bash build_paperclip_dist.sh
+# Termux dynamically exports $PREFIX. Fallback just in case.
+PREFIX=${PREFIX:-"/data/data/com.termux/files/usr"}
+
 set -euo pipefail
 cd "$HOME" || exit 1
 
@@ -30,10 +33,19 @@ fail() { echo -e "\033[0;31m[FAIL]\033[0m $1"; FAIL=$((FAIL+1)); }
 warn() { echo -e "\033[0;33m[WARN]\033[0m $1"; }
 info() { echo -e "\033[0;34m[INFO]\033[0m $1"; }
 
+safe_timeout() {
+    local secs=$1; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
 # ══════════════════════════════════════════════════════════════
 # Step 1: Prerequisites
 # ══════════════════════════════════════════════════════════════
-info "Step 1/11: Checking prerequisites..."
+info "Step 1: Checking prerequisites..."
 for cmd in node pnpm pg_ctl; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         case "$cmd" in
@@ -52,7 +64,7 @@ fi
 # ══════════════════════════════════════════════════════════════
 # Step 2: Memory guard
 # ══════════════════════════════════════════════════════════════
-info "Step 2/11: Setting memory guard..."
+info "Step 2: Setting memory guard..."
 export NODE_OPTIONS="--max-old-space-size=1024"
 export PNPM_NETWORK_CONCURRENCY=1
 export PNPM_CHILD_CONCURRENCY=1
@@ -61,7 +73,7 @@ pass "Memory guard set (1024MB heap, serial pnpm)"
 # ══════════════════════════════════════════════════════════════
 # Step 3: Clone
 # ══════════════════════════════════════════════════════════════
-info "Step 3/11: Cloning Paperclip repository..."
+info "Step 3: Cloning Paperclip repository..."
 rm -rf "$HOME/paperclip"
 if git clone --depth 1 https://github.com/paperclipai/paperclip.git "$HOME/paperclip"; then
     pass "Clone OK"
@@ -74,7 +86,7 @@ cd "$HOME/paperclip" || exit 1
 # ══════════════════════════════════════════════════════════════
 # Step 4: Pre-install patches
 # ══════════════════════════════════════════════════════════════
-info "Step 4/11: Applying pre-install patches..."
+info "Step 4: Applying pre-install patches..."
 # Remove UI from workspace (built separately)
 [ -f pnpm-workspace.yaml ] && sed -i '/^[[:space:]]*- ui[[:space:]]*$/d' pnpm-workspace.yaml
 rm -rf ui/
@@ -104,7 +116,7 @@ pass "Patches applied"
 # ══════════════════════════════════════════════════════════════
 # Step 5: pnpm install
 # ══════════════════════════════════════════════════════════════
-info "Step 5/11: Installing dependencies..."
+info "Step 5: Installing dependencies..."
 # Free memory before pnpm install to prevent Android LMK kill
 info "Freeing memory before install..."
 pkill -f "pm2" 2>/dev/null || true
@@ -157,7 +169,7 @@ fi
 # Step 6: Workspace symlinks (pnpm v9 doesn't create these on Android)
 # Portable: no declare -A (requires bash 4+, unavailable on some Termux builds)
 # ══════════════════════════════════════════════════════════════
-info "Step 6/11: Creating workspace symlinks..."
+info "Step 6: Creating workspace symlinks..."
 mkdir -p node_modules/@paperclipai 2>/dev/null || true
 # Parallel arrays: PKG_NAMES[i] maps to PKG_PATHS[i]
 PKG_NAMES=(
@@ -201,7 +213,7 @@ pass "Workspace symlinks created"
 # The CLI runs TypeScript source directly via tsx, so we need tsx resolvable
 # at cli/node_modules/tsx (as declared in the root package.json paperclipai script).
 # ══════════════════════════════════════════════════════════════
-info "Step 6b/11: Repairing CLI module resolution..."
+info "Step 6b: Repairing CLI module resolution..."
 mkdir -p "$HOME/paperclip/cli/node_modules" 2>/dev/null || true
 # Find tsx package directory already fetched by the root pnpm install
 TSX_PKG_DIR=""
@@ -256,7 +268,7 @@ fi
 # ══════════════════════════════════════════════════════════════
 # Step 8: Extract prebuilt dist tarball
 # ══════════════════════════════════════════════════════════════
-info "Step 8/11: Extracting prebuilt dist/ tarball..."
+info "Step 8: Extracting prebuilt dist/ tarball..."
 DIST_TMP="$HOME/.paperclip-dist.tar.gz"; DIST_OK=false
 DIST_URL="https://github.com/niyazmft/droid-ai-toolkit/releases/download/${TOOLKIT_VERSION}/paperclip-dist-${DIST_VERSION}.tar.gz"
 
@@ -295,7 +307,7 @@ if [ "$DIST_OK" != true ]; then fail "Could not get prebuilt dist tarball. Canno
 # source via tsx and needs src/ exports to see all latest APIs (e.g. anchorSnapshotToSelector).
 # The server dist/index.js uses self-contained compiled code and is unaffected.
 # ══════════════════════════════════════════════════════════════
-info "Step 8b/11: Reverting workspace package exports to TypeScript source..."
+info "Step 8b: Reverting workspace package exports to TypeScript source..."
 node << 'REVERT_EXPORTS_EOF'
 const fs = require('fs');
 const path = require('path');
@@ -345,7 +357,7 @@ pass "Workspace package exports restored to TypeScript source"
 # ══════════════════════════════════════════════════════════════
 # Step 9: Extract prebuilt UI tarball
 # ══════════════════════════════════════════════════════════════
-info "Step 9/11: Extracting prebuilt UI assets..."
+info "Step 9: Extracting prebuilt UI assets..."
 UI_TARBALL="$HOME/.uidist.tar.gz"; DL_OK=false
 UI_URL="https://github.com/niyazmft/droid-ai-toolkit/releases/download/${TOOLKIT_VERSION}/paperclip-ui-dist-${DIST_VERSION}.tar.gz"
 
@@ -379,7 +391,7 @@ fi
 # ══════════════════════════════════════════════════════════════
 # Step 10: Stub sqlite3 (can't compile native module on Android)
 # ══════════════════════════════════════════════════════════════
-info "Step 10/12: Stubbing sqlite3 native module..."
+info "Step 10: Stubbing sqlite3 native module..."
 SQLITE3_DIR="$HOME/paperclip/node_modules/.pnpm/sqlite3@5.1.7/node_modules/sqlite3"
 if [ -d "$SQLITE3_DIR" ]; then
     mkdir -p "$SQLITE3_DIR/build" "$SQLITE3_DIR/lib"
@@ -426,9 +438,9 @@ fi
 # ══════════════════════════════════════════════════════════════
 # Step 11: Start PostgreSQL + create DB
 # ══════════════════════════════════════════════════════════════
-info "Step 11/12: Starting PostgreSQL..."
+info "Step 11: Starting PostgreSQL..."
 PGDATA="$PREFIX/var/lib/postgresql"
-if ! timeout 3 psql -d postgres -c "SELECT 1" > /dev/null 2>&1; then
+if ! safe_timeout 3 psql -d postgres -c "SELECT 1" > /dev/null 2>&1; then
     STALE_PID=$(pgrep -f "postgres -D $PGDATA" 2>/dev/null || true)
     if [ -n "$STALE_PID" ]; then
         warn "Stale PostgreSQL process detected (PID $STALE_PID) — stopping..."
@@ -442,8 +454,8 @@ if ! timeout 3 psql -d postgres -c "SELECT 1" > /dev/null 2>&1; then
     pg_ctl -D "$PGDATA" start -l "$HOME/paperclip/postgres.log" > /dev/null 2>&1 || true
     sleep 3
 fi
-for i in {1..10}; do timeout 2 psql -d postgres -c "SELECT 1" > /dev/null 2>&1 && break; sleep 1; done
-timeout 3 psql -d postgres -c "SELECT 1" > /dev/null 2>&1 || { fail "PostgreSQL did not start"; exit 1; }
+for i in {1..10}; do safe_timeout 2 psql -d postgres -c "SELECT 1" > /dev/null 2>&1 && break; sleep 1; done
+safe_timeout 3 psql -d postgres -c "SELECT 1" > /dev/null 2>&1 || { fail "PostgreSQL did not start"; exit 1; }
 psql -d postgres -c "CREATE USER paperclip WITH PASSWORD 'paperclip';" 2>/dev/null || true
 psql -d postgres -c "CREATE DATABASE paperclip OWNER paperclip;" 2>/dev/null || true
 pass "PostgreSQL ready"
@@ -495,7 +507,7 @@ fi
 # ══════════════════════════════════════════════════════════════
 # Step 12: Config + secrets
 # ══════════════════════════════════════════════════════════════
-info "Step 12/12: Creating config and secrets..."
+info "Step 12: Creating config and secrets..."
 mkdir -p "$HOME/paperclip/config" "$HOME/paperclip/instances/default/secrets"
 od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$HOME/paperclip/instances/default/secrets/master.key"
 AUTH_SECRET="paperclip-dev-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
