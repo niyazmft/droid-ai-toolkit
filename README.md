@@ -8,7 +8,7 @@
 [![Version](https://img.shields.io/badge/version-1.13.0-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
-A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/mariozechner/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
+A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
 
 ---
 
@@ -30,7 +30,7 @@ A high-performance, automated toolkit for running AI tools — [OpenClaw](https:
 - **Connect to Wi-Fi**. Large downloads include Paperclip (~2GB), n8n, and Ollama models. Mobile data plans may be consumed quickly.
 - **Ensure free storage**: Paperclip needs ~2GB free; other tools need ~200–500MB each.
 - **Install Termux from F-Droid** (not Play Store). The Play Store version is obsolete and lacks required packages.
-- **Dependencies auto-installed**: `jq`, `whiptail`, `curl`, `git`, `nodejs`, and `postgresql` are installed automatically by the script if missing.
+- **Dependencies auto-installed**: `jq`, `whiptail`, `gum`, `curl`, `git`, `nodejs`, and `postgresql` are installed automatically by the script if missing.
 
 ---
 
@@ -48,21 +48,21 @@ Execute the following command to start the interactive toolkit:
 curl -sSL https://raw.githubusercontent.com/niyazmft/droid-ai-toolkit/main/install.sh | bash
 ```
 
-> 📝 **What happens next:** The script launches a whiptail menu. Pick one tool at a time — downloads happen in the terminal. It is safe to re-run the script at any time. Keep Termux open and avoid switching apps during installation, as Android's Low Memory Killer may silently terminate the process. Individual tool installs typically take 2–15 minutes depending on your device and network.
+> 📝 **What happens next:** The script launches an interactive TUI menu (`gum` if available, otherwise `whiptail`). Pick one tool at a time — downloads happen in the terminal. It is safe to re-run the script at any time. Keep Termux open and avoid switching apps during installation, as Android's Low Memory Killer may silently terminate the process. Individual tool installs typically take 2–15 minutes depending on your device and network.
 >
 > 💡 **Smart Repair (v1.5.0+):** If a tool is already installed, the toolkit offers a **[R] Repair** mode. Use this to fix Android-specific patches in seconds without re-downloading the entire package.
 
 ### 3. Choose Your Tools
 
-The toolkit uses a nested **whiptail TUI** menu:
+The toolkit uses a nested **TUI** menu. If `gum` (charm.sh) is installed, you get a premium, color-rich interface with visual separators; otherwise it gracefully falls back to `whiptail`:
 
 | Menu | Tools Available |
 | :--- | :--- |
-| **🤖 AGENTS** | OpenClaw, Hermes, Nanobot, Ollama, Pi Coding Agent |
+| **🤖 AGENTS** | OpenClaw, Hermes, Nanobot |
 | **⚙️ WORKFLOWS** | n8n, Paperclip |
-| **🛠 UTILITIES** | Gemini CLI |
-| **🔧 SERVICES** | PM2 Process Management, Native Background Services, GCP Bridge |
-| **🗑 UNINSTALL** | Modular uninstall for any installed tool |
+| **🛠 UTILITIES** | Gemini CLI, Pi Coding Agent, Ollama, GCP Bridge |
+| **🔧 SERVICES** | PM2 Process Management, Native Background Services (sv) |
+| **🗑 UNINSTALL** | Modular uninstall for any installed tool, or WIPE ALL |
 
 ### 4. Onboard OpenClaw (If Installed)
 
@@ -86,6 +86,8 @@ To keep tools running even after you close Termux:
 
 ## ✨ Key Features
 
+- 🎨 **Modern UI Engine**: v1.13.0+ uses `gum` (charm.sh) for premium, color-rich menus with visual separators and touch-friendly navigation; gracefully falls back to `whiptail` if unavailable.
+- ⚡ **Zero-Latency Navigation**: In-memory caching for Bash config lookups eliminates ~1-second menu reload delays.
 - 🛠 **Smart Repair**: Detects existing installations and provides a 2-second "Repair Only" path to re-apply patches without redundant downloads.
 - 🩹 **Zero-Config Patching**: Automatically fixes the `koffi` native bridge and `renameat2` kernel crashes for OpenClaw.
 - 📂 **Path Awareness**: Aggressively redirects `/bin/npm`, `/bin/node`, and `/tmp` to Termux-compatible directories using `$PREFIX`.
@@ -167,47 +169,6 @@ nanobot               # Start the interactive agent
 
 ---
 
-### Ollama — Local LLM Runner
-
-Run large language models locally. Installed via Termux's native package manager.
-
-| | |
-|:---|:---|
-| **Install method** | `pkg install ollama` (Termux native) |
-| **Architecture** | ✅ All architectures supported |
-| **Memory** | ~1GB+ RAM recommended for 7B models |
-
-```bash
-ollama serve          # Start the server
-ollama pull llama3    # Download a model
-ollama run llama3     # Run a model
-```
-
-Use **SERVICES → PM2** to keep Ollama running in the background. Downloaded models are stored in `~/.ollama` and preserved during uninstall.
-
----
-
-### Pi Coding Agent (Recommended)
-
-The high-performance coding agent by Mario Zechner, optimized for the Termux environment.
-
-| | |
-|:---|:---|
-| **Install method** | npm/pnpm global (`@mariozechner/pi-coding-agent`) |
-| **Architecture** | ✅ All architectures supported |
-| **Memory** | ~512MB RAM minimum |
-
-```bash
-pi --help             # View available commands
-pi                    # Start the interactive agent
-```
-
-The toolkit automatically creates `~/.pi/agent/AGENTS.md` with Termux-specific paths (`$HOME`, `$PREFIX`, `termux-open-url`) so the agent never hallucinates standard Linux paths.
-
-> ⚠️ **Warning:** If you already have a command named `pi` on your system, the installer will remove it to avoid conflicts.
-
----
-
 ## ⚙️ Workflows & Automation
 
 ### n8n — Workflow Automation Server
@@ -268,7 +229,7 @@ pm2 start ecosystem.config.cjs # Start server
 
 ---
 
-## 🛠 Utilities
+## 🛠 Developer Utilities
 
 ### Gemini CLI — Google's Command-Line AI Assistant
 
@@ -289,7 +250,48 @@ gemini                # Start interactive session
 
 ---
 
-## 🌐 GCP Bridge Walkthrough (Optional)
+### Pi Coding Agent (Recommended)
+
+The high-performance coding agent optimized for the Termux environment.
+
+| | |
+|:---|:---|
+| **Install method** | npm/pnpm global (`@earendil-works/pi-coding-agent@latest`) |
+| **Architecture** | ✅ All architectures supported |
+| **Memory** | ~512MB RAM minimum |
+
+```bash
+pi --help             # View available commands
+pi                    # Start the interactive agent
+```
+
+The toolkit automatically creates `~/.pi/agent/AGENTS.md` with Termux-specific paths (`$HOME`, `$PREFIX`, `termux-open-url`) so the agent never hallucinates standard Linux paths. Legacy `@mariozechner/pi-coding-agent` installations are automatically detected and migrated.
+
+> ⚠️ **Warning:** If you already have a command named `pi` on your system, the installer will remove it to avoid conflicts.
+
+---
+
+### Ollama — Local LLM Runner
+
+Run large language models locally. Installed via Termux's native package manager.
+
+| | |
+|:---|:---|
+| **Install method** | `pkg install ollama` (Termux native) |
+| **Architecture** | ✅ All architectures supported |
+| **Memory** | ~1GB+ RAM recommended for 7B models |
+
+```bash
+ollama serve          # Start the server
+ollama pull llama3    # Download a model
+ollama run llama3     # Run a model
+```
+
+Use **SERVICES → PM2** to keep Ollama running in the background. Downloaded models are stored in `~/.ollama` and preserved during uninstall.
+
+---
+
+### GCP Bridge Walkthrough (Optional)
 
 To expose your n8n instance securely to the internet (`https://yourdomain.com`), follow this walkthrough:
 
@@ -320,16 +322,16 @@ To expose your n8n instance securely to the internet (`https://yourdomain.com`),
 
 ## 🗑 Uninstallation & Reset
 
-Run the toolkit and select **UNINSTALL** to access the modular uninstallation menu. Each option provides a detailed summary of the impact before you confirm:
+Run the toolkit and select **UNINSTALL** to access the modular uninstallation menu. The order mirrors the on-device menu. Each option provides a detailed summary of the impact before you confirm:
 
 - **Remove OpenClaw**: Choice of **Soft Uninstall** (keeps memories/skills) or **Deep Uninstall** (full wipe). Automatically cleans up PM2 and background services.
-- **Remove Gemini CLI**: Full removal of application binaries and configurations.
 - **Remove n8n**: Surgically kills the GCP tunnel (port 5678) and removes the watchdog cron.
-- **Remove Ollama**: Removes the package. Downloaded models in `~/.ollama` are preserved.
+- **Remove Gemini CLI**: Full removal of application binaries and configurations.
 - **Remove Hermes**: Runs the official uninstaller if available, otherwise removes directories manually.
-- **Remove Nanobot**: pip uninstall + directory cleanup.
+- **Remove Ollama**: Removes the package. Downloaded models in `~/.ollama` are preserved.
 - **Remove Pi**: Full removal of global package and configuration.
 - **Remove Paperclip**: Stops the PM2 service and preserves the source code and PostgreSQL database.
+- **Remove Nanobot**: pip uninstall + directory cleanup.
 - **Wipe Software Stack (Reset)**: Batch "Deep Uninstall" of all applications. **Safe Reset**: Cleans all toolkit-specific data but **preserves system packages** (Node.js, Git, Python, etc.) so your other Termux apps don't break.
 
 ---
@@ -417,6 +419,7 @@ This project implements a "Zero-Waste" and "Self-Healing" quality gate to mainta
 - **ESLint v10**: Modern JavaScript and JSON linting via Flat Config.
 - **Stylelint**: Standardized CSS quality checks.
 - **Markdownlint**: Documentation consistency enforcement.
+- **ShellCheck**: Bash script static analysis.
 - **Husky & lint-staged**: Automated pre-commit hooks to auto-fix code.
 - **Self-Healing**: Custom Python scripts to safely refactor unused code.
 

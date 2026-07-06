@@ -44,18 +44,37 @@ case ":$PATH:" in
   *) export PATH="$PNPM_HOME:$PATH" ;;
 esac
 
+# Cache expensive PATH lookups for the session
+_HAS_PNPM=$(command -v pnpm 2>/dev/null || true)
+_HAS_PM2=$(command -v pm2 2>/dev/null || true)
+_HAS_JQ=$(command -v jq 2>/dev/null || true)
+
 # --- 2. HELPER FUNCTIONS ---
 
 status_msg() { echo -ne "\r${CLEAR_LINE}${BLUE}==>${NC} $1... "; }
-error_msg() { echo -e "\r${CLEAR_LINE}${RED}Error:${NC} $1"; }
+error_msg() { echo -e "\n${RED}Error:${NC} $1"; }
 success_msg() { echo -e "${GREEN}Done.${NC}"; }
 warn_msg() { echo -e "\r${CLEAR_LINE}${YELLOW}Warning:${NC} $1"; }
-wait_to_continue() { read -p "$(printf "\n${BLUE}>>${NC} Press Enter to continue...")" junk; }
+wait_to_continue() {
+    echo -ne "\n${BLUE}>>${NC} Press Enter to continue (or wait 3s)..."
+    read -t 3 -r junk 2>/dev/null || true
+    echo ""
+}
+
+# Returns a runtime indicator string for menu descriptions
+_running_indicator() {
+    local proc_pattern=$1
+    if pgrep -f "$proc_pattern" >/dev/null 2>&1; then
+        echo "${GREEN}(running)${NC}"
+    else
+        echo "${RED}(stopped)${NC}"
+    fi
+}
 
 ensure_deps() {
     export DEBIAN_FRONTEND=noninteractive
     local pkgs=()
-    if ! command -v jq >/dev/null 2>&1; then
+    if [ -z "$_HAS_JQ" ]; then
         pkgs+=(jq)
     fi
     if ! command -v whiptail >/dev/null 2>&1; then
@@ -66,7 +85,15 @@ ensure_deps() {
     fi
     if [ ${#pkgs[@]} -gt 0 ]; then
         status_msg "Installing required toolkit dependencies (${pkgs[*]})"
-        pkg update -y -o Dpkg::Options::=--force-confold >/dev/null 2>&1 || true
+        # Skip apt update if lists are fresh (< 1 hour) to avoid network hit on every launch
+        local apt_lists_dir="$PREFIX/var/lib/apt/lists"
+        local needs_update=1
+        if [ -d "$apt_lists_dir" ] && [ -n "$(find "$apt_lists_dir" -maxdepth 0 -mmin -60 2>/dev/null)" ]; then
+            needs_update=0
+        fi
+        if [ "$needs_update" -eq 1 ]; then
+            pkg update -y -o Dpkg::Options::=--force-confold >/dev/null 2>&1 || true
+        fi
         pkg install -y -o Dpkg::Options::=--force-confold "${pkgs[@]}" >/dev/null 2>&1
         success_msg
     fi
@@ -116,16 +143,21 @@ health_check() {
 }
 
 get_mem_limit() {
+    if [ -n "$_CACHED_MEM_LIMIT" ]; then
+        echo "$_CACHED_MEM_LIMIT"
+        return
+    fi
     local total_ram=$(free -m | awk '/^Mem:/{print $2}')
     # Aim for 75% of total RAM, but cap at 2048MB for stability
     local calculated=$(( total_ram * 75 / 100 ))
     if [ "$calculated" -gt 2048 ]; then
-        echo "2048"
+        _CACHED_MEM_LIMIT="2048"
     elif [ "$calculated" -lt 512 ]; then
-        echo "512"
+        _CACHED_MEM_LIMIT="512"
     else
-        echo "$calculated"
+        _CACHED_MEM_LIMIT="$calculated"
     fi
+    echo "$_CACHED_MEM_LIMIT"
 }
 
 # pnpm (v10+) may print warnings to stdout when npm_config_force=true.
@@ -147,6 +179,16 @@ get_global_node_path() {
         fi
     fi
     echo "$node_path"
+}
+
+# Portable timeout wrapper: falls back to direct execution if `timeout` is absent
+safe_timeout() {
+    local secs=$1; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+    else
+        "$@"
+    fi
 }
 
 # jiter has no armv8l wheels and maturin rejects armv8l.
@@ -390,6 +432,100 @@ confirm_action() {
     return 1
 }
 
+# --- 2.5. TUI HELPERS ---
+# Use whiptail for menus; fallback to plain text if unavailable.
+
+# Detect terminal size for whiptail sizing
+get_term_size() {
+    local rows cols
+    if [ -t 0 ]; then
+        read -r rows cols < <(stty size 2>/dev/null || echo "24 80")
+    else
+        rows=24; cols=80
+    fi
+    # Cap whiptail dimensions with padding
+    local whi_rows=$(( rows > 10 ? rows - 4 : rows ))
+    local whi_cols=$(( cols > 20 ? cols - 4 : cols ))
+    # Minimum safe sizes for whiptail
+    [ "$whi_rows" -lt 15 ] && whi_rows=15
+    [ "$whi_cols" -lt 50 ] && whi_cols=50
+    echo "$whi_rows $whi_cols"
+}
+
+WHI_SIZES=$(get_term_size)
+WHI_ROWS=$(echo "$WHI_SIZES" | awk '{print $1}')
+WHI_COLS=$(echo "$WHI_SIZES" | awk '{print $2}')
+
+# show_menu <title> <items...
+# items are passed as tag desc pairs, without dynamic status prefixing.
+show_whi_menu() {
+    local title="$1"; shift
+    local -a items=() tags=() descs=()
+    while [ $# -gt 0 ]; do
+        items+=("$1" "$2")
+        tags+=("$1")
+        if [ "$1" = "" ]; then
+            descs+=(" ")  # Use blank space for separator
+        else
+            descs+=("$2")
+        fi
+        shift 2
+    done
+
+    if command -v gum >/dev/null 2>&1; then
+        clear >&2
+        gum style --border double --margin "1" --padding "1" --border-foreground 212 "Droid AI Toolkit v$VERSION" >&2
+        local choice_desc
+        choice_desc=$(gum choose --header "$title" --cursor="> " "${descs[@]}") || return 1
+        for i in "${!descs[@]}"; do
+            if [ "${descs[$i]}" = "$choice_desc" ]; then
+                echo "${tags[$i]}"
+                return 0
+            fi
+        done
+        return 1
+    else
+        whiptail --title "Droid AI Toolkit v$VERSION" --nocancel --ok-button "Enter" --menu "$title" "$WHI_ROWS" "$WHI_COLS" $(( ${#items[@]} / 2 )) \
+            "${items[@]}" 3>&1 1>&2 2>&3
+    fi
+}
+
+# yesno <text>
+# Standard confirmation dialog: Yes → proceed, No → cancel
+# Returns 0 if user confirms (Yes), 1 if user cancels (No)
+whiptail_confirm() {
+    local text="$1"
+    if command -v gum >/dev/null 2>&1; then
+        gum confirm "$text"
+        return $?
+    else
+        if ! whiptail --title "Confirm" --yes-button "Yes" --no-button "No" --yesno "$text" 8 "$WHI_COLS" 3>&1 1>&2 2>&3; then
+            return 1
+        fi
+        return 0
+    fi
+}
+
+# msgbox <text>
+whiptail_msg() {
+    local text="$1"
+    if command -v gum >/dev/null 2>&1; then
+        echo ""
+        gum style --border normal --border-foreground 212 --padding "1 2" "$text"
+        echo -n "Press Enter to continue..."
+        read -r
+    else
+        whiptail --title "Notice" --msgbox "$text" 8 "$WHI_COLS" 3>&1 1>&2 2>&3
+    fi
+}
+
+ensure_nodejs_links() {
+    if [ -d "$PREFIX/opt/nodejs-22/bin" ]; then
+        local node_opt_bin="$PREFIX/opt/nodejs-22/bin"
+        execute "ln -sf '$node_opt_bin/node' '$TERMUX_BIN/node' && ln -sf '$node_opt_bin/npm' '$TERMUX_BIN/npm'" "Verifying Node.js links"
+    fi
+}
+
 # Execute a command with a loading spinner & localized logs
 execute() {
     local cmd="$1"
@@ -408,8 +544,8 @@ execute() {
     ) &
     local spinner_pid=$!
     
-    # Ensure spinner dies if user hits Ctrl+C
-    trap 'kill $spinner_pid 2>/dev/null; rm -f "$tmp_log"; exit 1' INT TERM
+    # Ensure spinner dies if user hits Ctrl+C — print context before aborting
+    trap 'echo -e "\n${YELLOW}Interrupted by user.${NC}"; kill $spinner_pid 2>/dev/null; rm -f "$tmp_log"; exit 1' INT TERM
     
     # Run command and capture exit code
     local exit_code=0
@@ -431,7 +567,7 @@ execute() {
         echo -e "\n${RED}Error details for this step:${NC}"
         tail -n 15 "$LOG_FILE"
         echo -e "\n${YELLOW}Full log available at: $LOG_FILE${NC}"
-        exit 1
+        return $exit_code
     fi
 }
 
@@ -451,15 +587,17 @@ install_openclaw() {
     local target_version="latest"
 
     if is_installed "openclaw"; then
-        echo -e "\n${YELLOW}OpenClaw is already installed.${NC}"
-        echo "1) [R] Repair Patches (Fast)"
-        echo "2) [U] Update to Latest (Full)"
-        echo "3) Back"
-        read -p "$(printf "${BLUE}>>${NC} Select Option [1-3]: ")" REPAIR_CHOICE
-        case $REPAIR_CHOICE in
-            1) mode="repair" ;;
-            2) mode="full" ;;
-            *) return 0 ;;
+        local choice
+        choice=$(show_whi_menu "OpenClaw is already installed  |  Use ↑/↓ and Enter" \
+            "REPAIR"   "[R]  Repair Patches (Fast — ~2 seconds)" \
+            "UPDATE"   "[U]  Update to Latest (Full re-install)" \
+            ""         "" \
+            "BACK"     "<--  BACK TO AGENTS MENU") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            REPAIR) mode="repair" ;;
+            UPDATE) mode="full" ;;
+            BACK|*) return 0 ;;
         esac
     else
         confirm_action "Install OpenClaw" || return 0
@@ -467,7 +605,7 @@ install_openclaw() {
     fi
 
     rm -f "$LOG_FILE"
-    echo -e "${YELLOW}Verbose logs are being written to $LOG_FILE${NC}\n"
+    echo -e "${YELLOW}Verbose logs: $LOG_FILE${NC}\n"
 
     status_msg "Stopping existing tasks & freeing memory"
     pkill -9 -f "openclaw" 2>/dev/null || true
@@ -481,12 +619,9 @@ install_openclaw() {
     if [[ "$mode" == "full" ]]; then
         # Batched package installation for performance
         smart_pkg_install tur-repo build-essential libvips openssh git python3 pkg-config cmake tmux binutils termux-services ffmpeg golang nodejs-22 psmisc
-
-        if [ -d "$PREFIX/opt/nodejs-22/bin" ]; then
-            NODE_OPT_BIN="$PREFIX/opt/nodejs-22/bin"
-            execute "ln -sf '$NODE_OPT_BIN/node' '$TERMUX_BIN/node' && ln -sf '$NODE_OPT_BIN/npm' '$TERMUX_BIN/npm'" "Verifying Node.js links"
-        fi
     fi
+
+    ensure_nodejs_links
 
     PKG_MANAGER=$(select_package_manager "openclaw")
     [[ "$PKG_MANAGER" == "back" ]] && return 0
@@ -508,43 +643,43 @@ install_openclaw() {
     apply_patches
     success_msg
     
-    # Configure for Termux
-    CONFIG_PATH="$HOME/.openclaw/openclaw.json"
-    if [ -f "$CONFIG_PATH" ]; then
-        status_msg "Configuring Termux-specific settings"
-        local tmp_cfg; tmp_cfg=$(mktemp)
-        # Apply configuration updates with atomic move
-        # 1. Deep merge channel tokens, force disable audio, streaming and UI
-        # 2. Clean up channel objects that should not exist on mobile
-        # 3. Fix legacy keys and validate schema via doctor
-        jq '
-            .channelToken = ((.channelToken // {}) + {"telegram": (.channelToken.telegram // "YOUR_BOT_TOKEN")}) |
-            .ui.showSystemPrompt = false |
-            .disableAudio = true |
-            .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= . + {"enabled": false})) |
-            del(.plugins.entries.telegram, .plugins.entries.ollama, .plugins.entries["memory-core"]) |
-            .plugins.entries.telegram = {"enabled": true, "path": "builtin:telegram", "description": "Telegram channel"} |
-            .plugins.entries.ollama = {"enabled": true, "path": "builtin:ollama", "description": "Ollama plugin"} |
-            .plugins.entries["memory-core"] = {"enabled": true, "path": "builtin:memory", "description": "Memory plugin"} |
-            del(.plugins.entries["kimi-coding"], .plugins.entries["speech-core"], .plugins.entries["image-generation-core"], .plugins.entries["video-generation-core"], .plugins.entries["media-understanding-core"]) |
-            .plugins.entries = (if (.plugins.entries | type) == "object" then (.plugins.entries) else {} end) |
-            .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= if (.enabled? | type) == "boolean" then . else . + {"enabled": false} end)) |
-            .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= . + {"enabled": false})) |
-            del(.plugins.entries.telegram, .plugins.entries.ollama, .plugins.entries["memory-core"]) |
-            .plugins.entries.telegram = {"enabled": true} |
-            .plugins.entries.ollama = {"enabled": true} |
-            .plugins.entries["memory-core"] = {"enabled": true} |
-            del(.channels.telegram.streamMode, .channels.telegram.chunkMode, .channels.telegram.blockStreaming, .channels.telegram.draftChunk, .channels.telegram.blockStreamingCoalesce) |
-            del(.channels.slack.streamMode, .channels.slack.chunkMode, .channels.slack.blockStreaming, .channels.slack.blockStreamingCoalesce, .channels.slack.nativeStreaming) |
-            if (.channels.telegram.streaming? | type) != "object" then del(.channels.telegram.streaming) else . end |
-            if (.channels.slack.streaming? | type) != "object" then del(.channels.slack.streaming) else . end' "$CONFIG_PATH" > "$tmp_cfg" && mv "$tmp_cfg" "$CONFIG_PATH"
-        
-        # 4. Automated Migration: Fix legacy keys and validate schema
-        # We ignore failure because doctor --fix tries to install systemd services on Linux, which fails on Android but is not critical.
-        yes "" | openclaw doctor --fix >> "$LOG_FILE" 2>&1 || true
-        success_msg
-    fi
     if [[ "$mode" == "full" ]]; then
+        # Configure for Termux
+        CONFIG_PATH="$HOME/.openclaw/openclaw.json"
+        if [ -f "$CONFIG_PATH" ]; then
+            status_msg "Configuring Termux-specific settings"
+            local tmp_cfg; tmp_cfg=$(mktemp)
+            # Apply configuration updates with atomic move
+            # 1. Deep merge channel tokens, force disable audio, streaming and UI
+            # 2. Clean up channel objects that should not exist on mobile
+            # 3. Fix legacy keys and validate schema via doctor
+            jq '
+                .channelToken = ((.channelToken // {}) + {"telegram": (.channelToken.telegram // "YOUR_BOT_TOKEN")}) |
+                .ui.showSystemPrompt = false |
+                .disableAudio = true |
+                .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= . + {"enabled": false})) |
+                del(.plugins.entries.telegram, .plugins.entries.ollama, .plugins.entries["memory-core"]) |
+                .plugins.entries.telegram = {"enabled": true, "path": "builtin:telegram", "description": "Telegram channel"} |
+                .plugins.entries.ollama = {"enabled": true, "path": "builtin:ollama", "description": "Ollama plugin"} |
+                .plugins.entries["memory-core"] = {"enabled": true, "path": "builtin:memory", "description": "Memory plugin"} |
+                del(.plugins.entries["kimi-coding"], .plugins.entries["speech-core"], .plugins.entries["image-generation-core"], .plugins.entries["video-generation-core"], .plugins.entries["media-understanding-core"]) |
+                .plugins.entries = (if (.plugins.entries | type) == "object" then (.plugins.entries) else {} end) |
+                .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= if (.enabled? | type) == "boolean" then . else . + {"enabled": false} end)) |
+                .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= . + {"enabled": false})) |
+                del(.plugins.entries.telegram, .plugins.entries.ollama, .plugins.entries["memory-core"]) |
+                .plugins.entries.telegram = {"enabled": true} |
+                .plugins.entries.ollama = {"enabled": true} |
+                .plugins.entries["memory-core"] = {"enabled": true} |
+                del(.channels.telegram.streamMode, .channels.telegram.chunkMode, .channels.telegram.blockStreaming, .channels.telegram.draftChunk, .channels.telegram.blockStreamingCoalesce) |
+                del(.channels.slack.streamMode, .channels.slack.chunkMode, .channels.slack.blockStreaming, .channels.slack.blockStreamingCoalesce, .channels.slack.nativeStreaming) |
+                if (.channels.telegram.streaming? | type) != "object" then del(.channels.telegram.streaming) else . end |
+                if (.channels.slack.streaming? | type) != "object" then del(.channels.slack.streaming) else . end' "$CONFIG_PATH" > "$tmp_cfg" && mv "$tmp_cfg" "$CONFIG_PATH"
+            
+            # 4. Automated Migration: Fix legacy keys and validate schema
+            # We ignore failure because doctor --fix tries to install systemd services on Linux, which fails on Android but is not critical.
+            yes "" | openclaw doctor --fix >> "$LOG_FILE" 2>&1 || true
+            success_msg
+        fi
         apply_patches "silent"
     fi
     
@@ -558,84 +693,68 @@ install_openclaw() {
     wait_to_continue
 }
 
-apply_patches() {
+# --- 4.1. PATCH ENGINE ---
+# Modular patch functions: each handles one tool's Android-specific fixes.
+# Called individually or via apply_patches() coordinator.
+
+patch_koffi() {
     local silent=$1
+    local KOFFI_SRC="$OPENCLAW_ROOT/node_modules/koffi/lib/native/base/base.cc"
+    [ -f "$KOFFI_SRC" ] || return 0
+
+    local K_TRIPLET="android_armsf"
+    [[ "$ARCH_TYPE" == "aarch64" ]] && K_TRIPLET="android_arm64"
+    local KOFFI_NODE="$OPENCLAW_ROOT/node_modules/koffi/build/koffi/$K_TRIPLET/koffi.node"
     local verbose_flag=""
     [[ "$silent" == "silent" ]] && verbose_flag="-q"
-    
-    # 1. Koffi Patch
-    KOFFI_SRC="$OPENCLAW_ROOT/node_modules/koffi/lib/native/base/base.cc"
-    if [ -f "$KOFFI_SRC" ] && [[ "$silent" != "silent" ]]; then
+
+    # Skip rebuild if binary exists and is newer than source (saves 30-60s on ARM)
+    if [ -f "$KOFFI_NODE" ] && [ "$KOFFI_NODE" -nt "$KOFFI_SRC" ] && [[ "$silent" != "silent" ]]; then
+        status_msg "Koffi binary already built"
+        success_msg
+        return 0
+    fi
+
+    if [[ "$silent" != "silent" ]]; then
         execute "sed -i 's/renameat2(AT_FDCWD, src_filename, AT_FDCWD, dest_filename, RENAME_NOREPLACE)/rename(src_filename, dest_filename)/g' '$KOFFI_SRC'" "Patching Koffi native library"
         execute "cd '$OPENCLAW_ROOT/node_modules/koffi' && JOBS=1 MAKEFLAGS='-j1' node src/cnoke/cnoke.js -p . -d src/koffi --prebuild" "Rebuilding Koffi"
-        
-        local K_TRIPLET="android_armsf"
-        [[ "$ARCH_TYPE" == "aarch64" ]] && K_TRIPLET="android_arm64"
         execute "mkdir -p '$K_TRIPLET' && cp 'build/koffi/$K_TRIPLET/koffi.node' '$K_TRIPLET/'" "Mapping Koffi binary"
-    elif [ -f "$KOFFI_SRC" ]; then
+    else
         sed -i 's/renameat2(AT_FDCWD, src_filename, AT_FDCWD, dest_filename, RENAME_NOREPLACE)/rename(src_filename, dest_filename)/g' "$KOFFI_SRC"
         (cd "$OPENCLAW_ROOT/node_modules/koffi" && JOBS=1 MAKEFLAGS='-j1' node src/cnoke/cnoke.js -p . -d src/koffi --prebuild $verbose_flag) 2>/dev/null || true
-        [[ "$ARCH_TYPE" == "aarch64" ]] && K_TRIPLET="android_arm64" || K_TRIPLET="android_armsf"
         mkdir -p "$K_TRIPLET" && cp "build/koffi/$K_TRIPLET/koffi.node" "$K_TRIPLET/" 2>/dev/null || true
     fi
+}
 
-    # 2. Gemini CLI Patch: Prevent ENOENT on Android
-    GEMINI_ROOT="$(npm root -g 2>/dev/null || echo "$PREFIX/lib/node_modules")"
-    if [ -d "$GEMINI_ROOT" ] && [[ "$silent" != "silent" ]]; then
-        execute "find -L '$GEMINI_ROOT' -type f -name 'projectRegistry.js' -exec sed -i 's|await fs.promises.rename(\([^,]*\), \([^)]*\))|await fs.promises.copyFile(\1, \2); await fs.promises.unlink(\1)|g' {} + 2>/dev/null || true" "Patching Gemini CLI for Android"
-    elif [ -d "$GEMINI_ROOT" ]; then
-        # Uses regex to preserve variable names (e.g., tmpPath, registryPath)
-        find -L "$GEMINI_ROOT" -type f -name "projectRegistry.js" -exec sed -i 's|await fs.promises.rename(\([^,]*\), \([^)]*\))|await fs.promises.copyFile(\1, \2); await fs.promises.unlink(\1)|g' {} + 2>/dev/null || true
+patch_gemini_cli() {
+    local silent=$1
+    local _gemini_paths; _gemini_paths="$(get_global_node_path)"
+    [ -n "$_gemini_paths" ] || return 0
+
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Patching Gemini CLI for Android"
     fi
+    local _gp
+    IFS=':' read -ra _gpaths <<< "$_gemini_paths"
+    for _gp in "${_gpaths[@]}"; do
+        [ -d "$_gp" ] || continue
+        find -L "$_gp" -maxdepth 6 -type f -name "projectRegistry.js" -exec sed -i 's|await fs.promises.rename(\([^,]*\), \([^)]*\))|await fs.promises.copyFile(\1, \2); await fs.promises.unlink(\1)|g' {} + 2>/dev/null || true
+    done
+    if [[ "$silent" != "silent" ]]; then
+        success_msg
+    fi
+}
 
-    # 3. Paperclip Repair (if installed)
-    if [ -f "$HOME/paperclip/server/dist/index.js" ]; then
-        # Path redirection: /tmp -> ~/.tmp, /usr/local/bin -> $PREFIX/bin
-        if [[ "$silent" != "silent" ]]; then
-            execute "sed -i 's|/tmp/|${HOME}/.tmp/|g; s|/usr/local/bin|${PREFIX}/bin|g' '${HOME}/paperclip/server/dist/index.js'" "Patching Paperclip paths"
-        else
-            sed -i 's|/tmp/|'"${HOME}"'/.tmp/|g; s|/usr/local/bin|'"${PREFIX}"'/bin|g' "$HOME/paperclip/server/dist/index.js" 2>/dev/null || true
-        fi
+create_sqlite3_stub() {
+    local SQLITE3_DIR="$HOME/paperclip/node_modules/.pnpm/sqlite3@5.1.7/node_modules/sqlite3"
+    [ -d "$SQLITE3_DIR" ] || return 0
+    [ ! -f "$SQLITE3_DIR/build/node_sqlite3.node" ] || return 0
 
-        # Repair workspace symlinks (pnpm v9 may not create them on Android)
-        if [ -d "$HOME/paperclip/node_modules/.pnpm" ]; then
-            find -L "$HOME/paperclip/node_modules/.bin" -type l -delete 2>/dev/null || true
-            mkdir -p "$HOME/paperclip/node_modules/@paperclipai"
-            declare -A PC_PKG_MAP=(
-                ["db"]="packages/db"
-                ["shared"]="packages/shared"
-                ["adapter-utils"]="packages/adapter-utils"
-                ["mcp-server"]="packages/mcp-server"
-                ["skills-catalog"]="packages/skills-catalog"
-                ["plugin-sdk"]="packages/plugins/sdk"
-                ["adapter-acpx-local"]="packages/adapters/acpx-local"
-                ["adapter-claude-local"]="packages/adapters/claude-local"
-                ["adapter-codex-local"]="packages/adapters/codex-local"
-                ["adapter-cursor-cloud"]="packages/adapters/cursor-cloud"
-                ["adapter-cursor-local"]="packages/adapters/cursor-local"
-                ["adapter-gemini-local"]="packages/adapters/gemini-local"
-                ["adapter-grok-local"]="packages/adapters/grok-local"
-                ["adapter-openclaw-gateway"]="packages/adapters/openclaw-gateway"
-                ["adapter-opencode-local"]="packages/adapters/opencode-local"
-                ["adapter-pi-local"]="packages/adapters/pi-local"
-                ["create-paperclip-plugin"]="packages/plugins/create-paperclip-plugin"
-                ["plugin-fake-sandbox"]="packages/plugins/paperclip-plugin-fake-sandbox"
-                ["plugin-workspace-diff"]="packages/plugins/plugin-workspace-diff"
-            )
-            for name in "${!PC_PKG_MAP[@]}"; do
-                target="${PC_PKG_MAP[$name]}"
-                [ -d "$HOME/paperclip/$target" ] && ln -sf "../../$target" "$HOME/paperclip/node_modules/@paperclipai/$name" 2>/dev/null || true
-            done
-        fi
-
-        # Stub sqlite3 (native module can't compile on Android)
-        SQLITE3_DIR="$HOME/paperclip/node_modules/.pnpm/sqlite3@5.1.7/node_modules/sqlite3"
-        if [ -d "$SQLITE3_DIR" ] && [ ! -f "$SQLITE3_DIR/build/node_sqlite3.node" ]; then
-            mkdir -p "$SQLITE3_DIR/build" "$SQLITE3_DIR/lib"
-            cat > "$SQLITE3_DIR/package.json" << 'PKGEOF'
+    mkdir -p "$SQLITE3_DIR/build" "$SQLITE3_DIR/lib"
+    cat > "$SQLITE3_DIR/package.json" << 'PKGEOF'
 {"name":"sqlite3","version":"5.1.7","main":"./lib/sqlite3.js","type":"commonjs"}
 PKGEOF
-            cat > "$SQLITE3_DIR/lib/sqlite3.js" << 'JSEOF'
+    cat > "$SQLITE3_DIR/lib/sqlite3.js" << 'JSEOF'
 const Database = function() {};
 Database.prototype.run = function() { return this; };
 Database.prototype.get = function() { return this; };
@@ -646,35 +765,97 @@ Database.prototype.parallelize = function(fn) { if (fn) fn(); };
 module.exports = Database;
 module.exports.Database = Database;
 JSEOF
-            cp "$SQLITE3_DIR/lib/sqlite3.js" "$SQLITE3_DIR/index.js"
-            cp "$SQLITE3_DIR/lib/sqlite3.js" "$SQLITE3_DIR/build/node_sqlite3.node"
-        fi
+    cp "$SQLITE3_DIR/lib/sqlite3.js" "$SQLITE3_DIR/index.js"
+    cp "$SQLITE3_DIR/lib/sqlite3.js" "$SQLITE3_DIR/build/node_sqlite3.node"
+}
+
+patch_paperclip() {
+    local silent=$1
+    [ -f "$HOME/paperclip/server/dist/index.js" ] || return 0
+
+    # Path redirection: /tmp -> ~/.tmp, /usr/local/bin -> $PREFIX/bin
+    if [[ "$silent" != "silent" ]]; then
+        execute "sed -i 's|/tmp/|${HOME}/.tmp/|g; s|/usr/local/bin|${PREFIX}/bin|g' '${HOME}/paperclip/server/dist/index.js'" "Patching Paperclip paths"
+    else
+        sed -i 's|/tmp/|'"${HOME}"'/.tmp/|g; s|/usr/local/bin|"'"${PREFIX}"'/bin|g' "$HOME/paperclip/server/dist/index.js" 2>/dev/null || true
     fi
 
-    # 4. OpenClaw Hardlink Patch (EACCES on Android)
-    if [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ]; then
-        if [[ "$silent" != "silent" ]]; then
-            execute "find -L '$OPENCLAW_ROOT' -type f -name '*.js' -exec sed -i -E 's/promises\.link\(/promises.copyFile(/g; s/fs\.linkSync\(/fs.copyFileSync(/g; s/\bfs\.link\(/fs.copyFile(/g' {} + 2>/dev/null || true" "Patching OpenClaw native hardlinks"
-        else
-            find -L "$OPENCLAW_ROOT" -type f -name '*.js' -exec sed -i -E 's/promises\.link\(/promises.copyFile(/g; s/fs\.linkSync\(/fs.copyFileSync(/g; s/\bfs\.link\(/fs.copyFile(/g' {} + 2>/dev/null || true
-        fi
+    # Repair workspace symlinks (pnpm v9 may not create them on Android)
+    if [ -d "$HOME/paperclip/node_modules/.pnpm" ]; then
+        find -L "$HOME/paperclip/node_modules/.bin" -type l -delete 2>/dev/null || true
+        mkdir -p "$HOME/paperclip/node_modules/@paperclipai"
+        local -a PC_NAMES=(
+            db shared adapter-utils mcp-server skills-catalog plugin-sdk
+            adapter-acpx-local adapter-claude-local adapter-codex-local
+            adapter-cursor-cloud adapter-cursor-local adapter-gemini-local
+            adapter-grok-local adapter-openclaw-gateway adapter-opencode-local
+            adapter-pi-local create-paperclip-plugin plugin-fake-sandbox
+            plugin-workspace-diff
+        )
+        local -a PC_PATHS=(
+            packages/db packages/shared packages/adapter-utils packages/mcp-server
+            packages/skills-catalog packages/plugins/sdk
+            packages/adapters/acpx-local packages/adapters/claude-local
+            packages/adapters/codex-local packages/adapters/cursor-cloud
+            packages/adapters/cursor-local packages/adapters/gemini-local
+            packages/adapters/grok-local packages/adapters/openclaw-gateway
+            packages/adapters/opencode-local packages/adapters/pi-local
+            packages/plugins/create-paperclip-plugin
+            packages/plugins/paperclip-plugin-fake-sandbox
+            packages/plugins/plugin-workspace-diff
+        )
+        local i _name _path
+        for i in "${!PC_NAMES[@]}"; do
+            _name="${PC_NAMES[$i]}"
+            _path="${PC_PATHS[$i]}"
+            [ -d "$HOME/paperclip/$_path" ] && ln -sf "../../$_path" "$HOME/paperclip/node_modules/@paperclipai/$_name" 2>/dev/null || true
+        done
+    fi
+
+    create_sqlite3_stub
+}
+
+patch_openclaw_links() {
+    local silent=$1
+    [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
+
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Patching OpenClaw native hardlinks"
+    fi
+    # Pre-filter with grep -rl (much faster than find -exec sed on every .js in node_modules)
+    grep -rlZE 'promises\.link\(|fs\.linkSync\(|[^a-zA-Z0-9_]fs\.link\(' "$OPENCLAW_ROOT" 2>/dev/null | while IFS= read -r _jsfile; do
+        sed -i -E 's/promises\.link\(/promises.copyFile(/g; s/fs\.linkSync\(/fs.copyFileSync(/g; s/\bfs\.link\(/fs.copyFile(/g' "$_jsfile" 2>/dev/null || true
+    done
+    if [[ "$silent" != "silent" ]]; then
+        success_msg
     fi
 }
 
-# --- 4.5. PI CODING AGENT INSTALLATION ---
+# Thin coordinator: invokes all patch modules.
+apply_patches() {
+    local silent=$1
+    patch_koffi "$silent"
+    patch_gemini_cli "$silent"
+    patch_paperclip "$silent"
+    patch_openclaw_links "$silent"
+}
+
+# --- 5. PI CODING AGENT INSTALLATION ---
 
 install_pi() {
     local mode="full"
     if is_installed "@earendil-works/pi-coding-agent" || is_installed "@mariozechner/pi-coding-agent"; then
-        echo -e "\n${YELLOW}Pi Coding Agent is already installed.${NC}"
-        echo "1) [R] Repair / Reinstall"
-        echo "2) [U] Update to Latest"
-        echo "3) Back"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" REPAIR_CHOICE
-        case $REPAIR_CHOICE in
-            1) mode="repair" ;;
-            2) mode="full" ;;
-            *) return 0 ;;
+        local choice
+        choice=$(show_whi_menu "Pi Coding Agent is already installed  |  Use ↑/↓ and Enter" \
+            "REPAIR"   "[R]  Repair / Reinstall (regenerate context)" \
+            "UPDATE"   "[U]  Update to Latest (full re-install)" \
+            ""         "" \
+            "BACK"     "<--  BACK TO UTILITIES MENU") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            REPAIR) mode="repair" ;;
+            UPDATE) mode="full" ;;
+            BACK|*) return 0 ;;
         esac
     else
         confirm_action "Install Pi Coding Agent" || return 0
@@ -691,10 +872,12 @@ install_pi() {
 
     PKG_MANAGER=$(select_package_manager "pi-coding-agent")
 
-    if [ "$PKG_MANAGER" == "npm" ]; then
-        execute "npm uninstall -g @mariozechner/pi-coding-agent 2>/dev/null || true; npm install -g @earendil-works/pi-coding-agent@latest" "Installing Pi Coding Agent via npm"
-    else
-        execute "pnpm remove -g @mariozechner/pi-coding-agent 2>/dev/null || true; pnpm add -g @earendil-works/pi-coding-agent@latest --force --ignore-scripts" "Installing Pi Coding Agent via pnpm"
+    if [[ "$mode" == "full" ]]; then
+        if [ "$PKG_MANAGER" == "npm" ]; then
+            execute "npm uninstall -g @mariozechner/pi-coding-agent 2>/dev/null || true; npm install -g @earendil-works/pi-coding-agent@latest" "Installing Pi Coding Agent via npm"
+        else
+            execute "pnpm remove -g @mariozechner/pi-coding-agent 2>/dev/null || true; pnpm add -g @earendil-works/pi-coding-agent@latest --force --ignore-scripts" "Installing Pi Coding Agent via pnpm"
+        fi
     fi
 
     status_msg "Optimizing Pi environment context"
@@ -726,20 +909,22 @@ EOF
     wait_to_continue
 }
 
-# --- 5. GEMINI CLI INSTALLATION ---
+# --- 6. GEMINI CLI INSTALLATION ---
 
 install_gemini_cli() {
     local mode="full"
     if is_installed "gemini-cli"; then
-        echo -e "\n${YELLOW}Gemini CLI is already installed.${NC}"
-        echo "1) [R] Repair"
-        echo "2) [U] Update to Latest"
-        echo "3) Back"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" GEM_CHOICE
-        case $GEM_CHOICE in
-            1) mode="repair" ;;
-            2) mode="full" ;;
-            *) return 0 ;;
+        local choice
+        choice=$(show_whi_menu "Gemini CLI is already installed  |  Use ↑/↓ and Enter" \
+            "REPAIR"   "[R]  Repair (re-apply Android patches)" \
+            "UPDATE"   "[U]  Update to Latest (full re-install)" \
+            ""         "" \
+            "BACK"     "<--  BACK TO UTILITIES MENU") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            REPAIR) mode="repair" ;;
+            UPDATE) mode="full" ;;
+            BACK|*) return 0 ;;
         esac
     else
         confirm_action "Install Gemini CLI" || return 0
@@ -760,10 +945,14 @@ install_gemini_cli() {
     fi
 
 # Apply patches to prevent ENOENT errors during registry writes
-    GEMINI_ROOT="$(get_global_node_path)"
-    if command -v gemini >/dev/null 2>&1 || [ -d "$GEMINI_ROOT" ]; then
+    local gemini_root_paths; gemini_root_paths="$(get_global_node_path)"
+    if command -v gemini >/dev/null 2>&1 || [ -d "$gemini_root_paths" ]; then
         status_msg "Patching Gemini CLI for Android"
-        find -L "$GEMINI_ROOT" -type f -name 'projectRegistry.js' -exec sed -i 's|await fs.promises.rename(\([^,]*\), \([^)]*\))|await fs.promises.copyFile(\1, \2); await fs.promises.unlink(\1)|g' {} + 2>/dev/null || true
+        IFS=':' read -ra _gemini_roots <<< "$gemini_root_paths"
+        for _groot in "${_gemini_roots[@]}"; do
+            [ -d "$_groot" ] || continue
+            find -L "$_groot" -maxdepth 6 -type f -name 'projectRegistry.js' -exec sed -i 's|await fs.promises.rename(\([^,]*\), \([^)]*\))|await fs.promises.copyFile(\1, \2); await fs.promises.unlink(\1)|g' {} + 2>/dev/null || true
+        done
         success_msg
 
         echo -e "${GREEN}\nGemini CLI successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
@@ -776,20 +965,22 @@ install_gemini_cli() {
     wait_to_continue
 }
 
-# --- 6. n8n INSTALLATION ---
+# --- 7. N8N INSTALLATION ---
 
 install_n8n() {
     local mode="full"
     if is_installed "n8n"; then
-        echo -e "\n${YELLOW} n8n is already installed.${NC}"
-        echo "1) [R] Repair Config/Watchdog (Fast)"
-        echo "2) [U] Update to Latest (Full)"
-        echo "3) Back"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" REPAIR_CHOICE
-        case $REPAIR_CHOICE in
-            1) mode="repair" ;;
-            2) mode="full" ;;
-            *) return 0 ;;
+        local choice
+        choice=$(show_whi_menu "n8n is already installed  |  Use ↑/↓ and Enter" \
+            "REPAIR"   "[R]  Repair Config/Watchdog (Fast)" \
+            "UPDATE"   "[U]  Update to Latest (Full re-install)" \
+            ""         "" \
+            "BACK"     "<--  BACK TO WORKFLOWS MENU") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            REPAIR) mode="repair" ;;
+            UPDATE) mode="full" ;;
+            BACK|*) return 0 ;;
         esac
     else
         confirm_action "Install n8n Server" || return 0
@@ -806,10 +997,7 @@ install_n8n() {
     if [[ "$mode" == "full" ]]; then
         smart_pkg_install nodejs-22 python3 autossh tmux cronie
         
-        if [ -d "$PREFIX/opt/nodejs-22/bin" ]; then
-            NODE_OPT_BIN="$PREFIX/opt/nodejs-22/bin"
-            execute "ln -sf '$NODE_OPT_BIN/node' '$TERMUX_BIN/node' && ln -sf '$NODE_OPT_BIN/npm' '$TERMUX_BIN/npm'" "Verifying Node.js links"
-        fi
+    ensure_nodejs_links
     fi
 
     PKG_MANAGER=$(select_package_manager "n8n")
@@ -845,8 +1033,9 @@ install_n8n() {
     mkdir -p "$HOME/n8n_server/config" "$HOME/n8n_server/scripts" "$HOME/n8n_server/python" "$HOME/.termux/boot"
     success_msg
 
-    status_msg "Creating n8n configuration"
-    cat <<EOF > "$HOME/n8n_server/config/n8n.env"
+    if [[ "$mode" == "full" ]] || [ ! -f "$HOME/n8n_server/config/n8n.env" ]; then
+        status_msg "Creating n8n configuration"
+        cat <<EOF > "$HOME/n8n_server/config/n8n.env"
 N8N_RUNNERS_MODE=internal
 N8N_RUNNERS_AUTH_TOKEN="$(openssl rand -hex 32)"
 N8N_RUNNERS_BROKER_LISTEN_ADDRESS=127.0.0.1
@@ -858,10 +1047,12 @@ NODE_OPTIONS="--max-old-space-size=$SAFE_LIMIT"
 N8N_PROTOCOL=http
 N8N_HOST=localhost
 EOF
-    success_msg
+        success_msg
+    fi
 
-    status_msg "Creating monitoring script"
-    cat <<'EOF' > "$HOME/n8n_server/scripts/n8n-monitor.sh"
+    if [[ "$mode" == "full" ]] || [ ! -f "$HOME/n8n_server/scripts/n8n-monitor.sh" ]; then
+        status_msg "Creating monitoring script"
+        cat <<'EOF' > "$HOME/n8n_server/scripts/n8n-monitor.sh"
 #!/bin/bash
 N8N_SESSION="n8n_server"
 TUNNEL_SESSION="n8n_tunnel"
@@ -885,8 +1076,9 @@ if [ -f ~/n8n_server/config/tunnel.conf ]; then
     fi
 fi
 EOF
-    chmod +x "$HOME/n8n_server/scripts/n8n-monitor.sh"
-    success_msg
+        chmod +x "$HOME/n8n_server/scripts/n8n-monitor.sh"
+        success_msg
+    fi
 
     echo -e "\n${GREEN} n8n successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
     health_check "n8n" "command -v n8n" || true
@@ -895,7 +1087,7 @@ EOF
     wait_to_continue
 }
 
-# --- 6. GCP BRIDGE SETUP ---
+# --- 7.1. GCP BRIDGE SETUP ---
 
 setup_n8n_gcp() {
     confirm_action "Configure GCP Bridge" || return 0
@@ -946,20 +1138,22 @@ EOF
     wait_to_continue
 }
 
-# --- 7. OLLAMA INSTALLATION ---
+# --- 8. OLLAMA INSTALLATION ---
 
 install_ollama() {
     local mode="install"
     if is_installed "ollama"; then
-        echo -e "\n${YELLOW}Ollama is already installed.${NC}"
-        echo "1) [R] Reinstall"
-        echo "2) [U] Update"
-        echo "3) Back"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" REPAIR_CHOICE
-        case $REPAIR_CHOICE in
-            1) mode="reinstall" ;;
-            2) mode="update" ;;
-            *) return 0 ;;
+        local choice
+        choice=$(show_whi_menu "Ollama is already installed  |  Use ↑/↓ and Enter" \
+            "REINSTALL" "[R]  Reinstall (reset package)" \
+            "UPDATE"    "[U]  Update (refresh package list)" \
+            ""          "" \
+            "BACK"      "<--  BACK TO UTILITIES MENU") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            REINSTALL) mode="reinstall" ;;
+            UPDATE) mode="update" ;;
+            BACK|*) return 0 ;;
         esac
     else
         confirm_action "Install Ollama" || return 0
@@ -983,7 +1177,7 @@ install_ollama() {
     wait_to_continue
 }
 
-# --- 8. HERMES INSTALLATION ---
+# --- 9. HERMES INSTALLATION ---
 
 install_hermes() {
     # Architecture guard: armv8l/armv7l cannot build or load jiter (glibc wheels,
@@ -1013,24 +1207,30 @@ install_hermes() {
 
     local mode="install"
     if [ "$hermes_exists" == "yes" ]; then
-        echo -e "\n${YELLOW}Hermes is already installed.${NC}"
-        echo "1) [R] Reinstall"
-        echo "2) Back"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" HM_CHOICE
-        case $HM_CHOICE in
-            1) mode="reinstall" ;;
-            *) return 0 ;;
+        local choice
+        choice=$(show_whi_menu "Hermes is already installed  |  Use ↑/↓ and Enter" \
+            "UPDATE"     "[U]  Update (preserve data, refresh source)" \
+            "REINSTALL"  "[R]  Reinstall (backup & clean slate)" \
+            ""           "" \
+            "BACK"       "<--  BACK TO AGENTS MENU") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            UPDATE) mode="update" ;;
+            REINSTALL) mode="reinstall" ;;
+            BACK|*) return 0 ;;
         esac
     elif [ "$hermes_exists" == "partial" ]; then
-        echo -e "\n${YELLOW}Hermes appears partially installed or broken.${NC}"
-        echo "1) [F] Fix / Retry Install"
-        echo "2) [D] Deep Clean & Reinstall"
-        echo "3) Back"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" HM_CHOICE
-        case $HM_CHOICE in
-            1) mode="fix" ;;
-            2) mode="reinstall" ;;
-            *) return 0 ;;
+        local choice
+        choice=$(show_whi_menu "Hermes appears broken  |  Use ↑/↓ and Enter" \
+            "FIX"        "[F]  Fix / Retry Install (keep data)" \
+            "REINSTALL"  "[D]  Deep Clean & Reinstall (backup then wipe)" \
+            ""           "" \
+            "BACK"       "<--  BACK TO AGENTS MENU") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            FIX) mode="fix" ;;
+            REINSTALL) mode="reinstall" ;;
+            BACK|*) return 0 ;;
         esac
     else
         confirm_action "Install Hermes Agent" || return 0
@@ -1044,7 +1244,7 @@ install_hermes() {
     # Pre-install build dependencies that upstream often fails on
     smart_pkg_install python clang rust make pkg-config libffi openssl binutils
 
-    # Handle reinstall / fix — preserve source dir for fallback pip path
+    # Handle reinstall / fix / update — preserve source dir for fallback pip path
     if [ "$mode" == "reinstall" ]; then
         status_msg "Backing up and removing old Hermes installation"
         pkill -9 -f hermes 2>/dev/null || true
@@ -1059,6 +1259,10 @@ install_hermes() {
         success_msg
     elif [ "$mode" == "fix" ]; then
         status_msg "Preparing broken Hermes for repair"
+        pkill -9 -f hermes 2>/dev/null || true
+        success_msg
+    elif [ "$mode" == "update" ]; then
+        status_msg "Preparing Hermes for update"
         pkill -9 -f hermes 2>/dev/null || true
         success_msg
     fi
@@ -1125,6 +1329,32 @@ install_hermes() {
         success_msg
     fi
 
+    # Wrapper reconciliation: upstream installer may leave $PREFIX/bin/hermes
+    # pointing to a stale venv path (e.g. ~/.hermes/hermes-agent/venv/bin/hermes)
+    # while the actual binary lives at ~/.hermes/hermes-agent/hermes after update.
+    status_msg "Reconciling Hermes wrapper"
+    local _hermes_wrapper="$TERMUX_BIN/hermes"
+    local _actual_binary=""
+    if [ -f "$_hermes_wrapper" ]; then
+        # Extract target from wrapper: exec "TARGET" "$@"
+        _actual_binary=$(sed -n 's|exec "\(.*\)" "\$@"|\1|p' "$_hermes_wrapper" 2>/dev/null || true)
+    fi
+    if [ -n "$_actual_binary" ] && [ ! -x "$_actual_binary" ]; then
+        # Wrapper points to a missing file — find the real binary
+        local _found_binary=""
+        _found_binary=$(find "$HOME/.hermes" -maxdepth 3 -type f -name hermes -executable 2>/dev/null | head -n1 || true)
+        if [ -n "$_found_binary" ] && [ -x "$_found_binary" ]; then
+            cat > "$_hermes_wrapper" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$_found_binary" "\$@"
+EOF
+            chmod +x "$_hermes_wrapper"
+        fi
+    fi
+    success_msg
+
     # Verify final installation — source .bashrc first because upstream
     # installer appends PATH there; current shell never sees it otherwise
     [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" 2>/dev/null || true
@@ -1153,6 +1383,8 @@ install_hermes() {
     wait_to_continue
 }
 
+# --- 9.1. NANOBOT INSTALLATION ---
+
 install_nanobot() {
     # Architecture guard: armv8l/armv7l cannot build or load jiter (glibc wheels,
     # maturin rejects armv8l). Nanobot depends on anthropic → jiter.
@@ -1172,15 +1404,17 @@ install_nanobot() {
     local mode="install"
 
     if [ -n "$nb_cmd" ]; then
-        echo -e "\n${YELLOW}Nanobot AI is already installed.${NC}"
-        echo "1) [R] Reinstall"
-        echo "2) [U] Update"
-        echo "3) Back"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-3]: ")" NB_CHOICE
-        case ${NB_CHOICE} in
-            1) mode="reinstall" ;;
-            2) mode="update" ;;
-            *) return 0 ;;
+        local choice
+        choice=$(show_whi_menu "Nanobot AI is already installed  |  Use ↑/↓ and Enter" \
+            "REINSTALL" "[R]  Reinstall (clean slate)" \
+            "UPDATE"    "[U]  Update (refresh package)" \
+            ""          "" \
+            "BACK"      "<--  BACK TO AGENTS MENU") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            REINSTALL) mode="reinstall" ;;
+            UPDATE) mode="update" ;;
+            BACK|*) return 0 ;;
         esac
     else
         confirm_action "Install Nanobot AI" || return 0
@@ -1226,8 +1460,58 @@ install_nanobot() {
     wait_to_continue
 }
 
-# --- 8.5. PAPERCLIP INSTALLATION (EXPERIMENTAL) ---
+# --- 10. PAPERCLIP INSTALLATION (EXPERIMENTAL) ---
 install_paperclip() {
+    local mode="install"
+    if [ -f "$HOME/paperclip/server/dist/index.js" ]; then
+        local choice
+        choice=$(show_whi_menu "Paperclip is already installed  |  Use ↑/↓ and Enter" \
+            "REPAIR"  "[R]  Repair (restart & re-apply patches)" \
+            "UPDATE"  "[U]  Update (preserve configs, re-install)" \
+            ""        "" \
+            "BACK"    "<--  BACK TO WORKFLOWS MENU") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            REPAIR) mode="repair" ;;
+            UPDATE) mode="update" ;;
+            BACK|*) return 0 ;;
+        esac
+    else
+        confirm_action "Install Paperclip (EXPERIMENTAL, ~2GB RAM required)" || return 0
+    fi
+
+    if [ "$mode" == "repair" ]; then
+        echo -e "\n${BLUE}Repairing Paperclip...${NC}"
+        status_msg "Re-applying Android patches"
+        apply_patches
+        success_msg
+
+        status_msg "Checking PostgreSQL"
+        if ! safe_timeout 3 psql -d postgres -c "SELECT 1" >/dev/null 2>&1; then
+            local stale_pid; stale_pid=$(pgrep -f "postgres -D $PREFIX/var/lib/postgresql" 2>/dev/null || true)
+            if [ -n "$stale_pid" ]; then
+                kill "$stale_pid" 2>/dev/null || true; sleep 1
+            fi
+            rm -f "$PREFIX/var/lib/postgresql/postmaster.pid" "$PREFIX/tmp/.s.PGSQL.5432"* 2>/dev/null || true
+            pg_ctl -D "$PREFIX/var/lib/postgresql" start -l "$HOME/paperclip/postgres.log" >/dev/null 2>&1 || true
+            sleep 2
+        fi
+        success_msg
+
+        status_msg "Restarting Paperclip in PM2"
+        pm2 delete paperclip 2>/dev/null || true
+        pkill -f "paperclipai" 2>/dev/null || true
+        sleep 1
+        cd "$HOME/paperclip" || { error_msg "Cannot cd to ~/paperclip"; return 1; }
+        DATABASE_URL='postgres://paperclip:paperclip@localhost:5432/paperclip' NODE_ENV='production' NODE_OPTIONS='--max-old-space-size=1024' PAPERCLIP_MIGRATION_AUTO_APPLY='true' PAPERCLIP_HOME="$HOME/paperclip" pm2 start npm --name paperclip --interpreter none -- run paperclipai -- run && pm2 save
+        success_msg
+
+        echo -e "\n${GREEN}Paperclip repaired and restarted!${NC}"
+        echo -e "   ${BLUE}pm2 logs paperclip${NC} to view logs."
+        wait_to_continue
+        return 0
+    fi
+
     # Paperclip installation is delegated entirely to the standalone
     # paperclip_manual_install.sh, which handles: clone, pre-install patches,
     # LMK-resilient pnpm install, prebuilt tarball download, symlink repair,
@@ -1266,15 +1550,38 @@ install_paperclip() {
         success_msg
     fi
 
+    # Update mode: backup user configs before standalone script wipes them
+    if [ "$mode" == "update" ]; then
+        local pc_backup="$HOME/.paperclip_backup_$(date +%Y%m%d%H%M%S)"
+        mkdir -p "$pc_backup"
+        [ -d "$HOME/paperclip/instances/default" ] && cp -r "$HOME/paperclip/instances/default" "$pc_backup/" 2>/dev/null || true
+        [ -d "$HOME/paperclip/config" ] && cp -r "$HOME/paperclip/config" "$pc_backup/" 2>/dev/null || true
+        [ -f "$HOME/paperclip/ecosystem.config.cjs" ] && cp "$HOME/paperclip/ecosystem.config.cjs" "$pc_backup/" 2>/dev/null || true
+        echo -e "${BLUE}Backed up Paperclip configs to $pc_backup${NC}"
+    fi
+
     status_msg "Delegating to standalone Paperclip installer"
     echo -e "${BLUE}   Script: $SCRIPT${NC}"
     success_msg
 
     bash "$SCRIPT"
-    return $?
+    local pc_exit=$?
+
+    # Update mode: restore backed-up configs after standalone script finishes
+    if [ "$mode" == "update" ] && [ "$pc_exit" -eq 0 ] && [ -d "$pc_backup" ]; then
+        status_msg "Restoring Paperclip user configs"
+        [ -d "$pc_backup/default" ] && cp -r "$pc_backup/default" "$HOME/paperclip/instances/" 2>/dev/null || true
+        [ -d "$pc_backup/config" ] && cp -r "$pc_backup/config" "$HOME/paperclip/" 2>/dev/null || true
+        [ -f "$pc_backup/ecosystem.config.cjs" ] && cp "$pc_backup/ecosystem.config.cjs" "$HOME/paperclip/" 2>/dev/null || true
+        rm -rf "$pc_backup"
+        success_msg
+        echo -e "${GREEN}Paperclip updated! User configs and database preserved.${NC}"
+    fi
+
+    return $pc_exit
 }
 
-# --- 9. SERVICE MANAGEMENT ---
+# --- 11. SERVICE MANAGEMENT ---
 
 manage_service() {
     while true; do
@@ -1308,7 +1615,7 @@ cat <<EOF > "$SERVICE_DIR/run"
 termux-wake-lock
 TERMUX_BIN='${TERMUX_BIN}'
 HOME='${HOME}'
-export PATH="\$TERMUX_BIN:\$PATH"
+export PATH="\$TERMUX_BIN:\$HOME/.local/share/pnpm:\$PATH"
 export npm_execpath="\$TERMUX_BIN/npm"
 export NODE_OPTIONS="--dns-result-order=ipv4first --max-old-space-size=${SAFE_LIMIT}"
 export OPENCLAW_TMP="\$HOME/.openclaw/tmp"
@@ -1455,7 +1762,7 @@ manage_pm2() {
             PAPERCLIP)
                 if [ -f "$HOME/paperclip/server/dist/index.js" ]; then
                     status_msg "Checking PostgreSQL before Paperclip start"
-                    if ! timeout 3 psql -d postgres -c "SELECT 1" >/dev/null 2>&1; then
+                    if ! safe_timeout 3 psql -d postgres -c "SELECT 1" >/dev/null 2>&1; then
                         STALE_PID=$(pgrep -f "postgres -D $PREFIX/var/lib/postgresql" 2> /dev/null || true)
                         if [ -n "$STALE_PID" ]; then
                             warn_msg "Stale PostgreSQL process detected — stopping it cleanly"
@@ -1497,7 +1804,7 @@ manage_pm2() {
     done
 }
 
-# --- 10. UNINSTALLATION LOGIC ---
+# --- 12. UNINSTALLATION LOGIC ---
 
 uninstall_openclaw() {
     local force_deep=$1
@@ -1510,15 +1817,24 @@ uninstall_openclaw() {
     
     local pm=$(detect_package_manager "openclaw")
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm remove -g openclaw" "Uninstalling OpenClaw via pnpm"
+        execute "pnpm remove -g openclaw 2>/dev/null || true" "Uninstalling OpenClaw via pnpm"
     else
-        execute "npm uninstall -g openclaw" "Uninstalling OpenClaw via npm"
+        execute "npm uninstall -g openclaw 2>/dev/null || true" "Uninstalling OpenClaw via npm"
     fi
 
     local choice="1"
     if [[ "$force_deep" != "--deep" ]]; then
-        echo -ne "\n${YELLOW}  DATA PRESERVATION:${NC}\n1) Soft Uninstall (Keep plugins/memory)\n2) Deep Uninstall (Wipe everything)\n"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" choice
+        choice=$(show_whi_menu "OpenClaw Data Preservation  |  Select with ↑/↓ and Enter" \
+            "SOFT" "Keep plugins, memories, and configuration" \
+            "DEEP" "${RED}Wipe everything (irreversible)${NC}" \
+            ""      "" \
+            "BACK"  "Cancel uninstall") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            SOFT) choice="1" ;;
+            DEEP) choice="2" ;;
+            BACK|*) return 0 ;;
+        esac
     else
         choice="2"
     fi
@@ -1535,9 +1851,9 @@ uninstall_gemini() {
     echo -e "${YELLOW}Cleaning up Gemini CLI...${NC}"
     local pm=$(detect_package_manager "gemini-cli")
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm remove -g @google/gemini-cli" "Uninstalling Gemini CLI via pnpm"
+        execute "pnpm remove -g @google/gemini-cli 2>/dev/null || true" "Uninstalling Gemini CLI via pnpm"
     else
-        execute "npm uninstall -g @google/gemini-cli" "Uninstalling Gemini CLI via npm"
+        execute "npm uninstall -g @google/gemini-cli 2>/dev/null || true" "Uninstalling Gemini CLI via npm"
     fi
     set_config "pm_gemini-cli" "null"
 }
@@ -1553,9 +1869,9 @@ uninstall_n8n() {
     
     local pm=$(detect_package_manager "n8n")
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm remove -g n8n" "Uninstalling n8n via pnpm"
+        execute "pnpm remove -g n8n 2>/dev/null || true" "Uninstalling n8n via pnpm"
     else
-        execute "npm uninstall -g n8n" "Uninstalling n8n via npm"
+        execute "npm uninstall -g n8n 2>/dev/null || true" "Uninstalling n8n via npm"
     fi
     set_config "pm_n8n" "null"
     rm -rf "$HOME/n8n_server" "$HOME/.n8n"
@@ -1644,8 +1960,17 @@ uninstall_paperclip() {
 
     local choice="1"
     if [[ "$force_deep" != "--deep" ]]; then
-        echo -ne "\n${YELLOW}  DATA PRESERVATION:${NC}\n1) Soft Uninstall (Keep source code + database)\n2) Deep Uninstall (Wipe source code, PM2 state, and optionally database)\n"
-        read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" choice
+        choice=$(show_whi_menu "Paperclip Data Preservation  |  Select with ↑/↓ and Enter" \
+            "SOFT" "Keep source code + PostgreSQL database" \
+            "DEEP" "${RED}Wipe source code, PM2 state, and optionally database${NC}" \
+            ""      "" \
+            "BACK"  "Cancel uninstall") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            SOFT) choice="1" ;;
+            DEEP) choice="2" ;;
+            BACK|*) return 0 ;;
+        esac
     else
         choice="2"
     fi
@@ -1659,8 +1984,17 @@ uninstall_paperclip() {
         # In interactive mode, ask user.
         local db_choice="1"
         if [[ "$force_deep" != "--deep" ]]; then
-            echo -ne "\n${YELLOW}  DATABASE:${NC}\n1) Keep PostgreSQL database (for other tools)\n2) Drop 'paperclip' database and user\n"
-            read -p "$(printf "${BLUE}>>${NC} Select option [1-2]: ")" db_choice
+            db_choice=$(show_whi_menu "PostgreSQL Database  |  Select with ↑/↓ and Enter" \
+                "KEEP" "Keep PostgreSQL database (for other tools)" \
+                "DROP" "${RED}Drop 'paperclip' database and user${NC}" \
+                ""      "" \
+                "BACK"  "Cancel") || return 0
+            case "$db_choice" in
+                "") return 0 ;;
+                KEEP) db_choice="1" ;;
+                DROP) db_choice="2" ;;
+                BACK|*) return 0 ;;
+            esac
         else
             db_choice="2"
         fi
@@ -1668,7 +2002,7 @@ uninstall_paperclip() {
         if [ "$db_choice" == "2" ]; then
             # Pre-check: verify PostgreSQL is actually responding before attempting DROP.
             # On Android, ghost processes or stale sockets can cause psql to hang.
-            if timeout 3 psql -d postgres -c "SELECT 1" >/dev/null 2>&1; then
+            if safe_timeout 3 psql -d postgres -c "SELECT 1" >/dev/null 2>&1; then
                 psql -d postgres -c "DROP DATABASE IF EXISTS paperclip;" >> "$LOG_FILE" 2>&1 || true
                 psql -d postgres -c "DROP USER IF EXISTS paperclip;" >> "$LOG_FILE" 2>&1 || true
                 echo -e "${GREEN}Paperclip database and user dropped.${NC}"
@@ -1687,106 +2021,15 @@ uninstall_paperclip() {
     echo -e "   Remove manually if desired."
 }
 
-# --- TUI Helpers ---
-# Use whiptail for menus; fallback to plain text if unavailable.
 
-# Detect terminal size for whiptail sizing
-get_term_size() {
-    local rows cols
-    if [ -t 0 ]; then
-        read -r rows cols < <(stty size 2>/dev/null || echo "24 80")
-    else
-        rows=24; cols=80
-    fi
-    # Cap whiptail dimensions with padding
-    local whi_rows=$(( rows > 10 ? rows - 4 : rows ))
-    local whi_cols=$(( cols > 20 ? cols - 4 : cols ))
-    # Minimum safe sizes for whiptail
-    [ "$whi_rows" -lt 15 ] && whi_rows=15
-    [ "$whi_cols" -lt 50 ] && whi_cols=50
-    echo "$whi_rows $whi_cols"
-}
-
-WHI_SIZES=$(get_term_size)
-WHI_ROWS=$(echo "$WHI_SIZES" | awk '{print $1}')
-WHI_COLS=$(echo "$WHI_SIZES" | awk '{print $2}')
-
-menu_item() {
-    local tag="$1" desc="$2"
-    printf '%s\n%s\n' "$tag" "$desc"
-}
-
-# show_menu <title> <items...>
-# items are passed as tag desc pairs, without dynamic status prefixing.
-show_whi_menu() {
-    local title="$1"; shift
-    local -a items=() tags=() descs=()
-    while [ $# -gt 0 ]; do
-        items+=("$1" "$2")
-        tags+=("$1")
-        if [ "$1" = "" ]; then
-            descs+=(" ")  # Use blank space for separator
-        else
-            descs+=("$2")
-        fi
-        shift 2
-    done
-
-    if command -v gum >/dev/null 2>&1; then
-        clear >&2
-        gum style --border double --margin "1" --padding "1" --border-foreground 212 "Droid AI Toolkit v$VERSION" >&2
-        local choice_desc
-        choice_desc=$(gum choose --header "$title" --cursor="> " "${descs[@]}") || return 1
-        for i in "${!descs[@]}"; do
-            if [ "${descs[$i]}" = "$choice_desc" ]; then
-                echo "${tags[$i]}"
-                return 0
-            fi
-        done
-        return 1
-    else
-        whiptail --title "Droid AI Toolkit v$VERSION" --nocancel --ok-button "Enter" --menu "$title" "$WHI_ROWS" "$WHI_COLS" $(( ${#items[@]} / 2 )) \
-            "${items[@]}" 3>&1 1>&2 2>&3
-    fi
-}
-
-# yesno <text>
-# Standard confirmation dialog: Yes → proceed, No → cancel
-# Returns 0 if user confirms (Yes), 1 if user cancels (No)
-whiptail_confirm() {
-    local text="$1"
-    if command -v gum >/dev/null 2>&1; then
-        gum confirm "$text"
-        return $?
-    else
-        if ! whiptail --title "Confirm" --yes-button "Yes" --no-button "No" --yesno "$text" 8 "$WHI_COLS" 3>&1 1>&2 2>&3; then
-            return 1
-        fi
-        return 0
-    fi
-}
-
-# msgbox <text>
-whiptail_msg() {
-    local text="$1"
-    if command -v gum >/dev/null 2>&1; then
-        echo ""
-        gum style --border normal --border-foreground 212 --padding "1 2" "$text"
-        echo -n "Press Enter to continue..."
-        read -r
-    else
-        whiptail --title "Notice" --msgbox "$text" 8 "$WHI_COLS" 3>&1 1>&2 2>&3
-    fi
-}
-
-# --- Sub-Menus ---
+# --- 13. MENUS ---
 
 menu_agents() {
+    local oc_bull="[ ]" hb_bull="[ ]" nb_bull="[ ]"
+    is_installed "openclaw" && oc_bull="[*]"
+    (type -P hermes >/dev/null 2>&1 || [ -f "$HOME/.hermes/bin/hermes" ]) && hb_bull="[*]"
+    command -v nanobot >/dev/null 2>&1 && nb_bull="[*]"
     while true; do
-        local oc_bull="[ ]" hb_bull="[ ]" nb_bull="[ ]"
-        is_installed "openclaw" && oc_bull="[*]"
-        (type -P hermes >/dev/null 2>&1 || [ -f "$HOME/.hermes/bin/hermes" ]) && hb_bull="[*]"
-        command -v nanobot >/dev/null 2>&1 && nb_bull="[*]"
         local choice menu_exit=0
         choice=$(show_whi_menu "AI Agents & LLMs  |  Use ↑/↓ to navigate, Enter to select" \
             "OPENCLAW"   "$oc_bull  OpenClaw   — Multi-Channel Agent Gateway" \
@@ -1806,10 +2049,10 @@ menu_agents() {
 }
 
 menu_workflows() {
+    local n8_bull="[ ]" pc_bull="[ ]"
+    is_installed "n8n" && n8_bull="[*]"
+    [ -f "$HOME/paperclip/server/dist/index.js" ] && pc_bull="[*]"
     while true; do
-        local n8_bull="[ ]" pc_bull="[ ]"
-        is_installed "n8n" && n8_bull="[*]"
-        [ -f "$HOME/paperclip/server/dist/index.js" ] && pc_bull="[*]"
         local choice
         choice=$(show_whi_menu "Workflows & Automation  |  Use ↑/↓ to navigate, Enter to select" \
             "N8N"       "$n8_bull  n8n         — Automation & Integration Server" \
@@ -1826,11 +2069,11 @@ menu_workflows() {
 }
 
 menu_utilities() {
+    local gm_bull="[ ]" pi_bull="[ ]" ol_bull="[ ]"
+    is_installed "gemini-cli" && gm_bull="[*]"
+    (is_installed "@earendil-works/pi-coding-agent" || is_installed "@mariozechner/pi-coding-agent") && pi_bull="[*]"
+    command -v ollama >/dev/null 2>&1 && ol_bull="[*]"
     while true; do
-        local gm_bull="[ ]" pi_bull="[ ]" ol_bull="[ ]"
-        is_installed "gemini-cli" && gm_bull="[*]"
-        (is_installed "@earendil-works/pi-coding-agent" || is_installed "@mariozechner/pi-coding-agent") && pi_bull="[*]"
-        command -v ollama >/dev/null 2>&1 && ol_bull="[*]"
         local choice
         choice=$(show_whi_menu "Developer Utilities  |  Use ↑/↓ to navigate, Enter to select" \
             "GEMINI"   "$gm_bull  Gemini CLI — Google AI Developer Tool" \
@@ -1851,10 +2094,10 @@ menu_utilities() {
 }
 
 menu_services() {
+    local pm2_bull="[ ]" sv_bull="[ ]"
+    [ -n "$_HAS_PM2" ] && pm2_bull="[*]"
+    [ -d "$SERVICE_DIR" ] || [ -d "$N8N_SERVICE_DIR" ] && sv_bull="[*]"
     while true; do
-        local pm2_bull="[ ]" sv_bull="[ ]"
-        command -v pm2 >/dev/null 2>&1 && pm2_bull="[*]"
-        [ -d "$SERVICE_DIR" ] && sv_bull="[*]"
         local choice
         choice=$(show_whi_menu "System & Background Services  |  Use ↑/↓ to navigate, Enter to select" \
             "PM2"    "$pm2_bull  PM2         — Process Manager (Recommended)" \
@@ -1881,7 +2124,7 @@ menu_uninstall() {
             "OLLAMA"     "[-]  Ollama     — Remove Local LLM Runner" \
             "PI"         "[-]  Pi         — Remove Coding Agent" \
             "PAPERCLIP"  "[-]  Paperclip  — Remove Workflow Server" \
-            "NANOBOT"    "[-]  Nanobot   — Remove Python AI Agent" \
+            "NANOBOT"    "[-]  Nanobot    — Remove Python AI Agent" \
             ""           "" \
             "WIPE"       "[!]  WIPE ALL   — Reset Software Stack" \
             ""           "" \
@@ -1911,6 +2154,33 @@ menu_uninstall() {
     done
 }
 
+menu_help() {
+    whiptail_msg "${BLUE}Droid AI Toolkit v${VERSION}${NC}
+
+${GREEN}AGENTS${NC}     — AI gateways and coding agents
+  OpenClaw    Multi-channel AI gateway (Telegram, Slack, Discord)
+  Hermes      Autonomous agent by Nous Research
+  Nanobot     Lightweight Python agent with Claude
+
+${GREEN}WORKFLOWS${NC}  — Automation servers
+  n8n         Professional workflow automation
+  Paperclip   Multi-agent virtual company (EXPERIMENTAL)
+
+${GREEN}UTILITIES${NC}  — Developer tools
+  Gemini CLI  Google's command-line AI assistant
+  Pi          Minimalist coding agent by M. Zechner
+  Ollama      Local LLM runner for ARM devices
+  GCP Bridge  SSH tunnel to expose n8n publicly
+
+${GREEN}SERVICES${NC}   — Background process management
+  PM2         Recommended process manager
+  Native      Termux native services (sv)
+
+${YELLOW}TIP:${NC} Use [R] Repair to fix patches without re-downloading.
+Use [U] Update to get the latest version + re-apply patches.
+Never run native update commands (e.g. openclaw update)."
+}
+
 check_termux
 ensure_deps
 
@@ -1922,6 +2192,7 @@ while true; do
         "SERVICES"   "Background   — PM2, Native Services" \
         ""           "" \
         "UNINSTALL"  "Uninstall    — Remove Tools & Reset" \
+        "HELP"       "[?]  Help      — What each tool does" \
         ""           "" \
         "EXIT"       "[X]  EXIT TOOLKIT") || exit 0
     case "$choice" in
@@ -1931,6 +2202,7 @@ while true; do
         UTILITIES)  menu_utilities ;;
         SERVICES)   menu_services ;;
         UNINSTALL)  menu_uninstall ;;
+        HELP)       menu_help ;;
         EXIT|*)     exit 0 ;;
     esac
 done
