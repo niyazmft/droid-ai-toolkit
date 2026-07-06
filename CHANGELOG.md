@@ -2,6 +2,66 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.14.0] - 2026-07-06
+
+### Bug Fixes
+
+- **`execute()` no longer aborts the entire installer** — Fixed critical bug where `execute()` called `exit 1` on failure, killing the interactive shell mid-install. Now returns `$exit_code` so callers can decide whether to abort or retry.
+- **`get_global_node_path()` colon-separated paths** — Fixed `find -L` breakage when `pnpm_root_g` appended a colon-delimited path. Now properly iterated with `IFS=':' read -ra`.
+- **Bash 3 compatibility** — Replaced `declare -A` associative arrays with parallel indexed arrays in `apply_patches()` and `paperclip_manual_install.sh`, fixing crashes on older Termux builds.
+- **Hermes wrapper staleness** — Added reconciliation block that detects stale `$PREFIX/bin/hermes` wrappers pointing to missing venv paths, searches `~/.hermes/` for the actual binary, and rewrites the wrapper automatically after updates.
+- **`$PREFIX` fallback in Paperclip standalone script** — Added `PREFIX=${PREFIX:-"/data/data/com.termux/files/usr"}` guard for environments where `$PREFIX` is not exported.
+
+### Performance Optimizations (v1.14.0)
+
+- **Session-level PATH caches** — `_HAS_PNPM`, `_HAS_PM2`, `_HAS_JQ` are evaluated once at startup instead of on every menu render.
+- **Memory limit caching** — `get_mem_limit()` result stored in `_CACHED_MEM_LIMIT`, eliminating repeated `free -m` + arithmetic on every install invocation.
+- **Conditional `pkg update`** — `ensure_deps()` skips `apt update` if package lists are fresher than 60 minutes, saving 3–10 seconds on every launch.
+- **OpenClaw hardlink patch pre-filter** — Replaced `find -exec sed` on every `.js` file with `grep -rlZE` pre-filter, reducing I/O by ~90% on large `node_modules` trees.
+- **Koffi rebuild skip** — Skips the 30–60s C++ rebuild if `build/koffi/$TRIPLET/koffi.node` exists and is newer than `base.cc`.
+- **Gemini CLI `find` depth limit** — Added `-maxdepth 6` to prevent traversal of deep pnpm content-addressable store paths.
+- **Menu state hoisting** — `is_installed` / `command -v` checks moved outside `while true` loops; state refreshes only when re-entering a menu.
+- **Extracted `ensure_nodejs_links()`** — Consolidated duplicate Node.js symlink logic used by OpenClaw and n8n into a single helper.
+
+### UI/UX Improvements (v1.14.0)
+
+- **Unified arrow-key menus everywhere** — All inline `read -p "Select [1-3]"` prompts replaced with `show_whi_menu` / `gum` / `whiptail` navigation. No more numeric typing.
+- **Persistent error messages** — `error_msg()` now prints with `\n` instead of `\r`, so errors remain visible instead of being erased by the next status spinner.
+- **Auto-continue prompts** — `wait_to_continue()` uses `read -t 3`, so users can press Enter or simply wait 3 seconds instead of mandatory tapping.
+- **Graceful Ctrl+C in `execute()`** — Trap now prints `"Interrupted by user."` before cleanup instead of silent abort.
+- **Severity-colored destructive options** — Deep Uninstall and WIPE ALL options show `${RED}` warnings in menu descriptions.
+- **Help menu (`[?] Help`)** — New main-menu entry with one-line descriptions of every tool category and the Repair/Update tip.
+- **Install log paths displayed upfront** — Each installer now prints `"Verbose logs: $LOG_FILE"` at the start for easier debugging.
+
+### Code Reorganization (v1.14.0)
+
+- **Modular Patch Engine** — Split 124-line `apply_patches()` god function into focused units:
+  - `patch_koffi()` — kernel `renameat2` → `rename` + conditional rebuild
+  - `patch_gemini_cli()` — `fs.promises.rename` → `copyFile+unlink`
+  - `patch_paperclip()` — path redirection + symlink repair
+  - `patch_openclaw_links()` — hardlink → `copyFile`
+  - `create_sqlite3_stub()` — standalone sqlite3 no-op stub
+  - `apply_patches()` — thin coordinator invoking all five
+- **Section numbering unified** — Eliminated duplicate section numbers (two "6.", two "8.", odd "8.5"). Clean sequence: 1 → 2 → 2.5 → 3 → 4 → 4.1 → 5 → 6 → 7 → 7.1 → 8 → 9 → 9.1 → 10 → 11 → 12 → 13.
+- **TUI helpers relocated** — `get_term_size`, `show_whi_menu`, `whiptail_confirm`, `whiptail_msg` moved from line ~1909 to Section 2.5, ensuring they are defined before first use.
+- **`install_nanobot()` gets own header** — Was incorrectly nested under `# --- 8. HERMES INSTALLATION ---`; now has `# --- 9.1. NANOBOT INSTALLATION ---`.
+
+### Data Preservation (v1.14.0)
+
+- **OpenClaw Repair** — Only reapplies patches; skips `jq` config rewrite and `npm/pnpm` re-install.
+- **Pi Repair** — Only regenerates `~/.pi/agent/AGENTS.md`; skips `npm/pnpm` re-install.
+- **n8n Repair** — Only regenerates config/watchdog if files are missing; skips `npm/pnpm` re-install.
+- **Hermes Update** — Preserves `~/.hermes/` data; runs upstream installer then reconciles wrapper.
+- **Paperclip Update** — Backs up `instances/default/`, `config/`, and `ecosystem.config.cjs` before delegating to standalone script, restores after successful install.
+
+### Install (v1.14.0)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/niyazmft/droid-ai-toolkit/main/install.sh | bash
+```
+
+---
+
 ## [v1.13.0] - 2026-05-31
 
 ### Changes in v1.13.0
