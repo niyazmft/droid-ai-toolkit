@@ -22,10 +22,10 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     if [ -n "$LATEST_TAG" ]; then
         echo -e "\033[0;32m[PASS]\033[0m Using latest release tag: $LATEST_TAG"
     else
-        echo -e "\033[0;33m[WARN]\033[0m Could not fetch latest release tag. Falling back to hardcoded v1.13.0."
+        echo -e "\033[0;33m[WARN]\033[0m Could not fetch latest release tag. Falling back to hardcoded v1.14.0."
     fi
 fi
-TOOLKIT_VERSION=${LATEST_TAG:-"v1.13.0"} # Fallback to last known good version
+TOOLKIT_VERSION=${LATEST_TAG:-"v1.14.0"} # Fallback to last known good version
 
 PASS=0; FAIL=0
 pass() { echo -e "\033[0;32m[PASS]\033[0m $1"; PASS=$((PASS+1)); }
