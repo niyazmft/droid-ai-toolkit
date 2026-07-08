@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # DROID AI TOOLKIT (Termux)
-# Version: 1.14.0
+# Version: 1.15.0
 # Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
 #          Hermes, Paperclip) on Android via Termux with kernel patches and path fixes.
 # ==============================================================================
@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.14.0"
+VERSION="1.15.0"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -571,6 +571,28 @@ execute() {
     fi
 }
 
+
+# Stops app processes, kills PM2, and cleans lock files.
+# Usage: prepare_for_install <app_name> [extra_pkill_patterns...]
+prepare_for_install() {
+    local app="$1"
+    shift
+    status_msg "Stopping existing tasks & freeing memory"
+    pkill -9 -f "$app" 2>/dev/null || true
+    for pat in "$@"; do
+        pkill -9 -f "$pat" 2>/dev/null || true
+    done
+    command -v pm2 >/dev/null 2>&1 && pm2 kill >> "$LOG_FILE" 2>&1 || true
+    success_msg
+}
+
+# Standard install preamble: clear log file, print log path.
+begin_install() {
+    rm -f "$LOG_FILE"
+    echo -e "${YELLOW}Verbose logs: $LOG_FILE${NC}
+"
+}
+
 # --- 3. TERMUX CHECK ---
 
 check_termux() {
@@ -604,17 +626,9 @@ install_openclaw() {
         mode="full"
     fi
 
-    rm -f "$LOG_FILE"
-    echo -e "${YELLOW}Verbose logs: $LOG_FILE${NC}\n"
-
-    status_msg "Stopping existing tasks & freeing memory"
-    pkill -9 -f "openclaw" 2>/dev/null || true
-    pkill -9 -f "n8n" 2>/dev/null || true
-    command -v pm2 >/dev/null 2>&1 && pm2 kill >> "$LOG_FILE" 2>&1 || true
-    
-    # Surgical lock cleanup
+    begin_install
+    prepare_for_install "openclaw" "n8n"
     rm -f "$HOME/.openclaw/tmp/openclaw.lock" "$HOME/.openclaw/tmp/openclaw-*" "$PREFIX/var/run/crond.pid"
-    success_msg
 
     if [[ "$mode" == "full" ]]; then
         # Batched package installation for performance
@@ -649,24 +663,14 @@ install_openclaw() {
         if [ -f "$CONFIG_PATH" ]; then
             status_msg "Configuring Termux-specific settings"
             local tmp_cfg; tmp_cfg=$(mktemp)
-            # Apply configuration updates with atomic move
-            # 1. Deep merge channel tokens, force disable audio, streaming and UI
-            # 2. Clean up channel objects that should not exist on mobile
-            # 3. Fix legacy keys and validate schema via doctor
+            # Single-pass jq: disable audio/UI, clean unsupported plugins, re-enable core ones,
+            # remove legacy streaming keys, set Telegram token.
             jq '
                 .channelToken = ((.channelToken // {}) + {"telegram": (.channelToken.telegram // "YOUR_BOT_TOKEN")}) |
                 .ui.showSystemPrompt = false |
                 .disableAudio = true |
                 .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= . + {"enabled": false})) |
-                del(.plugins.entries.telegram, .plugins.entries.ollama, .plugins.entries["memory-core"]) |
-                .plugins.entries.telegram = {"enabled": true, "path": "builtin:telegram", "description": "Telegram channel"} |
-                .plugins.entries.ollama = {"enabled": true, "path": "builtin:ollama", "description": "Ollama plugin"} |
-                .plugins.entries["memory-core"] = {"enabled": true, "path": "builtin:memory", "description": "Memory plugin"} |
                 del(.plugins.entries["kimi-coding"], .plugins.entries["speech-core"], .plugins.entries["image-generation-core"], .plugins.entries["video-generation-core"], .plugins.entries["media-understanding-core"]) |
-                .plugins.entries = (if (.plugins.entries | type) == "object" then (.plugins.entries) else {} end) |
-                .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= if (.enabled? | type) == "boolean" then . else . + {"enabled": false} end)) |
-                .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= . + {"enabled": false})) |
-                del(.plugins.entries.telegram, .plugins.entries.ollama, .plugins.entries["memory-core"]) |
                 .plugins.entries.telegram = {"enabled": true} |
                 .plugins.entries.ollama = {"enabled": true} |
                 .plugins.entries["memory-core"] = {"enabled": true} |
@@ -674,10 +678,7 @@ install_openclaw() {
                 del(.channels.slack.streamMode, .channels.slack.chunkMode, .channels.slack.blockStreaming, .channels.slack.blockStreamingCoalesce, .channels.slack.nativeStreaming) |
                 if (.channels.telegram.streaming? | type) != "object" then del(.channels.telegram.streaming) else . end |
                 if (.channels.slack.streaming? | type) != "object" then del(.channels.slack.streaming) else . end' "$CONFIG_PATH" > "$tmp_cfg" && mv "$tmp_cfg" "$CONFIG_PATH"
-            
-            # 4. Automated Migration: Fix legacy keys and validate schema
-            # We ignore failure because doctor --fix tries to install systemd services on Linux, which fails on Android but is not critical.
-            yes "" | openclaw doctor --fix >> "$LOG_FILE" 2>&1 || true
+                        yes "" | openclaw doctor --fix >> "$LOG_FILE" 2>&1 || true
             success_msg
         fi
         apply_patches "silent"
@@ -808,7 +809,12 @@ patch_paperclip() {
         for i in "${!PC_NAMES[@]}"; do
             _name="${PC_NAMES[$i]}"
             _path="${PC_PATHS[$i]}"
-            [ -d "$HOME/paperclip/$_path" ] && ln -sf "../../$_path" "$HOME/paperclip/node_modules/@paperclipai/$_name" 2>/dev/null || true
+            if [ -d "$HOME/paperclip/$_path" ]; then
+                local _dest="$HOME/paperclip/node_modules/@paperclipai/$_name"
+                if [ "$(readlink "$_dest" 2>/dev/null)" != "../../$_path" ]; then
+                    ln -sf "../../$_path" "$_dest" 2>/dev/null || true
+                fi
+            fi
         done
     fi
 
@@ -986,13 +992,9 @@ install_n8n() {
         confirm_action "Install n8n Server" || return 0
     fi
 
+    begin_install
     echo -e "\n${BLUE} $([[ "$mode" == "repair" ]] && echo "Repairing" || echo "Setting up") n8n Android Infrastructure...${NC}"
-
-    status_msg "Stopping existing tasks & freeing memory"
-    pkill -9 -f "n8n" 2>/dev/null || true
-    pkill -9 -f "openclaw" 2>/dev/null || true
-    command -v pm2 >/dev/null 2>&1 && pm2 kill >> "$LOG_FILE" 2>&1 || true
-    success_msg
+    prepare_for_install "n8n" "openclaw"
 
     if [[ "$mode" == "full" ]]; then
         smart_pkg_install nodejs-22 python3 autossh tmux cronie
@@ -1177,33 +1179,163 @@ install_ollama() {
     wait_to_continue
 }
 
-# --- 9. HERMES INSTALLATION ---
-
-install_hermes() {
-    # Architecture guard: armv8l/armv7l cannot build or load jiter (glibc wheels,
-    # maturin rejects armv8l). Hermes requires jiter transitively through anthropic.
+# Architecture guard for armv8l/armv7l (shared by Hermes and Nanobot)
+_guard_armv8l() {
     local arch; arch="$(uname -m)"
     if [ "$arch" = "armv8l" ] || [ "$arch" = "armv7l" ]; then
-        echo -e "\n${YELLOW}ℹ️  Hermes Agent is not supported on ${arch}.${NC}"
-        echo -e "   Reason: jiter (a dependency of anthropic/hermes) requires ${NC}"
-        echo -e "   Rust compilation via maturin, which does not support the ${NC}"
-        echo -e "   ${arch} architecture in upstream wheels.${NC}"
-        echo -e "   Workaround: Run Hermes on a device with aarch64 or x86_64.${NC}"
+        echo -e "\n${YELLOW}ℹ️  $1 is not supported on ${arch}.${NC}"
+        echo -e "   Reason: jiter requires Rust compilation via maturin, which${NC}"
+        echo -e "   does not support the ${arch} architecture.${NC}"
+        echo -e "   Workaround: Run on a device with aarch64 or x86_64.${NC}"
         wait_to_continue
+        return 1
+    fi
+    return 0
+}
+
+# Detect Hermes installation state: returns yes, partial, or no
+_detect_hermes_state() {
+    local hcmd=""
+    hcmd=$(type -P hermes 2>/dev/null || true)
+    if [ -n "$hcmd" ] || [ -f "$HOME/.hermes/bin/hermes" ]; then
+        echo "yes"
+    elif grep -q 'hermes' "$HOME/.bashrc" 2>/dev/null || [ -d "$HOME/.hermes" ]; then
+        echo "partial"
+    else
+        echo "no"
+    fi
+}
+
+# Export Rust/Cargo environment for low-RAM Termux builds
+_setup_rust_env() {
+    export CARGO_BUILD_JOBS=1
+    export CARGO_NET_GIT_FETCH_WITH_CLI=true
+    export RUSTFLAGS="-C opt-level=2"
+    local android_api_level=$(getprop ro.build.version.sdk 2>/dev/null || echo "34")
+    export ANDROID_API_LEVEL=${android_api_level}
+    export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=clang
+    echo "$android_api_level"  # Return for caller reuse
+}
+
+# Run the official Termux extra install to pull in all tested Android deps.
+# The upstream installer's pip step often silently falls back to a base
+# (incomplete) install when .[termux-all] fails. We run .[termux] explicitly
+# after every install/update to ensure the venv is complete.
+# --- Hermes wheel-cache helpers ---
+# Compiling cryptography, pydantic-core, jiter, Pillow, etc. from source
+# takes 30–90 min on Android. After a successful install we persist pip's
+# built wheels to ~/.hermes/wheel-cache. On future reinstalls the
+# PIP_FIND_LINKS env var tells pip to use these prebuilt wheels first,
+# skipping compilation entirely.
+HERMES_WHEEL_CACHE="$HOME/.hermes/wheel-cache"
+
+_hermes_prepare_wheel_cache() {
+    mkdir -p "$HERMES_WHEEL_CACHE"
+    local count=0
+    count=$(find "$HERMES_WHEEL_CACHE" -maxdepth 1 -name "*.whl" 2>/dev/null | wc -l)
+    if [ "$count" -gt 0 ]; then
+        status_msg "Found $count cached wheels — compilation will be skipped for cached packages"
+        success_msg
+    fi
+    export PIP_FIND_LINKS="$HERMES_WHEEL_CACHE"
+
+    # Pip on Android reports compatible tags as linux_aarch64, but wheels built
+    # on-device via maturin/setuptools have android_29_arm64_v8a tags. Create
+    # symlink aliases with linux_aarch64 tags so pip matches them during
+    # --find-links resolution. The .so inside is identical; only the platform tag
+    # in the filename differs.
+    local w alias_name
+    find "$HERMES_WHEEL_CACHE" -maxdepth 1 -name "*-android_*_arm64_v8a.whl" 2>/dev/null | while IFS= read -r w; do
+        alias_name=$(basename "$w" | sed 's/-android_[0-9]*_arm64_v8a/-linux_aarch64/')
+        [ -e "$HERMES_WHEEL_CACHE/$alias_name" ] || ln -sf "$w" "$HERMES_WHEEL_CACHE/$alias_name" 2>/dev/null || true
+    done
+}
+
+_hermes_save_wheel_cache() {
+    local pip_cache_dir count=0
+    mkdir -p "$HERMES_WHEEL_CACHE"
+    pip_cache_dir=$(python3 -m pip cache dir 2>/dev/null) || return 0
+    if [ -d "$pip_cache_dir/wheels" ]; then
+        find "$pip_cache_dir/wheels" -maxdepth 4 -name "*.whl" -mmin -120 -exec cp -n {} "$HERMES_WHEEL_CACHE/" \; 2>/dev/null
+    fi
+    count=$(find "$HERMES_WHEEL_CACHE" -maxdepth 1 -name "*.whl" 2>/dev/null | wc -l)
+    if [ "$count" -gt 0 ]; then
+        status_msg "Saved $count prebuilt wheels to cache for fast future reinstalls"
+        success_msg
+    fi
+}
+
+_hermes_ensure_termux_deps() {
+    local venv_pip="$HOME/.hermes/hermes-agent/venv/bin/pip"
+    local src_dir="$HOME/.hermes/hermes-agent"
+    [ -x "$venv_pip" ] || return 0
+    [ -d "$src_dir" ] || return 0
+    status_msg "Installing Termux-tested dependencies"
+    if [ -f "$src_dir/constraints-termux.txt" ]; then
+        "$venv_pip" install -e "${src_dir}[termux]"             -c "$src_dir/constraints-termux.txt"             --no-build-isolation --quiet 2>>"$LOG_FILE" || true
+    else
+        "$venv_pip" install -e "$src_dir"             --no-build-isolation --quiet 2>>"$LOG_FILE" || true
+    fi
+    success_msg
+}
+
+# Hermes requires Python 3.11–3.13. Termux's default 'python' package is now
+# 3.14, which fails with 'requires a different Python: 3.14.x not in <3.14,>=3.11'.
+# The upstream installer's check_python() only verifies >= 3.11, so 3.14 passes
+# then pip explodes. We ensure 'python' resolves to a compatible version before
+# the upstream installer runs, and check for python3.11/3.12/3.13 from TUR.
+_hermes_ensure_compatible_python() {
+    local py_ver="" major minor candidate=""
+
+    # Check current 'python' command
+    if command -v python >/dev/null 2>&1; then
+        py_ver=$(python --version 2>&1 | awk '{print $2}')
+        major=$(echo "$py_ver" | cut -d. -f1)
+        minor=$(echo "$py_ver" | cut -d. -f2)
+
+        if [ "$major" -eq 3 ] && [ "$minor" -ge 11 ] && [ "$minor" -le 13 ]; then
+            # Compatible version already available
+            return 0
+        fi
+    fi
+
+    # Current python is incompatible or missing. Search for python3.11–3.13.
+    for v in 11 12 13; do
+        if [ -x "$TERMUX_BIN/python3.$v" ]; then
+            candidate="python3.$v"
+            break
+        fi
+    done
+
+    if [ -n "$candidate" ]; then
+        status_msg "Python ${py_ver:-missing} is incompatible (Hermes requires 3.11–3.13). Using $candidate"
+        ln -sf "$TERMUX_BIN/$candidate" "$TERMUX_BIN/python"
+        success_msg
         return 0
     fi
 
-    # Detection: check PATH, static binary, or .bashrc entry (install attempted)
-    local hermes_cmd=""
-    hermes_cmd=$(type -P hermes 2>/dev/null || true)
-    local bashrc_has_hermes=$(grep -q 'hermes' "$HOME/.bashrc" 2>/dev/null && echo "yes" || echo "no")
-    local hermes_exists="no"
-    if [ -n "$hermes_cmd" ] || [ -f "$HOME/.hermes/bin/hermes" ]; then
-        hermes_exists="yes"
-    elif [ "$bashrc_has_hermes" == "yes" ] || [ -d "$HOME/.hermes" ]; then
-        # Partial / broken install
-        hermes_exists="partial"
+    # No compatible python found — cannot proceed
+    echo -e "\n${RED} Python version incompatible${NC}"
+    echo -e "${YELLOW}Hermes requires Python 3.11–3.13.${NC}"
+    if [ -n "$py_ver" ]; then
+        echo -e "  Current: ${RED}Python $py_ver${NC} (too new)"
+    else
+        echo -e "  Current: ${RED}not installed${NC}"
     fi
+    echo -e "\n${BLUE}Install Python 3.11 from the Termux User Repository (TUR):${NC}"
+    echo -e "  ${YELLOW}pkg install tur-repo${NC}"
+    echo -e "  ${YELLOW}pkg install python3.11${NC}"
+    echo -e "\n${BLUE}Then re-run this installer.${NC}"
+    return 1
+}
+
+# --- 9. HERMES INSTALLATION ---
+
+install_hermes() {
+    # Architecture guard
+    _guard_armv8l "Hermes Agent" || return 0
+
+    local hermes_exists; hermes_exists=$(_detect_hermes_state)
 
     local mode="install"
     if [ "$hermes_exists" == "yes" ]; then
@@ -1239,130 +1371,124 @@ install_hermes() {
     echo -e "\n${BLUE}${mode^}ing Hermes Agent...${NC}"
     echo -e "${YELLOW}NOTE: Hermes requires compiling Rust dependencies which takes${NC}"
     echo -e "${YELLOW}a significant amount of time. This is normal - please be patient.${NC}"
-    echo -e "${YELLOW}You will see compilation progress in the output below.${NC}"
 
+    # ─── UPDATE MODE ────────────────────────────────────────────────
+    # Use upstream 'hermes update' which preserves configs, runs git pull,
+    # installs deps, migrates config, and restarts gateway automatically.
+    if [ "$mode" == "update" ]; then
+        _hermes_prepare_wheel_cache
+        status_msg "Preparing Hermes for update"
+        pkill -9 -f hermes 2>/dev/null || true
+        success_msg
+
+        # Test if core deps are functional before trusting 'hermes update'
+        local _venv_py="$HOME/.hermes/hermes-agent/venv/bin/python3"
+        local _can_update=0
+        if [ -x "$_venv_py" ]; then
+            if $_venv_py -c "import yaml, dotenv, rich, httpx, certifi" 2>/dev/null; then
+                _can_update=1
+            fi
+        fi
+
+        if [ "$_can_update" -eq 1 ]; then
+            status_msg "Running upstream 'hermes update' (git pull + deps + config migration)"
+            # Stream to log so user can inspect if terminal drops
+            hermes update 2>&1 | tee -a "$LOG_FILE"
+            success_msg
+        else
+            warn_msg "Hermes deps incomplete — falling back to manual update"
+            status_msg "Git pulling latest code"
+            (cd "$HOME/.hermes/hermes-agent" && git pull origin main) 2>>"$LOG_FILE" || true
+            success_msg
+            _hermes_ensure_termux_deps
+        fi
+
+        _hermes_save_wheel_cache
+
+        # Verify
+        local hermes_final_path=""
+        hermes_final_path=$(type -P hermes 2>/dev/null || true)
+        if [ -n "$hermes_final_path" ] && [ -x "$hermes_final_path" ]; then
+            echo -e "\n${GREEN} Hermes successfully updated!${NC}"
+            health_check "Hermes" "command -v hermes" || true
+        else
+            error_msg "Hermes update incomplete — check $LOG_FILE"
+        fi
+        wait_to_continue
+        return 0
+    fi
+
+    # ─── INSTALL / REINSTALL / FIX MODES ──────────────────────────
     # Pre-install build dependencies that upstream often fails on
     smart_pkg_install python clang rust make pkg-config libffi openssl binutils
 
-    # Handle reinstall / fix / update — preserve source dir for fallback pip path
     if [ "$mode" == "reinstall" ]; then
         status_msg "Backing up and removing old Hermes installation"
         pkill -9 -f hermes 2>/dev/null || true
         if [ -d "$HOME/.hermes" ]; then
-            # Timestamped backup so user can recover if reinstall fails
             local backup_dir="$HOME/.hermes.bak.$(date +%Y%m%d%H%M%S)"
             mv "$HOME/.hermes" "$backup_dir"
             echo -e "${BLUE}Backed up old install to $backup_dir${NC}"
         fi
-        # Remove stale PATH entries from .bashrc
         sed -i '/\.hermes\/bin/d' "$HOME/.bashrc" 2>/dev/null || true
         success_msg
     elif [ "$mode" == "fix" ]; then
         status_msg "Preparing broken Hermes for repair"
         pkill -9 -f hermes 2>/dev/null || true
         success_msg
-    elif [ "$mode" == "update" ]; then
-        status_msg "Preparing Hermes for update"
-        pkill -9 -f hermes 2>/dev/null || true
-        success_msg
     fi
 
-    # Set Rust/Cargo environment for low-RAM Termux builds
-    export CARGO_BUILD_JOBS=1
-    export CARGO_NET_GIT_FETCH_WITH_CLI=true
-    export RUSTFLAGS="-C opt-level=2"
+    local android_api_level; android_api_level=$(_setup_rust_env)
 
-    # Fix critical: Maturin requires ANDROID_API_LEVEL on Termux
-    # https://github.com/termux/termux-packages/issues/20771
-    local android_api_level=$(getprop ro.build.version.sdk 2>/dev/null || echo "34")
-    export ANDROID_API_LEVEL=${android_api_level}
-    export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=clang
+    # Guard against Termux Python 3.14+ before upstream installer runs.
+    # The upstream check_python() only verifies >= 3.11, so 3.14 passes
+    # then pip fails with 'requires a different Python: 3.14 not in <3.14,>=3.11'.
+    _hermes_ensure_compatible_python || { wait_to_continue; return 0; }
 
-    # Run upstream installer - stream output to terminal so user can see progress
+    _hermes_prepare_wheel_cache
+
+    # Run upstream installer — stream output so user can see progress
     local hermes_tmp_log; hermes_tmp_log=$(mktemp)
     local hermes_exit=0
-    status_msg "Running Hermes upstream installer (this will take a while)"
-    # Stream output to both terminal and log file
+    status_msg "Running Hermes upstream installer"
     curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash 2>&1 | tee "$hermes_tmp_log"
     hermes_exit=${PIPESTATUS[1]}
     cat "$hermes_tmp_log" >> "$LOG_FILE"
 
-    # Upstream installer may return 0 even when pip fails inside it (maturin/jiter error).
-    # Trust the presence of the binary, not the exit code.
+    # Upstream may return 0 even when pip fails inside it (maturin/jiter error).
     local hermes_bin=""
     hermes_bin=$(type -P hermes 2>/dev/null || true)
     if [ -z "$hermes_bin" ] && [ -f "$HOME/.hermes/bin/hermes" ]; then
         hermes_bin="$HOME/.hermes/bin/hermes"
     fi
 
-    if [ -n "$hermes_bin" ] && [ -x "$hermes_bin" ] && [ "$hermes_exit" -eq 0 ]; then
+    if [ "$hermes_exit" -eq 0 ] && [ -n "$hermes_bin" ] && [ -x "$hermes_bin" ]; then
         success_msg
     else
         printf "\r${CLEAR_LINE}${YELLOW}  Hermes installer exited with warnings.${NC}\n"
-        echo -e "${BLUE}Attempting manual fallback installation...${NC}"
         tail -n 20 "$hermes_tmp_log"
     fi
     rm -f "$hermes_tmp_log"
 
-    # Fallback: try manual pip install if upstream left a partial source checkout
-    if [ -d "$HOME/.hermes/hermes-agent" ] && [ -z "$hermes_bin" ]; then
-        status_msg "Attempting manual Python package fallback"
-        local venv_path="$HOME/.hermes/hermes-agent/venv"
-        if [ -f "$venv_path/bin/pip" ]; then
-            # Export Termux env vars needed by maturin/Rust builds
-            export ANDROID_API_LEVEL=${android_api_level}
-            export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=clang
-            export CARGO_BUILD_JOBS=1
-
-            "$venv_path/bin/pip" install --upgrade pip wheel setuptools --quiet 2>>"$LOG_FILE" || true
-            # Pre-install jiter armv7l wheel on armv8l/armv7l devices (maturin rejects armv8l)
-            ensure_jiter_armv8l "$venv_path/bin/pip"
-            # Prefer pre-built binary wheels where available to skip Rust compilation
-            "$venv_path/bin/pip" install jiter pydantic-core --prefer-binary --no-build-isolation --quiet 2>>"$LOG_FILE" || true
-            # Retry with Termux-specific constraints - stream output to see progress
-            if [ -f "$HOME/.hermes/hermes-agent/constraints-termux.txt" ]; then
-                echo -e "${YELLOW}Compiling Hermes Python package (this will take a while)...${NC}"
-                "$venv_path/bin/pip" install -e "$HOME/.hermes/hermes-agent[termux]" \
-                    -c "$HOME/.hermes/hermes-agent/constraints-termux.txt" --no-build-isolation 2>&1 | tee -a "$LOG_FILE" || true
-            fi
-        fi
-        success_msg
+    # If binary is missing entirely, the upstream installer likely failed early.
+    # Try to recover by running the Termux extra install from the partial checkout.
+    if [ -z "$hermes_bin" ]; then
+        _hermes_ensure_termux_deps
     fi
 
-    # Wrapper reconciliation: upstream installer may leave $PREFIX/bin/hermes
-    # pointing to a stale venv path (e.g. ~/.hermes/hermes-agent/venv/bin/hermes)
-    # while the actual binary lives at ~/.hermes/hermes-agent/hermes after update.
-    status_msg "Reconciling Hermes wrapper"
-    local _hermes_wrapper="$TERMUX_BIN/hermes"
-    local _actual_binary=""
-    if [ -f "$_hermes_wrapper" ]; then
-        # Extract target from wrapper: exec "TARGET" "$@"
-        _actual_binary=$(sed -n 's|exec "\(.*\)" "\$@"|\1|p' "$_hermes_wrapper" 2>/dev/null || true)
-    fi
-    if [ -n "$_actual_binary" ] && [ ! -x "$_actual_binary" ]; then
-        # Wrapper points to a missing file — find the real binary
-        local _found_binary=""
-        _found_binary=$(find "$HOME/.hermes" -maxdepth 3 -type f -name hermes -executable 2>/dev/null | head -n1 || true)
-        if [ -n "$_found_binary" ] && [ -x "$_found_binary" ]; then
-            cat > "$_hermes_wrapper" <<EOF
-#!/usr/bin/env bash
-unset PYTHONPATH
-unset PYTHONHOME
-exec "$_found_binary" "\$@"
-EOF
-            chmod +x "$_hermes_wrapper"
-        fi
-    fi
-    success_msg
+    # Always run the Termux extra install after upstream finishes.
+    # The upstream installer silently falls back to a base install when
+    # .[termux-all] fails, leaving the venv incomplete (missing yaml, httpx, etc.).
+    _hermes_ensure_termux_deps
 
-    # Verify final installation — source .bashrc first because upstream
-    # installer appends PATH there; current shell never sees it otherwise
+    _hermes_save_wheel_cache
+
+    # Verify
     [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" 2>/dev/null || true
 
     local hermes_final_path=""
     hermes_final_path=$(type -P hermes 2>/dev/null || true)
     if [ -z "$hermes_final_path" ] && [ -f "$HOME/.hermes/bin/hermes" ]; then
-        # Add to current session PATH if found on disk but not in PATH
         export PATH="$HOME/.hermes/bin:$PATH"
         hermes_final_path="$HOME/.hermes/bin/hermes"
     fi
@@ -1381,6 +1507,108 @@ EOF
     fi
 
     wait_to_continue
+}
+
+# Restore Hermes from a timestamped backup created during [R] Reinstall.
+# Offers cherry-pick (configs only) or full restore, then regenerates wrapper.
+restore_hermes_backup() {
+    local backups
+    backups=$(find "$HOME" -maxdepth 1 -type d -name '.hermes.bak.*' | sort)
+    if [ -z "$backups" ]; then
+        whiptail_msg "${YELLOW}No Hermes backups found.${NC}\n\nBackups are created automatically when you select [R] Reinstall from the Hermes menu."
+        return 0
+    fi
+
+    # Build menu items from backups
+    local -a items=()
+    local backup_dir
+    while IFS= read -r backup_dir; do
+        [ -n "$backup_dir" ] || continue
+        local tag
+        tag=$(basename "$backup_dir")
+        items+=("$tag" "$tag")
+    done <<< "$backups"
+    items+=("" "" "CANCEL" "Cancel — do nothing")
+
+    local choice
+    choice=$(show_whi_menu "Select Hermes Backup to Restore" "${items[@]}") || return 0
+    [ "$choice" = "CANCEL" ] || [ -z "$choice" ] && return 0
+
+    local selected_backup="$HOME/.hermes.bak.${choice#*.hermes.bak.}"
+    # Handle case where tag is already just the timestamp part
+    [ -d "$selected_backup" ] || selected_backup="$HOME/.hermes.bak.$choice"
+    if [ ! -d "$selected_backup" ]; then
+        error_msg "Backup directory not found: $selected_backup"
+        return 1
+    fi
+
+    local mode
+    mode=$(show_whi_menu "Restore Mode  |  $choice" \
+        "CHERRY" "Cherry-pick configs only (safe — keeps new install)" \
+        "FULL"   "${RED}Full restore (replaces ~/.hermes with backup)${NC}" \
+        ""       "" \
+        "CANCEL" "Cancel") || return 0
+    [ "$mode" = "CANCEL" ] || [ -z "$mode" ] && return 0
+
+    if [ "$mode" = "FULL" ]; then
+        whiptail_confirm "This will REPLACE your current ~/.hermes with the backup. Continue?" || return 0
+        status_msg "Restoring full backup"
+        if [ -d "$HOME/.hermes" ]; then
+            local safety="$HOME/.hermes.fresh.$(date +%Y%m%d%H%M%S)"
+            mv "$HOME/.hermes" "$safety"
+            echo -e "${BLUE}Current install moved to $safety${NC}"
+        fi
+        cp -a "$selected_backup" "$HOME/.hermes"
+        success_msg
+    else
+        status_msg "Cherry-picking config files"
+        local copied=0
+        for f in config .env token.json credentials settings.json; do
+            if [ -e "$selected_backup/$f" ]; then
+                cp -a "$selected_backup/$f" "$HOME/.hermes/" 2>/dev/null && copied=$((copied + 1))
+            fi
+        done
+        success_msg
+        echo -e "${GREEN}Restored $copied config item(s).${NC}"
+    fi
+
+    # Always regenerate wrapper with venv Python fix
+    status_msg "Regenerating Hermes wrapper"
+    local _script="$HOME/.hermes/hermes-agent/hermes"
+    local _venv_py="$HOME/.hermes/hermes-agent/venv/bin/python3"
+    if [ -f "$_script" ]; then
+        if [ -x "$_venv_py" ]; then
+            cat > "$TERMUX_BIN/hermes" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$_venv_py" "$_script" "\$@"
+EOF
+        else
+            cat > "$TERMUX_BIN/hermes" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+[ -f "$HOME/.bashrc" ] \&\& source "$HOME/.bashrc" 2>/dev/null || true
+exec "$_script" "\$@"
+EOF
+        fi
+        chmod +x "$TERMUX_BIN/hermes"
+        success_msg
+    else
+        warn_msg "Hermes script not found after restore"
+    fi
+
+    # Restart PM2 if running
+    if pgrep -f "pm2.*hermes" >/dev/null 2>&1; then
+        status_msg "Restarting Hermes in PM2"
+        pm2 delete hermes 2>/dev/null || true
+        pm2 start "$TERMUX_BIN/hermes" --name hermes -- gateway
+        pm2 save
+        success_msg
+    fi
+
+    whiptail_msg "${GREEN}Hermes backup restored!${NC}\n\nBackup folder still at:\n${BLUE}$selected_backup${NC}\n\nDelete it when satisfied."
 }
 
 # --- 9.1. NANOBOT INSTALLATION ---
@@ -1667,6 +1895,34 @@ remove_n8n_service_files() {
     execute "rm -rf '$N8N_SERVICE_DIR'" "Removing n8n service configuration"
 }
 
+# Resolve a command path, handling pnpm shim redirection.
+# If the command is a pnpm shim, finds the actual JS binary.
+_pm2_resolve_bin() {
+    local cmd_name="$1"
+    local bin_path=""
+    bin_path=$(type -P "$cmd_name" 2>/dev/null || true)
+    if [[ "$bin_path" == *".local/share/pnpm"* ]]; then
+        local pnpm_root
+        pnpm_root=$(pnpm_root_g 2>/dev/null)
+        [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
+        echo "$pnpm_root"
+    else
+        echo "$bin_path"
+    fi
+}
+
+# Start an app in PM2 with consistent cleanup.
+# Usage: _pm2_start_app <name> <binary> [extra_pm2_args...]
+_pm2_start_app() {
+    local app_name="$1"
+    local app_bin="$2"
+    shift 2
+    pm2 delete "$app_name" 2>/dev/null || true
+    local _extra=""
+    [ $# -gt 0 ] && _extra=" $*"
+    execute "pm2 start '$app_bin' --name '$app_name'$_extra && pm2 save" "Starting $app_name in PM2"
+}
+
 manage_pm2() {
     if ! command -v pm2 >/dev/null 2>&1; then
         whiptail_confirm "Install PM2 globally first?" || return 0
@@ -1691,49 +1947,29 @@ manage_pm2() {
         case "$choice" in
             "") continue ;;
             OPENCLAW)
-                local openclaw_bin=""
-                openclaw_bin=$(type -P openclaw 2>/dev/null || true)
-                if [ -n "$openclaw_bin" ]; then
+                local openclaw_path; openclaw_path=$(_pm2_resolve_bin "openclaw")
+                if [ -n "$openclaw_path" ]; then
                     status_msg "Preparing OpenClaw environment"
                     pm2 stop openclaw 2>/dev/null || true
                     pm2 delete openclaw 2>/dev/null || true
                     rm -f "$HOME/.openclaw/tmp/openclaw.lock"
                     success_msg
-
-                    PNPM_NODE_PATH=$(pnpm_root_g || true)
-                    SAFE_LIMIT=$(get_mem_limit)
-
-                    # If using pnpm shim, find actual binary to avoid PM2 interpreting bash as JS
-                    local openclaw_path="$openclaw_bin"
-                    if [[ "$openclaw_bin" == *".local/share/pnpm"* ]]; then
-                        local pnpm_root
-                        pnpm_root=$(pnpm_root_g 2>/dev/null)
-                        [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
-                        openclaw_path="$pnpm_root/openclaw/openclaw.mjs"
-                    fi
-
-                    execute "NODE_OPTIONS='--dns-result-order=ipv4first --max-old-space-size=$SAFE_LIMIT' OPENCLAW_TMP='$HOME/.openclaw/tmp' NODE_PATH='$PREFIX/lib/node_modules${PNPM_NODE_PATH:+:$PNPM_NODE_PATH}' npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH' pm2 start '$openclaw_path' --name openclaw --interpreter none -- gateway run && pm2 save" "Starting OpenClaw in PM2"
+                    local PNPM_NODE_PATH; PNPM_NODE_PATH=$(pnpm_root_g || true)
+                    local SAFE_LIMIT; SAFE_LIMIT=$(get_mem_limit)
+                    local _env="NODE_OPTIONS='--dns-result-order=ipv4first --max-old-space-size=$SAFE_LIMIT' OPENCLAW_TMP='$HOME/.openclaw/tmp' NODE_PATH='$PREFIX/lib/node_modules${PNPM_NODE_PATH:+:$PNPM_NODE_PATH}' npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH'"
+                    execute "$_env pm2 start '$openclaw_path' --name openclaw --interpreter none -- gateway run && pm2 save" "Starting OpenClaw in PM2"
                 else
                     error_msg "OpenClaw is not installed."
                 fi
                 ;;
             N8N)
-                local n8n_bin=""
-                n8n_bin=$(type -P n8n 2>/dev/null || true)
-                if [ -n "$n8n_bin" ]; then
+                local n8n_path; n8n_path=$(_pm2_resolve_bin "n8n")
+                if [ -n "$n8n_path" ]; then
                     local n8n_env=""
                     [ -f "$HOME/n8n_server/config/n8n.env" ] && n8n_env="--env '$HOME/n8n_server/config/n8n.env'"
                     pm2 stop n8n 2>/dev/null || true
-
-                    local n8n_path="$n8n_bin"
-                    if [[ "$n8n_bin" == *".local/share/pnpm"* ]]; then
-                        local pnpm_root
-                        pnpm_root=$(pnpm_root_g 2>/dev/null)
-                        [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
-                        n8n_path="$pnpm_root/n8n/packages/cli/bin/n8n"
-                    fi
-
-                    execute "pm2 delete n8n 2>/dev/null || true; pm2 start '$n8n_path' --name n8n --interpreter none $n8n_env && pm2 save" "Starting n8n in PM2"
+                    pm2 delete n8n 2>/dev/null || true
+                    execute "pm2 start '$n8n_path' --name n8n --interpreter none $n8n_env && pm2 save" "Starting n8n in PM2"
                 else
                     error_msg "n8n is not installed."
                 fi
@@ -1745,7 +1981,7 @@ manage_pm2() {
                     hermes_path="$HOME/.hermes/bin/hermes"
                 fi
                 if [ -n "$hermes_path" ]; then
-                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start 'hermes gateway' --name hermes && pm2 save" "Starting Hermes in PM2"
+                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start '$TERMUX_BIN/hermes' --name hermes -- gateway && pm2 save" "Starting Hermes in PM2"
                 else
                     error_msg "Hermes is not installed."
                 fi
@@ -2025,16 +2261,19 @@ uninstall_paperclip() {
 # --- 13. MENUS ---
 
 menu_agents() {
-    local oc_bull="[ ]" hb_bull="[ ]" nb_bull="[ ]"
+    local oc_bull="[ ]" hb_bull="[ ]" nb_bull="[ ]" rs_bull="[ ]"
     is_installed "openclaw" && oc_bull="[*]"
     (type -P hermes >/dev/null 2>&1 || [ -f "$HOME/.hermes/bin/hermes" ]) && hb_bull="[*]"
     command -v nanobot >/dev/null 2>&1 && nb_bull="[*]"
+    [ -n "$(find "$HOME" -maxdepth 1 -type d -name '.hermes.bak.*' -print -quit 2>/dev/null)" ] && rs_bull="[R]"
     while true; do
         local choice menu_exit=0
         choice=$(show_whi_menu "AI Agents & LLMs  |  Use ↑/↓ to navigate, Enter to select" \
             "OPENCLAW"   "$oc_bull  OpenClaw   — Multi-Channel Agent Gateway" \
             "HERMES"     "$hb_bull  Hermes     — Autonomous Agent (Nous Research)" \
             "NANOBOT"    "$nb_bull  Nanobot    — Lightweight Python Agent (HKUDS)" \
+            ""           "" \
+            "RESTORE"    "$rs_bull  Restore    — Restore Hermes from Backup" \
             ""           "" \
             "BACK"       "<--  BACK TO MAIN MENU") || menu_exit=$?
         [ $menu_exit -ne 0 ] && return
@@ -2043,6 +2282,7 @@ menu_agents() {
             OPENCLAW) install_openclaw ;;
             HERMES)   install_hermes ;;
             NANOBOT)  install_nanobot ;;
+            RESTORE)  restore_hermes_backup ;;
             BACK|*)    return ;;
         esac
     done
