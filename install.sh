@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # DROID AI TOOLKIT (Termux)
-# Version: 1.15.0
+# Version: 1.15.1
 # Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
 #          Hermes, Paperclip) on Android via Termux with kernel patches and path fixes.
 # ==============================================================================
@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.15.0"
+VERSION="1.15.1"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -1603,7 +1603,7 @@ EOF
     if pgrep -f "pm2.*hermes" >/dev/null 2>&1; then
         status_msg "Restarting Hermes in PM2"
         pm2 delete hermes 2>/dev/null || true
-        pm2 start "$TERMUX_BIN/hermes" --name hermes -- gateway
+        pm2 start "$TERMUX_BIN/hermes" --name hermes --interpreter bash -- gateway
         pm2 save
         success_msg
     fi
@@ -1981,7 +1981,7 @@ manage_pm2() {
                     hermes_path="$HOME/.hermes/bin/hermes"
                 fi
                 if [ -n "$hermes_path" ]; then
-                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start '$TERMUX_BIN/hermes' --name hermes -- gateway && pm2 save" "Starting Hermes in PM2"
+                    execute "pm2 delete hermes 2>/dev/null || true; pm2 start '$TERMUX_BIN/hermes' --name hermes --interpreter bash -- gateway && pm2 save" "Starting Hermes in PM2"
                 else
                     error_msg "Hermes is not installed."
                 fi
