@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.15.1] - 2026-07-08
+
+### Bug Fixes
+
+- **PM2 Hermes interpreter fix** — PM2 defaults to `interpreter: "node"`, but `$PREFIX/bin/hermes` is a bash wrapper script containing `unset PYTHONPATH`. Added `--interpreter bash` to all `pm2 start` commands for Hermes so the wrapper executes correctly instead of throwing `SyntaxError: Unexpected identifier 'PYTHONPATH'`.
+
 ## [v1.15.0] - 2026-07-08
 
 ### New Features
