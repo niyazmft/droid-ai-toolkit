@@ -2,9 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.15.0] - 2026-07-08
+
+### New Features
+
+- **Hermes Wheel Cache** — After a successful Hermes install, compiled Python wheels (`cryptography`, `Pillow`, `pydantic-core`, `jiter`, `httptools`, `uvloop`, `watchfiles`, etc.) are automatically saved to `~/.hermes/wheel-cache`. Future `[R] Reinstall` or `[U] Update` operations on the same device reuse these prebuilt wheels and skip the 30–90 minute Rust/C compilation phase. Install time drops from ~90 minutes to under 2 minutes.
+
+### Bug Fixes (v1.15.0)
+
+- **Android wheel platform-tag mismatch** — Wheels built on-device via maturin/setuptools are tagged `android_29_arm64_v8a`, but pip's compatible-tags list reports `linux_aarch64`. Added automatic symlink aliases (`linux_aarch64` → real `android_*` wheel) in `_hermes_prepare_wheel_cache()` so pip correctly matches cached wheels during `--find-links` resolution.
+- **Hermes Python 3.14 incompatibility** — Termux's default `python` is now 3.14, but Hermes requires `<3.14`. Added `_hermes_ensure_compatible_python()` which detects Python 3.14 and creates a temporary `python` → `python3.11` symlink before the upstream installer runs. Shows graceful TUR install instructions if no compatible Python is found.
+
+### Documentation
+
+- **README.md** — Added Wheel Cache tip to Hermes section and Smart Repair section.
+- **AGENTS.md** — Documented wheel cache architecture and device-specific constraints (bionic libc, OpenSSL ABI).
+
 ## [v1.14.0] - 2026-07-06
 
-### Bug Fixes
+### Bug Fixes (v1.14.0)
 
 - **`execute()` no longer aborts the entire installer** — Fixed critical bug where `execute()` called `exit 1` on failure, killing the interactive shell mid-install. Now returns `$exit_code` so callers can decide whether to abort or retry.
 - **`get_global_node_path()` colon-separated paths** — Fixed `find -L` breakage when `pnpm_root_g` appended a colon-delimited path. Now properly iterated with `IFS=':' read -ra`.
@@ -66,13 +82,13 @@ curl -sSL https://raw.githubusercontent.com/niyazmft/droid-ai-toolkit/main/insta
 
 ### Changes in v1.13.0
 
-### UI & UX Improvements
+### UI & UX Improvements (v1.13.0)
 
 - **Modern UI Engine**: Upgraded the core menu system to use `gum` for a premium, color-rich, and touch-friendly interface. It gracefully falls back to `whiptail` if `gum` is unavailable.
 - **Visual Separators**: Added unselectable blank visual separators to all menus to group related actions safely.
 - **Automatic Dependencies**: `ensure_deps` now automatically installs `gum` during initial setup.
 
-### Performance Optimizations
+### Performance Optimizations (v1.13.0)
 
 - **In-Memory Caching**: Implemented aggressive Bash variable caching for `get_config` and `pnpm_root_g`.
 - **Zero-Latency Navigation**: Eliminated the ~1-second menu reload delay by preventing redundant spawns of the Node.js engine and `jq` during menu rendering.
