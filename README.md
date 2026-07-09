@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.15.1-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.15.2-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -15,7 +15,7 @@ A high-performance, automated toolkit for running AI tools — [OpenClaw](https:
 ## 📱 Compatibility
 
 - **OS**: Android 9.0 and above.
-- **Architecture**: Tested on `armv8l` (32-bit), `aarch64` (64-bit), and `x86_64` CPUs.
+- **Architecture**: Tested on `armv8l` (32-bit) and `aarch64` (64-bit) mobile CPUs.
 - **Optimization**: Automatically detects system RAM and recommends appropriate memory limits (512MB to 2048MB) for Node.js and n8n workloads.
 - **Package Managers**: Supports both **npm** (Standard) and **pnpm** (High Efficiency) for Node.js-based tools.
 - **Process Management**: Supports **PM2** (Recommended) and **termux-services** (Native).
@@ -97,8 +97,8 @@ To keep tools running even after you close Termux:
 - 🛡 **Surgical Cleanup**: The uninstaller offers **Soft/Deep** options and a **Wipe Stack (Reset)** function that preserves your system packages while cleaning the apps.
 - 🧩 **Gemini CLI Support**: Dedicated installer with NDK environment optimizations and `fs.promises.rename` → `copyFile+unlink` patch to prevent Android `ENOENT`.
 - 🦙 **Ollama Support**: One-click install via Termux native package (`pkg install ollama`).
-- ⚡ **Hermes Support**: One-click install via official curl installer (aarch64/x86_64 only).
-- 🤖 **Nanobot Support**: pip install with `--no-build-isolation` for pre-seeded dependencies (aarch64/x86_64 only).
+- ⚡ **Hermes Support**: One-click install via official curl installer.
+- 🤖 **Nanobot Support**: pip install with `--no-build-isolation` for pre-seeded dependencies.
 - 🥧 **Pi Coding Agent (Recommended)**: npm/pnpm global install with Termux-specific `AGENTS.md` context.
 - 📎 **Paperclip (EXPERIMENTAL)**: Delegates to `paperclip_manual_install.sh` which handles clone, patches, pnpm install, prebuilt tarball download, PostgreSQL bootstrap, and PM2 ecosystem file generation.
 
@@ -145,7 +145,7 @@ AI agent by Nous Research, installed via the official curl installer.
 hermes                # Start the agent
 ```
 
-> **💡 Wheel Cache (v1.15.1+):** After your first successful Hermes install, compiled Python wheels (`cryptography`, `Pillow`, `pydantic-core`, `jiter`, etc.) are automatically saved to `~/.hermes/wheel-cache`. Future **[R] Reinstall** or **[U] Update** operations skip compilation entirely and reuse these cached wheels, dropping install time from ~90 minutes to under 2 minutes on the same device.
+> **💡 Wheel Cache (v1.15.2+):** After your first successful Hermes install, compiled Python wheels (`cryptography`, `Pillow`, `pydantic-core`, `jiter`, etc.) are automatically saved to `~/.hermes/wheel-cache`. Future **[R] Reinstall** or **[U] Update** operations skip compilation entirely and reuse these cached wheels, dropping install time from ~90 minutes to under 2 minutes on the same device.
 > On `armv8l`/`armv7l`, the toolkit will display a graceful error message and skip installation.
 
 ---
@@ -337,32 +337,21 @@ Run the toolkit and select **UNINSTALL** to access the modular uninstallation me
 
 ---
 
-## 📊 Management Commands
+## 📊 Quick Commands
 
-| Action | Command |
-| :--- | :--- |
-| **Check Health** | `sv status openclaw` |
-| **View Live Logs** | `tail -f ~/.openclaw/logs/current` |
-| **Stop Service** | `sv down openclaw` |
-| **Restart Gateway** | `sv restart openclaw` |
-| **Force Kill (Stray)** | `pkill -9 -f openclaw` |
-| **Fix Environment** | `openclaw doctor` |
-| **Find Access Token** | `grep "token" ~/.openclaw/openclaw.json` |
-| **Ollama: Start Server** | `ollama serve` |
-| **Ollama: Pull Model** | `ollama pull llama3` |
-| **Ollama: Run Model** | `ollama run llama3` |
-| **Hermes: Start** | `hermes` |
-| **Nanobot: Start** | `nanobot` |
-| **Pi: Start** | `pi` |
-| **Paperclip: Start** | `pm2 start ~/paperclip/ecosystem.config.cjs` |
-| **n8n: Start** | `n8n start` |
-| **Gemini CLI: Start** | `gemini` |
-| **PM2: View Logs** | `pm2 logs` |
-| **PM2: View Status** | `pm2 status` |
-| **PM2: Restart All** | `pm2 restart all` |
-| **PM2: Stop All** | `pm2 stop all` |
-| **Native Service: Start n8n** | `sv up n8n` |
-| **Native Service: Stop n8n** | `sv down n8n` |
+| Tool | Command |
+|:---|:---|
+| **OpenClaw** | `openclaw` · `openclaw doctor` · `sv restart openclaw` |
+| **Ollama** | `ollama serve` · `ollama pull llama3` · `ollama run llama3` |
+| **Hermes** | `hermes` |
+| **Nanobot** | `nanobot` |
+| **Pi** | `pi` |
+| **Paperclip** | `pm2 start ~/paperclip/ecosystem.config.cjs` |
+| **n8n** | `n8n start` |
+| **Gemini CLI** | `gemini` |
+| **PM2** | `pm2 status` · `pm2 logs` · `pm2 restart all` · `pm2 stop all` |
+| **Native Services** | `sv up n8n` · `sv down n8n` · `sv status openclaw` |
+| **Wake Lock** | `termux-wake-lock` (prevents Android from killing background processes) |
 
 ---
 
@@ -384,7 +373,7 @@ To update or repair safely, re-run `install.sh`, choose the tool's **Install/Rep
 
 ### 🔋 Battery Optimization
 
-To prevent Android from killing the background process, run:
+To prevent Android from killing the background process:
 
 ```bash
 termux-wake-lock
@@ -407,7 +396,7 @@ termux-wake-lock
 - **Homebrew Recommendations**: **Ignore them.** Homebrew is not supported on Android. Use `pkg install <package>` for any missing dependencies.
 - **Node.js Errors**: Run the toolkit's **Install/Repair** option to reset environment locks and paths.
 - **Ollama Not Found After Install**: Restart Termux or run `source ~/.bashrc` to refresh your PATH.
-- **Hermes/Nanobot Fail on armv8l**: Expected — these tools require Rust compilation via maturin, which does not support the `armv8l` architecture. Use an `aarch64` or `x86_64` device instead.
+- **Hermes/Nanobot Fail on armv8l**: Expected — these tools require Rust compilation via maturin, which does not support the `armv8l` architecture. Use an `aarch64` device instead.
 - **Paperclip LMK Kill During Install**: Expected on 3–4GB RAM devices. The installer detects the kill, verifies packages are present, and continues. If it fails entirely, ensure you have at least 2GB free RAM before starting.
 
 ---
