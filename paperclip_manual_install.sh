@@ -22,10 +22,10 @@ if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
     if [ -n "$LATEST_TAG" ]; then
         echo -e "\033[0;32m[PASS]\033[0m Using latest release tag: $LATEST_TAG"
     else
-        echo -e "\033[0;33m[WARN]\033[0m Could not fetch latest release tag. Falling back to hardcoded v1.15.2."
+        echo -e "\033[0;33m[WARN]\033[0m Could not fetch latest release tag. Falling back to hardcoded v1.15.3."
     fi
 fi
-TOOLKIT_VERSION=${LATEST_TAG:-"v1.15.2"} # Fallback to last known good version
+TOOLKIT_VERSION=${LATEST_TAG:-"v1.15.3"} # Fallback to last known good version
 
 PASS=0; FAIL=0
 pass() { echo -e "\033[0;32m[PASS]\033[0m $1"; PASS=$((PASS+1)); }
@@ -49,16 +49,16 @@ info "Step 1: Checking prerequisites..."
 for cmd in node pnpm pg_ctl; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         case "$cmd" in
-            node)    pkg install -y nodejs-22 || { fail "nodejs-22 install failed"; exit 1; } ;;
+            node)    pkg install -y nodejs-lts || { fail "nodejs-lts install failed"; exit 1; } ;;
             pnpm)    npm install -g pnpm@9.15.4 || { fail "pnpm install failed"; exit 1; } ;;
             pg_ctl)  pkg install -y postgresql || { fail "postgresql install failed"; exit 1; } ;;
         esac
     fi
 done
 pass "Prerequisites OK"
-if [ -d "$PREFIX/opt/nodejs-22/bin" ]; then
-    ln -sf "$PREFIX/opt/nodejs-22/bin/node" "$PREFIX/bin/node" 2>/dev/null || true
-    ln -sf "$PREFIX/opt/nodejs-22/bin/npm" "$PREFIX/bin/npm" 2>/dev/null || true
+if [ -d "$PREFIX/opt/nodejs-lts/bin" ]; then
+    ln -sf "$PREFIX/opt/nodejs-lts/bin/node" "$PREFIX/bin/node" 2>/dev/null || true
+    ln -sf "$PREFIX/opt/nodejs-lts/bin/npm" "$PREFIX/bin/npm" 2>/dev/null || true
 fi
 
 # ══════════════════════════════════════════════════════════════
