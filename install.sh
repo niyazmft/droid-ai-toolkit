@@ -611,19 +611,57 @@ install_openclaw() {
     if is_installed "openclaw"; then
         local choice
         choice=$(show_whi_menu "OpenClaw is already installed  |  Use ↑/↓ and Enter" \
-            "REPAIR"   "[R]  Repair Patches (Fast — ~2 seconds)" \
-            "UPDATE"   "[U]  Update to Latest (Full re-install)" \
-            ""         "" \
-            "BACK"     "<--  BACK TO AGENTS MENU") || return 0
+            "REPAIR"    "[R]  Repair Patches (Fast — ~2 seconds)" \
+            "UPDATE"    "[U]  Update to Latest (Full re-install)" \
+            "VERSION"   "[V]  Install Specific Version (e.g. 2026.6.30)" \
+            "ZULIP"     "[Z]  Zulip Plugin" \
+            ""          "" \
+            "BACK"      "<--  BACK TO AGENTS MENU") || return 0
         case "$choice" in
             "") return 0 ;;
             REPAIR) mode="repair" ;;
             UPDATE) mode="full" ;;
+            VERSION)
+                mode="full"
+                if command -v gum >/dev/null 2>&1; then
+                    target_version=$(gum input --placeholder "2026.6.30" --prompt "Enter OpenClaw version: ")
+                else
+                    echo -ne "${BLUE}Enter OpenClaw version (e.g. 2026.6.30): ${NC}"
+                    read -r target_version
+                fi
+                if [ -z "$target_version" ]; then
+                    warn_msg "No version entered — defaulting to latest"
+                    target_version="latest"
+                fi
+                ;;
+            ZULIP) manage_zulip_plugin; return 0 ;;
             BACK|*) return 0 ;;
         esac
     else
-        confirm_action "Install OpenClaw" || return 0
-        mode="full"
+        local choice
+        choice=$(show_whi_menu "Install OpenClaw  |  Use ↑/↓ and Enter" \
+            "INSTALL"   "[I]  Install Latest" \
+            "VERSION"   "[V]  Install Specific Version (e.g. 2026.6.30)" \
+            ""          "" \
+            "BACK"      "<--  BACK TO AGENTS MENU") || return 0
+        case "$choice" in
+            "") return 0 ;;
+            INSTALL) mode="full" ;;
+            VERSION)
+                mode="full"
+                if command -v gum >/dev/null 2>&1; then
+                    target_version=$(gum input --placeholder "2026.6.30" --prompt "Enter OpenClaw version: ")
+                else
+                    echo -ne "${BLUE}Enter OpenClaw version (e.g. 2026.6.30): ${NC}"
+                    read -r target_version
+                fi
+                if [ -z "$target_version" ]; then
+                    warn_msg "No version entered — defaulting to latest"
+                    target_version="latest"
+                fi
+                ;;
+            BACK|*) return 0 ;;
+        esac
     fi
 
     begin_install
@@ -647,9 +685,9 @@ install_openclaw() {
         success_msg
 
         if [ "$PKG_MANAGER" == "npm" ]; then
-            execute "npm install -g openclaw@latest" "Installing OpenClaw via npm"
+            execute "npm install -g openclaw@${target_version}" "Installing OpenClaw ${target_version} via npm"
         else
-            execute "pnpm add -g openclaw@latest --force --ignore-scripts" "Installing OpenClaw via pnpm"
+            execute "pnpm add -g openclaw@${target_version} --force --ignore-scripts" "Installing OpenClaw ${target_version} via pnpm"
         fi
     fi
 
@@ -691,6 +729,62 @@ install_openclaw() {
     echo -e "2. Select ${BLUE}SERVICES${NC} -> ${BLUE}PM2${NC} (Recommended) or ${BLUE}Native Services${NC} to configure background services."
     echo -e "\n${RED}DO NOT USE 'openclaw update'${NC}"
     echo -e "   This will break patches. Select ${BLUE}AGENTS${NC} -> ${BLUE}OpenClaw${NC} from the main menu to update."
+    wait_to_continue
+}
+
+# --- ZULIP PLUGIN MANAGEMENT ---
+# Sub-menu for installing/updating/uninstalling the Zulip plugin.
+# OpenClaw must already be installed.
+manage_zulip_plugin() {
+    command -v openclaw >/dev/null 2>&1 || { error_msg "OpenClaw is not installed"; wait_to_continue; return 0; }
+
+    local choice
+    choice=$(show_whi_menu "Zulip Plugin  |  Use ↑/↓ and Enter" \
+        "INSTALL"   "[I]  Install Latest" \
+        "UPDATE"    "[U]  Update to Latest" \
+        "VERSION"   "[S]  Install Specific Version" \
+        "UNINSTALL" "[X]  Uninstall" \
+        ""          "" \
+        "BACK"      "<--  BACK TO OPENCLAW MENU") || return 0
+
+    case "$choice" in
+        "") return 0 ;;
+        INSTALL)
+            status_msg "Installing Zulip plugin (latest)"
+            openclaw plugins install clawhub:@niyazmft/openclaw-zulip 2>&1 | tee -a "$LOG_FILE"
+            success_msg
+            ;;
+        UPDATE)
+            status_msg "Updating Zulip plugin to latest"
+            openclaw plugins update zulip 2>&1 | tee -a "$LOG_FILE" || \
+                openclaw plugins install clawhub:@niyazmft/openclaw-zulip@latest 2>&1 | tee -a "$LOG_FILE"
+            success_msg
+            ;;
+        VERSION)
+            local zulip_ver=""
+            if command -v gum >/dev/null 2>&1; then
+                zulip_ver=$(gum input --placeholder "2026.7.0" --prompt "Enter Zulip version: ")
+            else
+                echo -ne "${BLUE}Enter Zulip version (e.g. 2026.7.0): ${NC}"
+                read -r zulip_ver
+            fi
+            if [ -z "$zulip_ver" ]; then
+                warn_msg "No version entered — aborting"
+                return 0
+            fi
+            status_msg "Installing Zulip plugin ${zulip_ver}"
+            openclaw plugins install "clawhub:@niyazmft/openclaw-zulip@${zulip_ver}" 2>&1 | tee -a "$LOG_FILE"
+            success_msg
+            ;;
+        UNINSTALL)
+            confirm_action "Uninstall Zulip plugin" || return 0
+            status_msg "Uninstalling Zulip plugin"
+            openclaw plugins uninstall zulip 2>&1 | tee -a "$LOG_FILE"
+            success_msg
+            ;;
+        BACK|*) return 0 ;;
+    esac
+
     wait_to_continue
 }
 
