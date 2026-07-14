@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # DROID AI TOOLKIT (Termux)
-# Version: 1.15.2
+# Version: 1.15.3
 # Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
 #          Hermes, Paperclip) on Android via Termux with kernel patches and path fixes.
 # ==============================================================================
@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.15.2"
+VERSION="1.15.3"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -520,8 +520,8 @@ whiptail_msg() {
 }
 
 ensure_nodejs_links() {
-    if [ -d "$PREFIX/opt/nodejs-22/bin" ]; then
-        local node_opt_bin="$PREFIX/opt/nodejs-22/bin"
+    if [ -d "$PREFIX/opt/nodejs-lts/bin" ]; then
+        local node_opt_bin="$PREFIX/opt/nodejs-lts/bin"
         execute "ln -sf '$node_opt_bin/node' '$TERMUX_BIN/node' && ln -sf '$node_opt_bin/npm' '$TERMUX_BIN/npm'" "Verifying Node.js links"
     fi
 }
@@ -632,7 +632,7 @@ install_openclaw() {
 
     if [[ "$mode" == "full" ]]; then
         # Batched package installation for performance
-        smart_pkg_install tur-repo build-essential libvips openssh git python3 pkg-config cmake tmux binutils termux-services ffmpeg golang nodejs-22 psmisc
+        smart_pkg_install tur-repo build-essential libvips openssh git python3 pkg-config cmake tmux binutils termux-services ffmpeg golang nodejs-lts psmisc
     fi
 
     ensure_nodejs_links
@@ -997,7 +997,7 @@ install_n8n() {
     prepare_for_install "n8n" "openclaw"
 
     if [[ "$mode" == "full" ]]; then
-        smart_pkg_install nodejs-22 python3 autossh tmux cronie
+        smart_pkg_install nodejs-lts python3 autossh tmux cronie
         
     ensure_nodejs_links
     fi
