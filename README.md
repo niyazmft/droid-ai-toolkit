@@ -127,6 +127,10 @@ openclaw doctor --fix     # Repair schema issues
 ```
 
 > ⚠️ **NEVER** run `openclaw update` — it overwrites Android patches. Use the toolkit's **[R] Repair** or **[U] Update** instead.
+>
+> 💡 **Version Selection (v1.15.3+):** The toolkit now supports installing a **specific OpenClaw version** (e.g. `2026.6.30`) instead of always pulling `@latest`. Use **[V] Install Specific Version** from the OpenClaw menu.
+>
+> 💡 **Zulip Plugin (v1.15.3+):** A dedicated sub-menu **[Z] Zulip Plugin** is available under AGENTS → OpenClaw for installing, updating, or uninstalling the Zulip integration (`clawhub:@niyazmft/openclaw-zulip`). You can also pin to a specific plugin version (e.g. `2026.7.0`).
 
 ---
 
