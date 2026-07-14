@@ -52,6 +52,25 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 | Nanobot | `pip3 install nanobot-ai` with `--no-build-isolation` | ❌ Not supported on `armv8l`/`armv7l` (maturin/jiter incompatibility) |
 | Paperclip | Delegates to `paperclip_manual_install.sh` (clone + pnpm + prebuilt tarballs + PostgreSQL) | All architectures (experimental, ~2GB RAM recommended) |
 
+## OpenClaw Version Selection (v1.15.3+)
+
+The toolkit supports installing a **specific OpenClaw version** (e.g. `2026.6.30`) via the **[V] Install Specific Version** option in the OpenClaw menu. This is useful for:
+
+- Pinning to a known-good release
+- Testing older versions before upgrading
+- Avoiding breaking changes in `@latest`
+
+## Zulip Plugin Management (v1.15.3+)
+
+A dedicated sub-menu **[Z] Zulip Plugin** under AGENTS → OpenClaw provides:
+
+- **[I] Install Latest** — `openclaw plugins install clawhub:@niyazmft/openclaw-zulip`
+- **[U] Update to Latest** — `openclaw plugins update zulip`
+- **[S] Install Specific Version** — `openclaw plugins install clawhub:@niyazmft/openclaw-zulip@2026.7.0`
+- **[X] Uninstall** — `openclaw plugins uninstall zulip`
+
+> ⚠️ **Node 24 Compatibility:** The Zulip plugin may fail on Node 24 with an `ERR_REQUIRE_ESM_RACE_CONDITION` due to a worker-thread module loader race in OpenClaw's plugin SDK. This affects both pnpm and npm installs. The only guaranteed fixes are: (1) wait for an OpenClaw upstream patch, or (2) skip Zulip by setting `plugins.allow` in `openclaw.json`.
+
 ## Pi Agent Contextualization
 
 - **Path Awareness**: Automatically creates `~/.pi/agent/AGENTS.md` during installation.
