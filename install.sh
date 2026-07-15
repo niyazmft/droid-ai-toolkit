@@ -1600,6 +1600,17 @@ install_hermes() {
         echo -e "  3. Ensure Rust works:      ${YELLOW}rustc --version${NC}"
     fi
 
+    # Patch Hermes v0.18.2 Termux fast-version bug — _try_termux_ultrafast_version()
+    # references PROJECT_ROOT before it's defined, causing NameError on `hermes --version`.
+    # This is an upstream bug; remove this patch once fixed in a future Hermes release.
+    local _hermes_main
+    _hermes_main="$HOME/.hermes/hermes-agent/hermes_cli/main.py"
+    if [ -f "$_hermes_main" ]; then
+        if grep -q '_try_termux_ultrafast_version' "$_hermes_main" 2>/dev/null; then
+            sed -i 's/if _try_termux_ultrafast_version():/if False:  # Termux fix (upstream PROJECT_ROOT race)/' "$_hermes_main" 2>/dev/null || true
+        fi
+    fi
+
     wait_to_continue
 }
 
