@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.15.3"
+VERSION="1.15.4"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -1468,7 +1468,10 @@ install_hermes() {
 
     # ─── UPDATE MODE ────────────────────────────────────────────────
     # Use upstream 'hermes update' which preserves configs, runs git pull,
-    # installs deps, migrates config, and restarts gateway automatically.
+    # migrates config, and restarts gateway automatically.
+    # NOTE: upstream now uses 'uv' for deps, but 'uv' rejects Android-built
+    # wheels on Termux. We call _hermes_ensure_termux_deps afterward to
+    # re-install the editable package with pip so the source mapping stays valid.
     if [ "$mode" == "update" ]; then
         _hermes_prepare_wheel_cache
         status_msg "Preparing Hermes for update"
@@ -1489,6 +1492,8 @@ install_hermes() {
             # Stream to log so user can inspect if terminal drops
             hermes update 2>&1 | tee -a "$LOG_FILE"
             success_msg
+            # Fix any uv breakage on Termux by re-installing with pip
+            _hermes_ensure_termux_deps
         else
             warn_msg "Hermes deps incomplete — falling back to manual update"
             status_msg "Git pulling latest code"
