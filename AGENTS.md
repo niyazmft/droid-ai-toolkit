@@ -35,9 +35,35 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.15.3). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version (v1.15.7). `package.json` version (1.0.0) is stale — ignore it.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
+
+## Hermes Update Fix (v1.15.7)
+
+The `[U] Update` path for Hermes was rewritten to work around upstream bugs:
+
+1. **Upstream `hermes update` uses `uv` internally**, which is broken on Termux:
+   - Downloads a glibc-linked `uv` binary → fails on bionic libc
+   - Falls back to `pip install uv` → no aarch64 wheel → compiles 100K+ lines of Rust → OOM
+   - `uv` then rejects Android-built wheels as "not compatible with Android aarch64"
+   - PR #39138 fixed extras group selection (`termux-all` vs `all`) but explicitly left the managed-uv bootstrap unfixed ("out of scope")
+
+2. **Our fix** — the toolkit now:
+   - Skips `hermes update` entirely on Termux
+   - Runs `git pull origin main` manually
+   - Calls `_hermes_ensure_termux_deps()` which uses `pip` (not `uv`)
+   - Cleans stale `gateway.lock` / `gateway.pid` after `pkill -9`
+   - Force-reinstalls editable metadata (`--force-reinstall --no-deps -e .`) to prevent stale `.pth` files
+   - Smoke-tests imports (`import agent.prompt_builder`) to verify the venv is coherent
+   - Exports Rust build env (`ANDROID_API_LEVEL`, `CARGO_BUILD_JOBS=1`, etc.) before any pip call
+
+3. **Post-update cryptography check** — Hermes v0.19.0's `setup.py` pins `cryptography==48.0.1`, but the wheel cache may only have `46.0.7`. The toolkit does not force-upgrade cryptography to avoid a 30–90 minute source build. If you need the newer version, run manually:
+
+   ```bash
+   export ANDROID_API_LEVEL=$(getprop ro.build.version.sdk)
+   ~/.hermes/hermes-agent/venv/bin/pip install cryptography==48.0.1 --no-build-isolation
+   ```
 
 ## Install Methods Per Tool
 
