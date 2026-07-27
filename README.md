@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.15.3-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.15.7-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -51,6 +51,8 @@ curl -sSL https://raw.githubusercontent.com/niyazmft/droid-ai-toolkit/main/insta
 > 📝 **What happens next:** The script launches an interactive TUI menu (`gum` if available, otherwise `whiptail`). Pick one tool at a time — downloads happen in the terminal. It is safe to re-run the script at any time. Keep Termux open and avoid switching apps during installation, as Android's Low Memory Killer may silently terminate the process. Individual tool installs typically take 2–15 minutes depending on your device and network.
 >
 > 💡 **Smart Repair (v1.5.0+):** If a tool is already installed, the toolkit offers a **[R] Repair** mode. Use this to fix Android-specific patches in seconds without re-downloading the entire package.
+>
+> 🔧 **v1.15.7 — Hermes Termux Fix:** The `[U] Update` path for Hermes now skips upstream `hermes update` on Termux (which uses `uv` internally and corrupts the venv). Instead, it performs a manual `git pull` + `pip install`, cleans stale gateway locks, and force-reinstalls editable metadata to prevent version mismatches.
 
 ### 3. Choose Your Tools
 
@@ -151,6 +153,8 @@ hermes                # Start the agent
 
 > **💡 Wheel Cache (v1.15.3+):** After your first successful Hermes install, compiled Python wheels (`cryptography`, `Pillow`, `pydantic-core`, `jiter`, etc.) are automatically saved to `~/.hermes/wheel-cache`. Future **[R] Reinstall** or **[U] Update** operations skip compilation entirely and reuse these cached wheels, dropping install time from ~90 minutes to under 2 minutes on the same device.
 > On `armv8l`/`armv7l`, the toolkit will display a graceful error message and skip installation.
+>
+> **🔧 v1.15.7 Update Fix:** The `[U] Update` path for Hermes now bypasses upstream `hermes update` on Termux, which internally uses `uv` — a tool that rejects Android-built wheels and attempts to compile itself from source (causing OOM/hang). Instead, the toolkit performs a manual `git pull origin main` followed by `pip install -e .`, ensuring a clean and reliable update. Stale gateway locks are also cleaned automatically after the process kill.
 
 ---
 
