@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.15.4"
+VERSION="1.15.7"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -1364,13 +1364,45 @@ _hermes_ensure_termux_deps() {
     local src_dir="$HOME/.hermes/hermes-agent"
     [ -x "$venv_pip" ] || return 0
     [ -d "$src_dir" ] || return 0
-    status_msg "Installing Termux-tested dependencies"
-    if [ -f "$src_dir/constraints-termux.txt" ]; then
-        "$venv_pip" install -e "${src_dir}[termux]"             -c "$src_dir/constraints-termux.txt"             --no-build-isolation --quiet 2>>"$LOG_FILE" || true
-    else
-        "$venv_pip" install -e "$src_dir"             --no-build-isolation --quiet 2>>"$LOG_FILE" || true
+
+    # Defensive: ensure Rust build env is exported for maturin builds.
+    # Called from UPDATE mode where _setup_rust_env may not have run.
+    if [ -z "${ANDROID_API_LEVEL:-}" ]; then
+        local _api_lvl
+        _api_lvl=$(getprop ro.build.version.sdk 2>/dev/null || echo "34")
+        export ANDROID_API_LEVEL="$_api_lvl"
+        export CARGO_BUILD_JOBS=1
+        export CARGO_NET_GIT_FETCH_WITH_CLI=true
+        export RUSTFLAGS="-C opt-level=2"
+        export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=clang
     fi
-    success_msg
+
+    # Ensure wheel cache is visible to pip even if caller didn't run
+    # _hermes_prepare_wheel_cache in the same shell context.
+    if [ -d "$HERMES_WHEEL_CACHE" ]; then
+        export PIP_FIND_LINKS="$HERMES_WHEEL_CACHE"
+    fi
+
+    status_msg "Installing Termux-tested dependencies"
+
+    # Force-reinstall editable metadata first so the version mapping stays
+    # in sync with whatever git HEAD now points to (prevents stale v0.18.2
+    # .pth files after a version bump).
+    local _pip_exit=0
+    "$venv_pip" install --force-reinstall --no-deps -e "$src_dir" \
+        --no-build-isolation 2>>"$LOG_FILE" || _pip_exit=$?
+
+    if [ "$_pip_exit" -eq 0 ] && [ -f "$src_dir/constraints-termux.txt" ]; then
+        "$venv_pip" install -e "${src_dir}[termux]" \
+            -c "$src_dir/constraints-termux.txt" \
+            --no-build-isolation 2>>"$LOG_FILE" || _pip_exit=$?
+    fi
+
+    if [ "$_pip_exit" -eq 0 ]; then
+        success_msg
+    else
+        warn_msg "pip install exited with code $_pip_exit — check $LOG_FILE"
+    fi
 }
 
 # Hermes requires Python 3.11–3.13. Termux's default 'python' package is now
@@ -1467,39 +1499,54 @@ install_hermes() {
     echo -e "${YELLOW}a significant amount of time. This is normal - please be patient.${NC}"
 
     # ─── UPDATE MODE ────────────────────────────────────────────────
-    # Use upstream 'hermes update' which preserves configs, runs git pull,
-    # migrates config, and restarts gateway automatically.
-    # NOTE: upstream now uses 'uv' for deps, but 'uv' rejects Android-built
-    # wheels on Termux. We call _hermes_ensure_termux_deps afterward to
-    # re-install the editable package with pip so the source mapping stays valid.
+    # NOTE: We intentionally SKIP upstream 'hermes update' on Termux.
+    #
+    # Upstream PR #39138 (merged) fixed the update path to use
+    # 'termux-all' extras instead of 'all', which avoids pulling
+    # untested desktop dependencies. However, the MANAGED-UV BOOTSTRAP
+    # issue remains explicitly UNFIXED upstream:
+    #   https://github.com/NousResearch/hermes-agent/pull/39138
+    #   "Out of scope: the secondary failure (managed-uv bootstrap
+    #   compiling uv from source when pip install uv finds no aarch64
+    #   wheel) is a separate root cause, left for a follow-up."
+    #
+    # On Termux, 'hermes update' internally:
+    #   1. Downloads a glibc-linked 'uv' binary → fails on bionic libc
+    #   2. Falls back to 'pip install uv' → no aarch64 wheel exists
+    #   3. Compiles uv from source (100K+ lines of Rust) → OOM / hang
+    #   4. uv then rejects Android-built wheels anyway
+    #
+    # Result: a corrupted venv and a frozen device. Manual git pull
+    # + pip install is the only reliable Termux path.
     if [ "$mode" == "update" ]; then
         _hermes_prepare_wheel_cache
         status_msg "Preparing Hermes for update"
         pkill -9 -f hermes 2>/dev/null || true
+        # pkill -9 leaves stale lock files behind; Hermes will refuse to start
+        # if it sees them. Clean them before any restart.
+        rm -f "$HOME/.hermes/gateway.lock" "$HOME/.hermes/gateway.pid" \
+              "$HOME/.hermes/gateway_state.json"
         success_msg
 
-        # Test if core deps are functional before trusting 'hermes update'
-        local _venv_py="$HOME/.hermes/hermes-agent/venv/bin/python3"
-        local _can_update=0
-        if [ -x "$_venv_py" ]; then
-            if $_venv_py -c "import yaml, dotenv, rich, httpx, certifi" 2>/dev/null; then
-                _can_update=1
-            fi
-        fi
+        # Ensure Rust build env is exported before any pip call that might
+        # trigger a source build (maturin needs ANDROID_API_LEVEL on Termux).
+        _setup_rust_env >/dev/null
 
-        if [ "$_can_update" -eq 1 ]; then
-            status_msg "Running upstream 'hermes update' (git pull + deps + config migration)"
-            # Stream to log so user can inspect if terminal drops
-            hermes update 2>&1 | tee -a "$LOG_FILE"
-            success_msg
-            # Fix any uv breakage on Termux by re-installing with pip
-            _hermes_ensure_termux_deps
-        else
-            warn_msg "Hermes deps incomplete — falling back to manual update"
-            status_msg "Git pulling latest code"
-            (cd "$HOME/.hermes/hermes-agent" && git pull origin main) 2>>"$LOG_FILE" || true
-            success_msg
-            _hermes_ensure_termux_deps
+        status_msg "Git pulling latest code"
+        (cd "$HOME/.hermes/hermes-agent" && git pull origin main) 2>>"$LOG_FILE" || true
+        success_msg
+
+        _hermes_ensure_termux_deps
+
+        # Smoke test: verify the venv can import the current source tree.
+        # If editable metadata is stale (e.g. v0.18.2 .pth pointing to v0.19.0
+        # source), this will fail with ImportError and we force-reinstall.
+        if ! "$HOME/.hermes/hermes-agent/venv/bin/python" \
+             -c "import agent.prompt_builder; import agent.system_prompt" 2>/dev/null; then
+            warn_msg "Editable metadata stale — forcing reinstall"
+            "$HOME/.hermes/hermes-agent/venv/bin/pip" install \
+                --force-reinstall --no-deps -e "$HOME/.hermes/hermes-agent" \
+                --no-build-isolation 2>>"$LOG_FILE" || true
         fi
 
         _hermes_save_wheel_cache
