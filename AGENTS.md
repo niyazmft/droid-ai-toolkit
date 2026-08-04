@@ -74,7 +74,7 @@ v1.16.0 adds robustness fixes for the Hermes update path, addressing edge cases 
 
 6. **Shared patch helper** — The Termux fast-version patch logic is extracted into a reusable `_hermes_apply_termux_fix()` function that handles both the old (v0.18.x `_try_termux_ultrafast_version`) and new (v0.20.0+ `_try_ultrafast_version`) call sites. Used consistently across install, fix, and update modes.
 
-3. **Post-update cryptography check** — Hermes v0.19.0's `setup.py` pins `cryptography==48.0.1`, but the wheel cache may only have `46.0.7`. The toolkit does not force-upgrade cryptography to avoid a 30–90 minute source build. If you need the newer version, run manually:
+7. **Post-update cryptography check** — Hermes v0.19.0's `setup.py` pins `cryptography==48.0.1`, but the wheel cache may only have `46.0.7`. The toolkit does not force-upgrade cryptography to avoid a 30–90 minute source build. If you need the newer version, run manually:
 
    ```bash
    export ANDROID_API_LEVEL=$(getprop ro.build.version.sdk)
