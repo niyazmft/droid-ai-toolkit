@@ -35,13 +35,13 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.15.7). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version (v1.16.0). `package.json` version (1.0.0) is stale — ignore it.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
 
 ## Hermes Update Fix (v1.15.7)
 
-The `[U] Update` path for Hermes was rewritten to work around upstream bugs:
+The `[U] Update` path for Hermes was rewritten in v1.15.7 to work around upstream bugs:
 
 1. **Upstream `hermes update` uses `uv` internally**, which is broken on Termux:
    - Downloads a glibc-linked `uv` binary → fails on bionic libc
@@ -49,7 +49,7 @@ The `[U] Update` path for Hermes was rewritten to work around upstream bugs:
    - `uv` then rejects Android-built wheels as "not compatible with Android aarch64"
    - PR #39138 fixed extras group selection (`termux-all` vs `all`) but explicitly left the managed-uv bootstrap unfixed ("out of scope")
 
-2. **Our fix** — the toolkit now:
+2. **Our fix (v1.15.7)** — the toolkit now:
    - Skips `hermes update` entirely on Termux
    - Runs `git pull origin main` manually
    - Calls `_hermes_ensure_termux_deps()` which uses `pip` (not `uv`)
@@ -57,6 +57,22 @@ The `[U] Update` path for Hermes was rewritten to work around upstream bugs:
    - Force-reinstalls editable metadata (`--force-reinstall --no-deps -e .`) to prevent stale `.pth` files
    - Smoke-tests imports (`import agent.prompt_builder`) to verify the venv is coherent
    - Exports Rust build env (`ANDROID_API_LEVEL`, `CARGO_BUILD_JOBS=1`, etc.) before any pip call
+
+## Hermes Update Robustness (v1.16.0)
+
+v1.16.0 adds robustness fixes for the Hermes update path, addressing edge cases discovered in real-world usage:
+
+1. **Stash Termux fix before git pull** — The Termux fix patch (`if False:  # Termux fix` in `hermes_cli/main.py`) is now **stashed before `git pull`** and re-applied after. This prevents merge conflicts when upstream changes the same code region (as happened in Hermes v0.20.0 which renamed `_try_termux_ultrafast_version()` to `_try_ultrafast_version()`).
+
+2. **Clean `.update-incomplete` markers** — Interrupted upstream `hermes update` runs leave a `.update-incomplete` marker file that causes Hermes to enter recovery mode on every startup instead of running normally. The toolkit now cleans this marker in both **update** and **fix** modes.
+
+3. **Pre-install build backends** — When Hermes bumps dependency versions (e.g. `cryptography==48.0.1`, `Pillow==12.3.0`), the new versions may not have prebuilt android-compatible wheels. The toolkit now pre-installs `maturin`, `pybind11`, and `setuptools-rust` in the venv before running `pip install`, so source builds succeed without manual intervention.
+
+4. **Venv bin on PATH** — The venv `bin/` directory is added to `$PATH` before pip operations, ensuring build subprocesses can find `maturin` and other build backends.
+
+5. **PM2 interpreter safeguard** — After an update, PM2 is restarted with `--interpreter bash` (the Hermes binary is a bash script, not a Node.js script) and the process list is saved, preventing "SyntaxError: Unexpected identifier" crashes on subsequent auto-restarts.
+
+6. **Shared patch helper** — The Termux fast-version patch logic is extracted into a reusable `_hermes_apply_termux_fix()` function that handles both the old (v0.18.x `_try_termux_ultrafast_version`) and new (v0.20.0+ `_try_ultrafast_version`) call sites. Used consistently across install, fix, and update modes.
 
 3. **Post-update cryptography check** — Hermes v0.19.0's `setup.py` pins `cryptography==48.0.1`, but the wheel cache may only have `46.0.7`. The toolkit does not force-upgrade cryptography to avoid a 30–90 minute source build. If you need the newer version, run manually:
 
