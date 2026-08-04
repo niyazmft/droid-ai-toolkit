@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.15.7"
+VERSION="1.16.0"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -1359,6 +1359,25 @@ _hermes_save_wheel_cache() {
     fi
 }
 
+# Apply the Termux fast-version fix to hermes_cli/main.py.
+# Handles both the old (v0.18.x) _try_termux_ultrafast_version() and
+# the new (v0.20.0+) _try_ultrafast_version() call site.
+# Idempotent — safe to call multiple times.
+_hermes_apply_termux_fix() {
+    local _src_dir="${1:-$HOME/.hermes/hermes-agent}"
+    local _main="$_src_dir/hermes_cli/main.py"
+    [ -f "$_main" ] || return 0
+
+    # v0.18.x: if _try_termux_ultrafast_version():
+    if grep -q '_try_termux_ultrafast_version' "$_main" 2>/dev/null; then
+        sed -i 's/if _try_termux_ultrafast_version():/if False:  # Termux fix (upstream PROJECT_ROOT race)/' "$_main" 2>/dev/null || true
+    fi
+    # v0.20.0+: if _try_ultrafast_version():  (only the call site, not the def)
+    if grep -q '^if _try_ultrafast_version():' "$_main" 2>/dev/null; then
+        sed -i 's/^if _try_ultrafast_version():/if False:  # Termux fix (upstream PROJECT_ROOT race)/' "$_main" 2>/dev/null || true
+    fi
+}
+
 _hermes_ensure_termux_deps() {
     local venv_pip="$HOME/.hermes/hermes-agent/venv/bin/pip"
     local src_dir="$HOME/.hermes/hermes-agent"
@@ -1383,7 +1402,24 @@ _hermes_ensure_termux_deps() {
         export PIP_FIND_LINKS="$HERMES_WHEEL_CACHE"
     fi
 
+    # Ensure venv bin is on PATH so pip build subprocesses can find
+    # maturin, pybind11, and other build backends installed in the venv.
+    local _venv_bin; _venv_bin="$(dirname "$venv_pip")"
+    case ":$PATH:" in
+        *:"$_venv_bin":*) ;;
+        *) export PATH="$_venv_bin:$PATH" ;;
+    esac
+
     status_msg "Installing Termux-tested dependencies"
+
+    # Pre-install build backends that pip's --no-build-isolation subprocess
+    # needs on PATH. maturin (for pydantic-core, jiter, cryptography) and
+    # pybind11 (for Pillow) are not guaranteed to be in the venv after a
+    # git pull that bumps dependency versions. The wheel cache may have
+    # linux_aarch64 wheels that work on Android but pip rejects them at
+    # metadata-generation time, forcing a source build.
+    "$venv_pip" install maturin pybind11 setuptools-rust \
+        --no-build-isolation 2>>"$LOG_FILE" || true
 
     # Force-reinstall editable metadata first so the version mapping stays
     # in sync with whatever git HEAD now points to (prevents stale v0.18.2
@@ -1526,15 +1562,42 @@ install_hermes() {
         # if it sees them. Clean them before any restart.
         rm -f "$HOME/.hermes/gateway.lock" "$HOME/.hermes/gateway.pid" \
               "$HOME/.hermes/gateway_state.json"
+        # Also clean the upstream update-incomplete marker from a prior
+        # interrupted 'hermes update' — otherwise Hermes enters recovery
+        # mode on every startup instead of running normally.
+        rm -f "$HOME/.hermes/hermes-agent/.update-incomplete" \
+              "$HOME/.hermes/hermes-agent/.update-incomplete.lock"
         success_msg
 
         # Ensure Rust build env is exported before any pip call that might
         # trigger a source build (maturin needs ANDROID_API_LEVEL on Termux).
         _setup_rust_env >/dev/null
 
+        # Stash the Termux fix patch before pulling, so git pull doesn't
+        # fail on the local modification to hermes_cli/main.py. The stash
+        # is popped and re-applied after the pull completes.
+        local _hermes_src="$HOME/.hermes/hermes-agent"
+        local _had_termux_fix=false
+        if [ -d "$_hermes_src" ]; then
+            if (cd "$_hermes_src" && git diff --quiet hermes_cli/main.py 2>/dev/null); then
+                : # clean — nothing to stash
+            else
+                (cd "$_hermes_src" && git stash push -m "termux-fix-pre-update" \
+                    hermes_cli/main.py 2>/dev/null) && _had_termux_fix=true
+            fi
+        fi
+
         status_msg "Git pulling latest code"
-        (cd "$HOME/.hermes/hermes-agent" && git pull origin main) 2>>"$LOG_FILE" || true
+        (cd "$_hermes_src" && git pull origin main) 2>>"$LOG_FILE" || true
         success_msg
+
+        # Re-apply the Termux fix patch if we stashed it earlier.
+        if [ "$_had_termux_fix" = true ] && [ -d "$_hermes_src" ]; then
+            (cd "$_hermes_src" && git stash pop 2>/dev/null) || true
+            # If pop conflicted (upstream changed the same lines), resolve
+            # by re-running the patch logic from the post-install step.
+            _hermes_apply_termux_fix "$_hermes_src"
+        fi
 
         _hermes_ensure_termux_deps
 
@@ -1550,6 +1613,15 @@ install_hermes() {
         fi
 
         _hermes_save_wheel_cache
+
+        # Restart PM2 with the correct bash interpreter (the hermes binary
+        # is a bash script, not a Node.js script). This ensures the PM2 dump
+        # is saved with --interpreter bash for future auto-restarts.
+        if command -v pm2 >/dev/null 2>&1; then
+            pm2 delete hermes 2>/dev/null || true
+            pm2 start "$TERMUX_BIN/hermes" --name hermes --interpreter bash -- gateway 2>/dev/null || true
+            pm2 save 2>/dev/null || true
+        fi
 
         # Verify
         local hermes_final_path=""
@@ -1581,6 +1653,9 @@ install_hermes() {
     elif [ "$mode" == "fix" ]; then
         status_msg "Preparing broken Hermes for repair"
         pkill -9 -f hermes 2>/dev/null || true
+        # Clean stale update markers that block startup
+        rm -f "$HOME/.hermes/hermes-agent/.update-incomplete" \
+              "$HOME/.hermes/hermes-agent/.update-incomplete.lock"
         success_msg
     fi
 
@@ -1652,16 +1727,8 @@ install_hermes() {
         echo -e "  3. Ensure Rust works:      ${YELLOW}rustc --version${NC}"
     fi
 
-    # Patch Hermes v0.18.2 Termux fast-version bug — _try_termux_ultrafast_version()
-    # references PROJECT_ROOT before it's defined, causing NameError on `hermes --version`.
-    # This is an upstream bug; remove this patch once fixed in a future Hermes release.
-    local _hermes_main
-    _hermes_main="$HOME/.hermes/hermes-agent/hermes_cli/main.py"
-    if [ -f "$_hermes_main" ]; then
-        if grep -q '_try_termux_ultrafast_version' "$_hermes_main" 2>/dev/null; then
-            sed -i 's/if _try_termux_ultrafast_version():/if False:  # Termux fix (upstream PROJECT_ROOT race)/' "$_hermes_main" 2>/dev/null || true
-        fi
-    fi
+    # Patch Hermes Termux fast-version bug via the shared helper.
+    _hermes_apply_termux_fix "$HOME/.hermes/hermes-agent"
 
     wait_to_continue
 }
