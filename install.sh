@@ -915,6 +915,65 @@ patch_paperclip() {
     create_sqlite3_stub
 }
 
+patch_openclaw_registerhooks() {
+    local silent=$1
+    [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
+
+    local TARGET="$OPENCLAW_ROOT/dist/plugin-module-loader-cache-uqaaAPup.js"
+    [ -f "$TARGET" ] || return 0
+
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Patching OpenClaw registerHooks for Android/Node 24"
+    fi
+
+    # Check if already patched
+    if grep -q 'PATCHED: registerHooks disabled' "$TARGET" 2>/dev/null; then
+        if [[ "$silent" != "silent" ]]; then
+            success_msg "Already patched"
+        fi
+        return 0
+    fi
+
+    # Backup original
+    cp "$TARGET" "${TARGET}.bak" 2>/dev/null || true
+
+    # Patch 1: withNativeRequireAliases registerHooks
+    node -e '
+const fs = require("fs");
+let content = fs.readFileSync(process.argv[1], "utf8");
+const d = String.fromCharCode(36);
+
+// Patch withNativeRequireAliases
+const p1 = "const esmHooks = moduleWithResolver" + d + "1.registerHooks?.({ resolve(specifier, context, nextResolve) {";
+const r1 = "/* PATCHED: registerHooks disabled (Android/Node 24)\n\tconst esmHooks = moduleWithResolver" + d + "1.registerHooks?.({ resolve(specifier, context, nextResolve) {";
+content = content.replace(p1, r1);
+
+// Close the comment
+const c1 = "\t\treturn nextResolve(specifier, context);\n\t} });";
+const rc1 = "\t\treturn nextResolve(specifier, context);\n\t} });\n\t*/";
+const idx = content.lastIndexOf(c1);
+if (idx !== -1) content = content.substring(0, idx) + rc1 + content.substring(idx + c1.length);
+
+// Patch installResolver
+const p2 = "moduleWithResolver.registerHooks?.({ resolve(specifier, context, nextResolve) {";
+const r2 = "/* PATCHED: registerHooks disabled (Android/Node 24)\n\tmoduleWithResolver.registerHooks?.({ resolve(specifier, context, nextResolve) {";
+content = content.replace(p2, r2);
+
+// Close the comment
+const c2 = "\t\treturn nextResolve(specifier, context);\n\t} });";
+const rc2 = "\t\treturn nextResolve(specifier, context);\n\t} });\n\t*/";
+const idx2 = content.lastIndexOf(c2);
+if (idx2 !== -1 && idx2 !== idx) content = content.substring(0, idx2) + rc2 + content.substring(idx2 + c2.length);
+
+fs.writeFileSync(process.argv[1], content);
+console.log("Patched");
+' "$TARGET" 2>/dev/null || true
+
+    if [[ "$silent" != "silent" ]]; then
+        success_msg
+    fi
+}
+
 patch_openclaw_links() {
     local silent=$1
     [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
@@ -937,6 +996,7 @@ apply_patches() {
     patch_koffi "$silent"
     patch_gemini_cli "$silent"
     patch_paperclip "$silent"
+    patch_openclaw_registerhooks "$silent"
     patch_openclaw_links "$silent"
 }
 
