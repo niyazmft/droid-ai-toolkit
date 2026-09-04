@@ -694,7 +694,11 @@ install_openclaw() {
     status_msg "Applying Android patches"
     apply_patches
     success_msg
-    
+
+    # Multi-stage legacy-state migration (2026.9.x gates the gateway on it;
+    # 'doctor --fix' cannot run on Android). Runs only when legacy files exist.
+    migrate_openclaw_legacy_state
+
     if [[ "$mode" == "full" ]]; then
         # Configure for Termux
         CONFIG_PATH="$HOME/.openclaw/openclaw.json"
@@ -990,6 +994,242 @@ patch_openclaw_links() {
     fi
 }
 
+# OpenClaw 2026.9.x session-SQLite migration machinery relies on hardlinks
+# (fs.link, nlink===2 assertions) which Android/Termux blocks with EACCES.
+# Patch the defining module (doctor-session-sqlite-restore-*.js) so the
+# migration falls back to a timestamp-preserving copy when link() is refused.
+patch_openclaw_sqlite_archive() {
+    local silent=$1
+    [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    # Glob since the chunk hash changes between versions
+    local TARGET
+    TARGET=$(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'doctor-session-sqlite-restore-*.js' -print -quit 2>/dev/null)
+    [ -n "$TARGET" ] && [ -f "$TARGET" ] || return 0
+
+    # Idempotency marker embedded by the patch below
+    if grep -q 'droid-ai-toolkit: Android hardlink copy fallback' "$TARGET" 2>/dev/null; then
+        return 0
+    fi
+
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Patching OpenClaw SQLite archive hardlinks for Android"
+    fi
+
+    cp "$TARGET" "${TARGET}.bak" 2>/dev/null || true
+
+    if python3 - "$TARGET" <<'PYOCARC'
+import sys
+
+path = sys.argv[1]
+data = open(path, encoding="utf-8").read()
+
+old1 = ("function sameMigrationArtifact(left, right) {\n"
+        "\treturn left.dev === right.dev && left.ino === right.ino && left.mtimeNs === right.mtimeNs && left.size === right.size && left.sha256 === right.sha256;\n"
+        "}")
+new1 = ("function sameMigrationArtifact(left, right) {\n"
+        "\treturn left.size === right.size && left.sha256 === right.sha256;\n"
+        "}")
+
+old2 = ("\t\tif (!sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath), expected)) throw new Error(\"artifact changed before publication\");\n"
+        "\t\tconst published = await publishFileExclusive({\n"
+        "\t\t\tsourcePath,\n"
+        "\t\t\ttargetPath,\n"
+        "\t\t\texpectedSourceIdentity: {\n"
+        "\t\t\t\tdev: BigInt(expected.dev),\n"
+        "\t\t\t\tino: BigInt(expected.ino)\n"
+        "\t\t\t},\n"
+        "\t\t\tstrategy: \"link-required\",\n"
+        "\t\t\tonSyncFailure: \"preserve\"\n"
+        "\t\t});\n"
+        "\t\trequireDirectorySync(published.directorySync, \"Recovery artifact publication\");")
+new2 = ("\t\tif (!sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath), expected)) throw new Error(\"artifact changed before publication\");\n"
+        "\t\ttry {\n"
+        "\t\t\tconst published = await publishFileExclusive({\n"
+        "\t\t\t\tsourcePath,\n"
+        "\t\t\t\ttargetPath,\n"
+        "\t\t\t\texpectedSourceIdentity: {\n"
+        "\t\t\t\t\tdev: BigInt(expected.dev),\n"
+        "\t\t\t\t\tino: BigInt(expected.ino)\n"
+        "\t\t\t\t},\n"
+        "\t\t\t\tstrategy: \"link-required\",\n"
+        "\t\t\t\tonSyncFailure: \"preserve\"\n"
+        "\t\t\t});\n"
+        "\t\t\trequireDirectorySync(published.directorySync, \"Recovery artifact publication\");\n"
+        "\t\t} catch (publishError) { /* droid-ai-toolkit: Android hardlink copy fallback */\n"
+        "\t\t\tif (fs.lstatSync(targetPath, { bigint: true, throwIfNoEntry: false })) {\n"
+        "\t\t\t\trequireDirectorySync(await syncDirectory(path.dirname(targetPath)), \"Recovery artifact publication\");\n"
+        "\t\t\t} else {\n"
+        "\t\t\t\tconst sourceStat = fs.lstatSync(sourcePath, { bigint: true });\n"
+        "\t\t\t\tfs.copyFileSync(sourcePath, targetPath);\n"
+        "\t\t\t\ttry {\n"
+        "\t\t\t\t\tfs.utimesSync(targetPath, new Date(Number(sourceStat.atimeMs)), new Date(Number(sourceStat.mtimeMs)));\n"
+        "\t\t\t\t} catch {}\n"
+        "\t\t\t\trequireDirectorySync(await syncDirectory(path.dirname(targetPath)), \"Recovery artifact publication\");\n"
+        "\t\t\t}\n"
+        "\t\t}")
+
+old3 = "\tif (!target.isFile() || !source.isFile() || target.dev !== source.dev || target.ino !== source.ino || source.nlink !== 2n || !sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath, 2n), expected) || !sameMigrationArtifact(readMigrationArtifactIdentity(targetPath, 2n), expected)) throw new Error(\"publication paths changed or have unexpected aliases\");"
+new3 = ("\tif (target.dev === source.dev && target.ino === source.ino) {\n"
+        "\t\tif (!target.isFile() || source.nlink !== 2n || !sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath, 2n), expected) || !sameMigrationArtifact(readMigrationArtifactIdentity(targetPath, 2n), expected)) throw new Error(\"publication paths changed or have unexpected aliases\");\n"
+        "\t} else if (!target.isFile() || !source.isFile() || !sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath, 1n), expected) || !sameMigrationArtifact(readMigrationArtifactIdentity(targetPath, 1n), expected)) throw new Error(\"publication paths changed or have unexpected aliases\");")
+
+for name, old, new in (("sameMigrationArtifact", old1, new1), ("moveMigrationArtifact", old2, new2), ("assertMigrationArtifactPublication", old3, new3)):
+    if old not in data or data.count(old) != 1:
+        sys.exit("pattern not found or not unique: " + name)
+    data = data.replace(old, new)
+
+open(path, "w", encoding="utf-8").write(data)
+PYOCARC
+    then
+        if [[ "$silent" != "silent" ]]; then
+            success_msg
+        fi
+    else
+        # Non-fatal: without the patch the session import fails at the archive
+        # step on Android; user data is untouched (import validates first).
+        cp "${TARGET}.bak" "$TARGET" 2>/dev/null || true
+        if [[ "$silent" != "silent" ]]; then
+            warn_msg "OpenClaw SQLite archive patch did not match this version — session migration may need manual 'openclaw doctor --session-sqlite import'"
+        fi
+    fi
+}
+
+# Multi-stage legacy-state migration for OpenClaw 2026.9.x on Android/Termux.
+# Upstream 'openclaw doctor --fix' cannot run on Android (it requires a
+# systemd/launchd service owner), so the stages are run directly:
+#   Stage 1: legacy workspace setup state (JSON) -> state DB SQLite row
+#   Stage 2: legacy session store (sessions.json) -> agent SQLite via
+#            'openclaw doctor --session-sqlite import' (requires the
+#            hardlink copy-fallback patch above on Android)
+migrate_openclaw_legacy_state() {
+    command -v openclaw >/dev/null 2>&1 || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    local STATE_DIR="$HOME/.openclaw"
+    [ -d "$STATE_DIR" ] || return 0
+
+    # Detect work: stage 1 legacy workspace JSONs, stage 2 legacy session stores
+    local need1=0 need2=0
+    [ -f "$STATE_DIR/workspace/openclaw-workspace-state.json" ] && need1=1
+    [ -f "$STATE_DIR/workspace/.openclaw/workspace-state.json" ] && need1=1
+    if compgen -G "$STATE_DIR/sessions/sessions.json" >/dev/null 2>&1 \
+        || compgen -G "$STATE_DIR/agents/*/sessions/sessions.json" >/dev/null 2>&1; then
+        need2=1
+    fi
+    [ "$need1" -eq 1 ] || [ "$need2" -eq 1 ] || return 0
+
+    status_msg "Migrating legacy OpenClaw state (gateway will be paused)"
+
+    # Stop the gateway if PM2 is running it (SQLite/file contention)
+    local was_running=0
+    if command -v pm2 >/dev/null 2>&1 && [ -n "$(pm2 pid openclaw 2>/dev/null)" ]; then
+        was_running=1
+        pm2 stop openclaw >/dev/null 2>&1 || true
+        sleep 1
+    fi
+
+    local migrate_ok=1
+
+    if [ "$need1" -eq 1 ]; then
+        # Stage 1: workspace setup state. Backs up legacy files instead of
+        # deleting; gateway gate only checks the original paths.
+        local backup_dir="$STATE_DIR/backup-legacy-state-$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "$backup_dir"
+        if python3 - "$STATE_DIR" "$backup_dir" <<'PYOCWS'
+import hashlib, json, os, shutil, sqlite3, sys, time
+
+state_dir, backup_dir = sys.argv[1], sys.argv[2]
+ws_path = os.path.join(state_dir, "workspace")
+legacy_files = [
+    os.path.join(ws_path, "openclaw-workspace-state.json"),
+    os.path.join(ws_path, ".openclaw", "workspace-state.json"),
+]
+
+payload = None
+for legacy in legacy_files:
+    if os.path.isfile(legacy):
+        with open(legacy, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        break
+
+if payload:
+    db_path = os.path.join(state_dir, "state", "openclaw.sqlite")
+    if not os.path.isfile(db_path):
+        sys.exit("state database missing; refusing to guess")
+    wk = hashlib.sha256(ws_path.encode()).hexdigest()
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM workspace_setup_state WHERE workspace_key = ?", (wk,))
+        now_ms = int(time.time() * 1000)
+        row = (wk, ws_path, int(payload.get("version") or 1),
+               str(payload.get("bootstrapSeededAt") or ""),
+               str(payload.get("setupCompletedAt") or ""), now_ms)
+        if cur.fetchone():
+            cur.execute("""UPDATE workspace_setup_state SET workspace_path=?, version=?,
+                bootstrap_seeded_at=?, setup_completed_at=?, updated_at=?
+                WHERE workspace_key=?""", row[1:] + (row[0],))
+        else:
+            cur.execute("""INSERT INTO workspace_setup_state
+                (workspace_key, workspace_path, version, bootstrap_seeded_at,
+                 setup_completed_at, updated_at) VALUES (?,?,?,?,?,?)""", row)
+        conn.commit()
+    finally:
+        conn.close()
+    # Archive legacy files only after a successful commit
+    for legacy in legacy_files:
+        if os.path.isfile(legacy):
+            shutil.move(legacy, os.path.join(backup_dir, os.path.basename(legacy) + "." + os.urandom(3).hex()))
+    att_dir = os.path.join(state_dir, "workspace-attestations")
+    if os.path.isdir(att_dir):
+        for name in os.listdir(att_dir):
+            if name.endswith(".attested"):
+                shutil.move(os.path.join(att_dir, name), os.path.join(backup_dir, name))
+        try:
+            os.rmdir(att_dir)
+        except OSError:
+            pass
+print("workspace-state: migrated (backup in " + backup_dir + ")")
+PYOCWS
+        then
+            : # stage 1 done
+        else
+            migrate_ok=0
+            warn_msg "Workspace state migration failed; legacy files kept for manual retry"
+        fi
+    fi
+
+    if [ "$need2" -eq 1 ] && [ "$migrate_ok" -eq 1 ]; then
+        # Stage 2: session store -> agent SQLite (uses the patched archive path)
+        if timeout 900 openclaw doctor --session-sqlite import --session-sqlite-all-agents >> "$LOG_FILE" 2>&1; then
+            : # import reports details in $LOG_FILE
+        else
+            warn_msg "Session SQLite import returned non-zero; check ${LOG_FILE}"
+        fi
+        # Verify the gate is clear
+        if compgen -G "$STATE_DIR/sessions/sessions.json" >/dev/null 2>&1 \
+            || compgen -G "$STATE_DIR/agents/*/sessions/sessions.json" >/dev/null 2>&1; then
+            warn_msg "Legacy sessions.json still present — run 'openclaw doctor --session-sqlite import --session-sqlite-all-agents' manually"
+        else
+            success_msg "Session store migrated to SQLite"
+        fi
+    fi
+
+    # Restore gateway
+    if [ "$was_running" -eq 1 ]; then
+        pm2 restart openclaw >/dev/null 2>&1 || pm2 start openclaw >/dev/null 2>&1 || true
+        pm2 save >/dev/null 2>&1 || true
+    fi
+
+    if [ "$migrate_ok" -eq 1 ]; then
+        success_msg
+    else
+        warn_msg "OpenClaw state migration incomplete — see log"
+    fi
+}
+
 # Thin coordinator: invokes all patch modules.
 apply_patches() {
     local silent=$1
@@ -999,6 +1239,7 @@ apply_patches() {
     patch_openclaw_tmp "$silent"
     patch_openclaw_registerhooks "$silent"
     patch_openclaw_links "$silent"
+    patch_openclaw_sqlite_archive "$silent"
 }
 
 # --- 5. PI CODING AGENT INSTALLATION ---

@@ -102,6 +102,17 @@ The toolkit supports installing a **specific OpenClaw version** (e.g. `2026.6.30
 - Testing older versions before upgrading
 - Avoiding breaking changes in `@latest`
 
+## OpenClaw 2026.9.x Multi-Stage Legacy-State Migration (v1.17.0+)
+
+OpenClaw 2026.9.x gates gateway startup behind **legacy-state migrations** that upstream normally applies via `openclaw doctor --fix`. `doctor --fix` **cannot run on Android/Termux** because it requires a systemd/launchd service owner for gateway verification. The toolkit instead runs the migrations directly (`migrate_openclaw_legacy_state`, invoked from `install_openclaw` after `apply_patches`; runs only when legacy files exist):
+
+1. **Stage 1 — Workspace setup state**: legacy `openclaw-workspace-state.json` / `workspace/.openclaw/workspace-state.json` are upserted into the state DB (`~/.openclaw/state/openclaw.sqlite`, table `workspace_setup_state`, key = SHA-256 of the workspace path). Legacy files are **moved** to `~/.openclaw/backup-legacy-state-<timestamp>/` (never deleted) after a successful commit.
+2. **Stage 2 — Session store**: legacy `sessions.json` (global `~/.openclaw/sessions/` or per-agent `~/.openclaw/agents/*/sessions/`) is imported into the agent SQLite DB via `openclaw doctor --session-sqlite import --session-sqlite-all-agents` (this subcommand runs before the Android-incompatible `runDoctorHealthFlow`, so it works on Termux).
+
+Supporting patch — `patch_openclaw_sqlite_archive()` (wired into `apply_patches()`): the 2026.9.x migration machinery publishes archived transcripts via **hardlinks** (`fs.link`, `nlink === 2` assertions) which Android blocks with `EACCES`. The patch modifies `dist/doctor-session-sqlite-restore-*.js` to fall back to a **timestamp-preserving copy** (`copyFileSync` + `utimesSync`) and verifies publications by content (`size` + `sha256`) instead of inode identity.
+
+The runner pauses the PM2 `openclaw` process during migration (SQLite/file contention) and restarts it afterwards. Do **not** bypass the migration gates by patching the assertions — run the real migrations; skipping leaves half-migrated state (sessions visible in old format only, gateway retries forever). Verified working on device y6 (28 entries, 220 artifacts, gateway ready).
+
 ## Zulip Plugin Management (v1.15.3+)
 
 A dedicated sub-menu **[Z] Zulip Plugin** under AGENTS → OpenClaw provides:
