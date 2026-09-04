@@ -1103,6 +1103,8 @@ PYOCARC
 #   Stage 2: legacy session store (sessions.json) -> agent SQLite via
 #            'openclaw doctor --session-sqlite import' (requires the
 #            hardlink copy-fallback patch above on Android)
+#   Stage 3: legacy exec-approvals config (exec-approvals.json) -> state DB
+#            exec_approvals_config row; otherwise gateway channels crash-loop
 migrate_openclaw_legacy_state() {
     command -v openclaw >/dev/null 2>&1 || return 0
     command -v python3 >/dev/null 2>&1 || return 0
@@ -1110,15 +1112,20 @@ migrate_openclaw_legacy_state() {
     local STATE_DIR="$HOME/.openclaw"
     [ -d "$STATE_DIR" ] || return 0
 
-    # Detect work: stage 1 legacy workspace JSONs, stage 2 legacy session stores
-    local need1=0 need2=0
+    # Detect work: stage 1 legacy workspace JSONs, stage 2 legacy session stores,
+    # stage 3 legacy exec-approvals config
+    local need1=0 need2=0 need3=0
     [ -f "$STATE_DIR/workspace/openclaw-workspace-state.json" ] && need1=1
     [ -f "$STATE_DIR/workspace/.openclaw/workspace-state.json" ] && need1=1
     if compgen -G "$STATE_DIR/sessions/sessions.json" >/dev/null 2>&1 \
         || compgen -G "$STATE_DIR/agents/*/sessions/sessions.json" >/dev/null 2>&1; then
         need2=1
     fi
-    [ "$need1" -eq 1 ] || [ "$need2" -eq 1 ] || return 0
+    if [ -f "$STATE_DIR/exec-approvals.json" ] \
+        || compgen -G "$STATE_DIR/exec-approvals.json.doctor-importing*" >/dev/null 2>&1; then
+        need3=1
+    fi
+    [ "$need1" -eq 1 ] || [ "$need2" -eq 1 ] || [ "$need3" -eq 1 ] || return 0
 
     status_msg "Migrating legacy OpenClaw state (gateway will be paused)"
 
@@ -1214,6 +1221,82 @@ PYOCWS
             warn_msg "Legacy sessions.json still present — run 'openclaw doctor --session-sqlite import --session-sqlite-all-agents' manually"
         else
             success_msg "Session store migrated to SQLite"
+        fi
+    fi
+
+    if [ "$need3" -eq 1 ]; then
+        # Stage 3: legacy exec-approvals config -> state DB exec_approvals_config.
+        # Without this the gateway's channels crash-loop with
+        # "Legacy exec approvals exist ..." until the file is imported+removed.
+        local backup_dir3="$STATE_DIR/backup-legacy-state-exec-approvals-$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "$backup_dir3"
+        if python3 - "$STATE_DIR" "$backup_dir3" <<'PYOCEA'
+import glob, json, os, shutil, sqlite3, sys, time
+
+state_dir, backup_dir = sys.argv[1], sys.argv[2]
+source = os.path.join(state_dir, "exec-approvals.json")
+
+with open(source, encoding="utf-8") as fh:
+    doc = json.load(fh)
+version = doc.get("version", 1)
+defaults = doc.get("defaults") or {}
+agents = doc.get("agents") or {}
+socket = doc.get("socket") or {}
+if not isinstance(defaults, dict) or not isinstance(agents, dict):
+    sys.exit("unexpected legacy exec-approvals shape; refusing to migrate")
+if version not in (None, 1):
+    sys.exit("unsupported legacy exec-approvals version: %r" % (version,))
+
+# Mirrors upstream writeExecApprovalsConfigRow(): raw document plus projection columns
+agent_list = list(agents.values())
+row = (
+    "current",
+    json.dumps(doc, indent=2) + "\n",
+    socket.get("path"),
+    1 if socket.get("token") else 0,
+    defaults.get("security"),
+    defaults.get("ask"),
+    defaults.get("askFallback"),
+    None if defaults.get("autoAllowSkills") is None else int(bool(defaults.get("autoAllowSkills"))),
+    len(agent_list),
+    sum(len(a.get("allowlist") or []) for a in agent_list if isinstance(a, dict)),
+    int(time.time() * 1000),
+)
+
+db_path = os.path.join(state_dir, "state", "openclaw.sqlite")
+conn = sqlite3.connect(db_path)
+try:
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM exec_approvals_config WHERE config_key = ?", ("current",))
+    if cur.fetchone():
+        cur.execute(
+            "UPDATE exec_approvals_config SET raw_json=?, socket_path=?, has_socket_token=?,"
+            " default_security=?, default_ask=?, default_ask_fallback=?, auto_allow_skills=?,"
+            " agent_count=?, allowlist_count=?, updated_at_ms=? WHERE config_key=?",
+            row[1:] + ("current",),
+        )
+    else:
+        cur.execute(
+            "INSERT INTO exec_approvals_config"
+            " (config_key, raw_json, socket_path, has_socket_token, default_security,"
+            "  default_ask, default_ask_fallback, auto_allow_skills, agent_count,"
+            "  allowlist_count, updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            row,
+        )
+    conn.commit()
+finally:
+    conn.close()
+
+# Archive legacy source + claim files only after a successful commit
+for legacy in [source] + glob.glob(source + ".doctor-importing*"):
+    if os.path.exists(legacy):
+        shutil.move(legacy, os.path.join(backup_dir, os.path.basename(legacy) + "." + os.urandom(3).hex()))
+print("exec-approvals: migrated to state DB (backup in " + backup_dir + ")")
+PYOCEA
+        then
+            success_msg "Exec approvals migrated to state DB"
+        else
+            warn_msg "Exec-approvals migration failed; legacy file kept for manual retry"
         fi
     fi
 
