@@ -1313,6 +1313,68 @@ PYOCEA
     fi
 }
 
+# OpenClaw's process-identity helpers (used by the cron durable fence and the
+# file-lock manager) guard /proc parsing with `process.platform === "linux"`.
+# On Android/Termux process.platform is "android", so getProcessStartTime()
+# returns null and cron ticks fail every 2s with "cron run cannot acquire a
+# durable fence without process start identity". Accept both platforms.
+patch_openclaw_pid_platform() {
+    local silent=$1
+    [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
+
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Patching OpenClaw process-identity for Android platform"
+    fi
+
+    local patched=0
+
+    # worker.mjs (minified runtime; stable file name, minified var names may
+    # change between versions — non-fatal if the exact bytes are not found).
+    # Single quotes below are intentional: the sed patterns must keep the
+    # literal backticks used by upstream's template literals.
+    local WM="$OPENCLAW_ROOT/dist/worker/worker.mjs"
+    if [ -f "$WM" ]; then
+        # shellcheck disable=SC2016
+        if grep -q 'process.platform!==`android`' "$WM" 2>/dev/null; then
+            : # already patched
+        else
+            cp "$WM" "${WM}.bak" 2>/dev/null || true
+            # shellcheck disable=SC2016
+            sed -i 's#function getProcessStartTime(Ot){if(!isValidPid(Ot)||process.platform!==`linux`)return null;#function getProcessStartTime(Ot){if(!isValidPid(Ot)||\(process.platform!==`linux`\&\&process.platform!==`android`\))return null;#; s#function isZombieProcess(Ot){if(process.platform!==`linux`)return!1;#function isZombieProcess(Ot){if(process.platform!==`linux`\&\&process.platform!==`android`)return!1;#' "$WM" 2>/dev/null || true
+            # shellcheck disable=SC2016
+            if grep -q 'process.platform!==`android`' "$WM" 2>/dev/null; then
+                patched=$((patched + 1))
+            else
+                cp "${WM}.bak" "$WM" 2>/dev/null || true
+                if [[ "$silent" != "silent" ]]; then
+                    warn_msg "worker.mjs process-identity pattern not matched (upstream changed); cron may tick-fail — re-check patch"
+                fi
+            fi
+        fi
+    fi
+
+    # pid-alive-*.js (readable chunk used by the CLI/doctor path; glob hash)
+    local PA
+    PA=$(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'pid-alive-*.js' -print -quit 2>/dev/null)
+    if [ -n "$PA" ] && [ -f "$PA" ] && ! grep -q 'process.platform !== "linux" && process.platform !== "android"' "$PA" 2>/dev/null; then
+        cp "$PA" "${PA}.bak" 2>/dev/null || true
+        if sed -i 's#if (!isValidPid(pid) || process.platform !== "linux") return null;#if (!isValidPid(pid) || (process.platform !== "linux" \&\& process.platform !== "android")) return null;#; s#if (process.platform !== "linux") return false;#if (process.platform !== "linux" \&\& process.platform !== "android") return false;#' "$PA" 2>/dev/null \
+            && grep -q 'process.platform !== "linux" && process.platform !== "android"' "$PA" 2>/dev/null; then
+            patched=$((patched + 1))
+        else
+            cp "${PA}.bak" "$PA" 2>/dev/null || true
+        fi
+    fi
+
+    if [[ "$silent" != "silent" ]]; then
+        if [ "$patched" -gt 0 ]; then
+            success_msg "Patched $patched file(s)"
+        else
+            success_msg "Already patched"
+        fi
+    fi
+}
+
 # Thin coordinator: invokes all patch modules.
 apply_patches() {
     local silent=$1
@@ -1323,6 +1385,7 @@ apply_patches() {
     patch_openclaw_registerhooks "$silent"
     patch_openclaw_links "$silent"
     patch_openclaw_sqlite_archive "$silent"
+    patch_openclaw_pid_platform "$silent"
 }
 
 # --- 5. PI CODING AGENT INSTALLATION ---
