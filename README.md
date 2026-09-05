@@ -5,10 +5,43 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.16.0-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.17.1-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
+
+---
+
+## 📑 Table of Contents
+
+- [Compatibility](#-compatibility)
+- [Before You Start](#-before-you-start)
+- [Quick Start](#-quick-start)
+  - [Onboard OpenClaw after install](#4-onboard-openclaw-if-installed)
+- [Key Features](#-key-features)
+- [AI Agents](#-ai-agents)
+  - [OpenClaw](#openclaw--ai-gateway)
+  - [Hermes](#hermes--nous-research-agent)
+  - [Nanobot](#nanobot--python-ai-agent)
+- [OpenClaw 2026.9.x on Android](#-openclaw-20269x-on-android)
+  - [Android Patch Suite](#android-patch-suite)
+  - [Automatic Legacy-State Migration](#automatic-legacy-state-migration)
+  - [Post-Install Checklist (User Work)](#post-install-checklist-user-work)
+  - [Hard Warnings](#hard-warnings)
+- [Workflows & Automation](#-workflows--automation)
+  - [n8n](#n8n--workflow-automation-server)
+  - [Paperclip](#paperclip--ai-orchestration-server-experimental)
+- [Developer Utilities](#-developer-utilities)
+  - [Gemini CLI](#gemini-cli--googles-command-line-ai-assistant)
+  - [Pi Coding Agent](#pi-coding-agent-recommended)
+  - [Ollama](#ollama--local-llm-runner)
+  - [GCP Bridge](#gcp-bridge-walkthrough-optional)
+- [Uninstallation & Reset](#-uninstallation--reset)
+- [Quick Commands](#-quick-commands)
+- [Maintenance](#-maintenance)
+- [Troubleshooting](#-troubleshooting)
+- [Code Quality](#-code-quality)
+- [License](#-license)
 
 ---
 
@@ -52,9 +85,7 @@ curl -sSL https://raw.githubusercontent.com/niyazmft/droid-ai-toolkit/main/insta
 >
 > 💡 **Smart Repair (v1.5.0+):** If a tool is already installed, the toolkit offers a **[R] Repair** mode. Use this to fix Android-specific patches in seconds without re-downloading the entire package.
 >
-> 🔧 **v1.16.0 — Hermes Update Robustness:** The `[U] Update` path for Hermes now **stashes the Termux fix patch** before `git pull` and re-applies it after, preventing merge conflicts when upstream changes the same code. Stale `.update-incomplete` markers from interrupted upstream updates are cleaned automatically. Build backends (`maturin`, `pybind11`) are pre-installed so pip can compile new dependency versions from source when no android wheel exists. PM2 is restarted with `--interpreter bash` to ensure the Hermes bash wrapper script runs correctly.
->
-> 🔧 **v1.15.7 — Hermes Termux Fix:** The `[U] Update` path for Hermes now skips upstream `hermes update` on Termux (which uses `uv` internally and corrupts the venv). Instead, it performs a manual `git pull` + `pip install`, cleans stale gateway locks, and force-reinstalls editable metadata to prevent version mismatches.
+> 🔧 **Upgrading OpenClaw to 2026.9.x?** The toolkit automatically runs all required legacy-state migrations (workspace, session store, exec approvals) during **[R] Repair** / **[U] Update** — never run `openclaw doctor --fix` on Android. See [OpenClaw 2026.9.x on Android](#-openclaw-20269x-on-android) for the full patch suite and post-install checklist.
 
 ### 3. Choose Your Tools
 
@@ -94,6 +125,8 @@ To keep tools running even after you close Termux:
 - ⚡ **Zero-Latency Navigation**: In-memory caching for Bash config lookups eliminates ~1-second menu reload delays.
 - 🛠 **Smart Repair**: Detects existing installations and provides a 2-second "Repair Only" path to re-apply patches without redundant downloads.
 - 🩹 **Zero-Config Patching**: Automatically fixes the `koffi` native bridge and `renameat2` kernel crashes for OpenClaw.
+- 🔄 **Automatic State Migrations (v1.17.0+)**: OpenClaw 2026.9.x legacy-state migrations (workspace setup state, session store, exec approvals) run automatically during install/repair — no `openclaw doctor --fix` needed on Android (where it cannot run). Legacy files are archived, never deleted.
+- 🔐 **Command Authorization Defaults (v1.17.1+)**: Pins `channels.telegram.dmPolicy` to `allowlist` so slash commands keep working after the 2026.9.x pairing-policy change.
 - 📂 **Path Awareness**: Aggressively redirects `/bin/npm`, `/bin/node`, and `/tmp` to Termux-compatible directories using `$PREFIX`.
 - 🚀 **PM2 Integration**: Native support for starting, stopping, and monitoring OpenClaw, n8n, Ollama, Paperclip, Pi, and Gemini CLI via PM2 with optimized memory flags.
 - 📦 **pnpm Support**: Integrated support for pnpm to speed up installations and save storage space.
@@ -112,10 +145,11 @@ To keep tools running even after you close Termux:
 
 ### OpenClaw — AI Gateway
 
-Multi-channel AI gateway with Telegram, Slack, and Discord support. Automatically patched for Android:
+Multi-channel AI gateway with Telegram, Slack, and Discord support. Automatically patched for Android — see [OpenClaw 2026.9.x on Android](#-openclaw-20269x-on-android) for the complete patch suite and post-install checklist:
 
 - **Koffi patch**: `renameat2` → `rename` to avoid kernel crashes.
 - **Path redirection**: `/tmp/openclaw`, `/usr/bin/npm`, `/bin/node` → Termux paths.
+- **2026.9.x compatibility**: registerHooks, `/tmp`, SQLite-archive hardlinks, process identity, and Telegram `dmPolicy` are all patched/pinned automatically.
 - **Plugin pruning**: Disables 118 stock plugins on install to reduce memory footprint.
 
 | | |
@@ -126,11 +160,13 @@ Multi-channel AI gateway with Telegram, Slack, and Discord support. Automaticall
 | **Critical warning** | Never run `openclaw update` — use toolkit's [R] Repair or [U] Update |
 
 ```bash
-openclaw onboard          # Configure API keys
-openclaw doctor --fix     # Repair schema issues
+openclaw onboard          # Configure API keys (run AFTER install)
+openclaw gateway status   # Check gateway health
 ```
 
 > ⚠️ **NEVER** run `openclaw update` — it overwrites Android patches. Use the toolkit's **[R] Repair** or **[U] Update** instead.
+>
+> ⚠️ **NEVER** run `openclaw doctor --fix` on Android — it fails at gateway service-owner verification (no systemd) and may hang. Decline if the in-chat agent offers to run it. All of its repairs have automatic or subcommand equivalents — see [Why the Doctor Repair Flow Is Not Needed on Android](#why-the-doctor-repair-flow-is-not-needed-on-android).
 >
 > 💡 **Version Selection (v1.15.3+):** The toolkit now supports installing a **specific OpenClaw version** (e.g. `2026.6.30`) instead of always pulling `@latest`. Use **[V] Install Specific Version** from the OpenClaw menu.
 >
@@ -182,7 +218,88 @@ nanobot               # Start the interactive agent
 
 ---
 
-## ⚙️ Workflows & Automation
+## 🩹 OpenClaw 2026.9.x on Android
+
+OpenClaw 2026.9.x introduced several changes that break Android/Termux installs (module hooks, `/tmp` hardcoding, hardlink-based state migrations, a new Telegram pairing policy). The toolkit handles all of them automatically — this section documents what is patched, what happens during upgrades, and the few steps that need your input.
+
+### Android Patch Suite
+
+All patches are applied by `apply_patches()` on every **[I] Install**, **[R] Repair**, and **[U] Update** — idempotent, with automatic `.bak` backups:
+
+| Patch | Fixes |
+|:---|:---|
+| **Koffi `renameat2` → `rename`** | Kernel crash on Android when the native bridge calls `renameat2` |
+| **`/tmp` → `$TMPDIR`** | Android has no `/tmp`; OpenClaw 2026.9.1 hardcoded it for runtime state |
+| **`module.registerHooks` disabled** | Node 24 module-hooks API deadlocks on Android (gateway hangs at startup) |
+| **SQLite archive hardlink → copy fallback** | Android blocks `fs.link()` (EACCES); 2026.9.x session migration archives transcripts via hardlinks with `nlink === 2` assertions |
+| **Process identity accepts `android` platform** | 2026.9.x guards `/proc/<pid>/stat` parsing with `platform === "linux"` — on Termux it is `"android"`, breaking the cron durable fence (`cron: timer tick failed` every 2s) and file-lock staleness detection |
+| **Telegram `dmPolicy` pinned to `allowlist`** | 2026.9.x defaults to `pairing`, which silently revokes slash-command authorization |
+| **Path redirection** | `/bin/npm`, `/bin/node`, `/tmp/openclaw` → Termux `$PREFIX`-based paths |
+| **Plugin pruning** | Disables 118 stock plugins to reduce memory footprint |
+
+### Automatic Legacy-State Migration
+
+OpenClaw 2026.9.x blocks gateway startup until legacy state is migrated. Upstream normally runs `openclaw doctor --fix` for this — **which cannot run on Android** (it requires a systemd/launchd service owner). The toolkit runs the migrations directly during **[R] Repair** / **[U] Update** whenever legacy files are detected:
+
+| Stage | Migrates | Target |
+|:---|:---|:---|
+| 1 | Legacy workspace setup state (`openclaw-workspace-state.json`) | `workspace_setup_state` table in `~/.openclaw/state/openclaw.sqlite` |
+| 2 | Legacy session store (`sessions.json`, transcripts) | Agent SQLite via `openclaw doctor --session-sqlite import` |
+| 3 | Legacy exec-approvals config (`exec-approvals.json`) | `exec_approvals_config` table in the state DB |
+
+- The gateway is paused via PM2 during migration and restarted after.
+- **Nothing is deleted** — legacy files and any `.doctor-importing` claims are archived under `~/.openclaw/backup-legacy-state-*`.
+- First boot after the migration takes longer than usual (session SQLite import + cron catch-up); this is normal.
+
+### Why the Doctor Repair Flow Is Not Needed on Android
+
+`openclaw doctor --fix` fails on Android **by design**: its first step takes *maintenance ownership* of the gateway — stopping and restarting it through a system service manager (systemd/launchd). Android has neither; the gateway runs under PM2 as an externally managed process, so ownership can never be verified, even when the gateway is already stopped. The result is `Doctor could not enter maintenance ... Gateway service ownership or shutdown could not be verified`, and a hang if the gateway is still running.
+
+That does not leave a functionality gap. Every state-changing repair the doctor performs has an equivalent that is either **automatic** on this toolkit or available through a **doctor subcommand that bypasses the broken maintenance step** (the CLI handles `--session-sqlite` and `--state-sqlite` before it):
+
+| Doctor repair | Android equivalent |
+|:---|:---|
+| Workspace setup state migration | Automatic — toolkit [R] Repair / [U] Update, Stage 1 |
+| Session store migration | Automatic — toolkit Stage 2 (`doctor --session-sqlite import`) |
+| Exec-approvals migration | Automatic — toolkit Stage 3 |
+| Database schema migrations | Automatic — the gateway applies them at startup |
+| Config normalization | Automatic — gateway at load; installer config block |
+| Session SQLite repair / compact | `openclaw doctor --session-sqlite dry-run\|import\|compact` — works on Android |
+| State SQLite compact | `openclaw doctor --state-sqlite` — works on Android |
+| Advisory health notes | Cosmetic — no action required |
+
+If a future OpenClaw release adds a repair the toolkit does not cover yet, prefer its **dedicated subcommand** (e.g. `openclaw doctor --session-sqlite dry-run` to preview) over the full `--fix`, which will still fail at the maintenance step.
+
+### Post-Install Checklist (User Work)
+
+After `openclaw onboard`, complete these steps — the toolkit cannot know your identity:
+
+1. **Configure the model provider and bot token**: `openclaw onboard` (QuickStart with an external provider).
+2. **Authorize your Telegram account for commands**: slash commands (`/status`, `/help`, `/commands`, `/goal`) require your **numeric Telegram sender ID** in `commands.ownerAllowFrom` (get it from [@userinfobot](https://t.me/userinfobot)):
+
+   ```bash
+   cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.bak
+   jq '.commands.ownerAllowFrom = (["YOUR_TELEGRAM_NUMERIC_ID"])' \
+       ~/.openclaw/openclaw.json > ~/.openclaw/openclaw.json.tmp && \
+       mv ~/.openclaw/openclaw.json.tmp ~/.openclaw/openclaw.json
+   pm2 restart openclaw    # or SERVICES -> PM2
+   ```
+
+   Channel-prefixed entries for other channels (e.g. `zulip:user@host`) do **not** authorize Telegram commands.
+3. **Verify `dmPolicy`**: the installer pins `channels.telegram.dmPolicy = "allowlist"`; if you changed it to `pairing`, `allowFrom` alone no longer authorizes commands.
+4. **Test from the real channel**: send `/status` in Telegram. Do **not** test via `openclaw gateway call chat.send` — it authenticates as the webchat sender (a `sha256:...` identity) and always shows the empty-reply fallback.
+
+### Hard Warnings
+
+- ❌ **Never run `openclaw update`** — it overwrites the Android patches. Use the toolkit's **[R] Repair** / **[U] Update**.
+- ❌ **Never run `openclaw doctor --fix` on Android** — it fails at gateway service-owner verification and may hang. If the in-chat agent offers to run it, decline; the migrations it proposes were already applied by the toolkit.
+- ❌ **Do not hand-edit the migration gates** — skipping migrations leaves half-migrated state (old sessions invisible, gateway retry loops). Run the toolkit repair instead.
+
+Diagnostic pointers: gateway file log at `$TMPDIR/openclaw-*/openclaw-<date>.log`, PM2 console at `~/.pm2/logs/openclaw-out.log` / `openclaw-error.log`, startup-failure bundles at `~/.openclaw/logs/stability/`.
+
+---
+
+## ⚙ Workflows & Automation
 
 ### n8n — Workflow Automation Server
 
@@ -410,6 +527,8 @@ termux-wake-lock
 - **Ollama Not Found After Install**: Restart Termux or run `source ~/.bashrc` to refresh your PATH.
 - **Hermes/Nanobot Fail on armv8l**: Expected — these tools require Rust compilation via maturin, which does not support the `armv8l` architecture. Use an `aarch64` device instead.
 - **Paperclip LMK Kill During Install**: Expected on 3–4GB RAM devices. The installer detects the kill, verifies packages are present, and continues. If it fails entirely, ensure you have at least 2GB free RAM before starting.
+- **OpenClaw Stuck in Startup Retry Loop** (log shows `Legacy workspace setup state requires migration`, `Legacy session store requires migration`, or `Legacy exec approvals exist`): OpenClaw 2026.9.x blocks startup until legacy state is migrated, and `openclaw doctor --fix` cannot run on Android. **Re-run the toolkit and choose OpenClaw → [R] Repair** — all three migrations run automatically (gateway paused, legacy files archived under `~/.openclaw/backup-legacy-state-*`). Do not hand-migrate or delete the workspace. See [OpenClaw 2026.9.x on Android](#-openclaw-20269x-on-android).
+- **OpenClaw Cron Logs `timer tick failed` / `cannot acquire a durable fence`**: Fixed automatically by the toolkit's process-identity patch (Android reports `process.platform = "android"`, not `"linux"`). Re-run **[R] Repair** if you see it after a manual upgrade.
 - **OpenClaw Slash Commands Reply "No reply was generated"** (and `/goal` says "You are not authorized"): slash commands are authorization-gated; regular messages are not, so the bot otherwise works. On 2026.9.x `channels.telegram.dmPolicy` defaults to `pairing`, and `commands.ownerAllowFrom` must contain your **numeric** Telegram sender ID (channel-prefixed entries for other channels, e.g. `zulip:user@host`, do not authorize Telegram commands). Fix:
 
   ```bash
