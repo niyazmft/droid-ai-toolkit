@@ -117,6 +117,14 @@ Supporting patches (both wired into `apply_patches()`):
 
 The runner pauses the PM2 `openclaw` process during migration (SQLite/file contention) and restarts it afterwards. Do **not** bypass the migration gates by patching the assertions — run the real migrations; skipping leaves half-migrated state (sessions visible in old format only, gateway retries forever). Do **not** run `openclaw doctor --fix` on Android even when the in-chat agent offers — it fails at gateway service-owner verification, and it may propose re-running migrations it misreads from stale stability bundles. Verified working on device y6 (28 entries, 220 artifacts, exec-approvals row written, gateway ready, Telegram channel polling and delivering, cron ticking without fence errors).
 
+## OpenClaw Command Authorization (`dmPolicy`) — v1.17.1+
+
+OpenClaw 2026.9.x **defaults `channels.telegram.dmPolicy` to `"pairing"`** (`resolveTelegramEffectiveDmPolicy` returns `params.dmPolicy ?? "pairing"`). With the pairing policy, `allowFrom` alone no longer satisfies command authorization (`commandAuthorized` requires the pairing store), so **slash commands** (`/status`, `/help`, `/commands`, `/goal`) fail with "No reply was generated for this message..." or "You are not authorized to use this command." while regular messages keep working. The failing commands are local `defineAuthorizedTextCommand` handlers (no model involved); with `silentUnauthorized: true` the denial is silent and dispatched as empty payloads (`NO_VISIBLE_REPLY_FALLBACK_TEXT`).
+
+`install_openclaw`'s config jq block now pins `.channels.telegram.dmPolicy = (.channels.telegram.dmPolicy // "allowlist")` (user-set values win). `commands.ownerAllowFrom` must contain the user's **numeric** channel sender IDs — channel-prefixed entries for other channels (e.g. `zulip:user@host`) do not authorize Telegram commands and are logged as "Invalid allowFrom entry" by `[telegram/bot-access]`.
+
+Testing gotcha: `openclaw gateway call chat.send` authenticates as the webchat sender (a `sha256:...` identity) which is intentionally not in `allowFrom` — slash-command tests via gateway-call always show the empty-reply fallback even with correct config. Verify from the real channel.
+
 ## Zulip Plugin Management (v1.15.3+)
 
 A dedicated sub-menu **[Z] Zulip Plugin** under AGENTS → OpenClaw provides:
