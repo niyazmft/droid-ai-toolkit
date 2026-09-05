@@ -410,6 +410,18 @@ termux-wake-lock
 - **Ollama Not Found After Install**: Restart Termux or run `source ~/.bashrc` to refresh your PATH.
 - **Hermes/Nanobot Fail on armv8l**: Expected — these tools require Rust compilation via maturin, which does not support the `armv8l` architecture. Use an `aarch64` device instead.
 - **Paperclip LMK Kill During Install**: Expected on 3–4GB RAM devices. The installer detects the kill, verifies packages are present, and continues. If it fails entirely, ensure you have at least 2GB free RAM before starting.
+- **OpenClaw Slash Commands Reply "No reply was generated"** (and `/goal` says "You are not authorized"): slash commands are authorization-gated; regular messages are not, so the bot otherwise works. On 2026.9.x `channels.telegram.dmPolicy` defaults to `pairing`, and `commands.ownerAllowFrom` must contain your **numeric** Telegram sender ID (channel-prefixed entries for other channels, e.g. `zulip:user@host`, do not authorize Telegram commands). Fix:
+
+  ```bash
+  cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.bak
+  jq '.channels.telegram.dmPolicy = "allowlist" |
+      .commands.ownerAllowFrom = (["YOUR_TELEGRAM_NUMERIC_ID"])
+      ' ~/.openclaw/openclaw.json > ~/.openclaw/openclaw.json.tmp && \
+      mv ~/.openclaw/openclaw.json.tmp ~/.openclaw/openclaw.json
+  pm2 restart openclaw   # or via SERVICES -> PM2
+  ```
+
+  The toolkit's installer sets `dmPolicy: "allowlist"` automatically on fresh installs and repairs. Diagnostic hints live in `~/.pm2/logs/openclaw-error.log` (look for `Invalid allowFrom entry` / `skipped:reply_operation_aborted`). Note: `openclaw gateway call chat.send ...` tests authenticate as the webchat sender (a `sha256:...` identity) and will *always* show this error — test from the real channel instead.
 
 ---
 

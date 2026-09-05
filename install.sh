@@ -717,6 +717,11 @@ install_openclaw() {
                 .plugins.entries.ollama = {"enabled": true} |
                 .plugins.entries["memory-core"] = {"enabled": true} |
                 del(.channels.telegram.streamMode, .channels.telegram.chunkMode, .channels.telegram.blockStreaming, .channels.telegram.draftChunk, .channels.telegram.blockStreamingCoalesce) |
+                # 2026.9.x defaults channels.telegram.dmPolicy to "pairing", which silently
+                # revokes command authorization (slash commands reply "No reply was
+                # generated") unless the sender is in the pairing store. Explicitly pin
+                # "allowlist" so allowFrom keeps governing access; user-set values win.
+                .channels.telegram.dmPolicy = (.channels.telegram.dmPolicy // "allowlist") |
                 del(.channels.slack.streamMode, .channels.slack.chunkMode, .channels.slack.blockStreaming, .channels.slack.blockStreamingCoalesce, .channels.slack.nativeStreaming) |
                 if (.channels.telegram.streaming? | type) != "object" then del(.channels.telegram.streaming) else . end |
                 if (.channels.slack.streaming? | type) != "object" then del(.channels.slack.streaming) else . end' "$CONFIG_PATH" > "$tmp_cfg" && mv "$tmp_cfg" "$CONFIG_PATH"
