@@ -1380,6 +1380,49 @@ patch_openclaw_pid_platform() {
     fi
 }
 
+# PM2's pidusage stats poller warns on every poll on Android:
+# /proc/uptime is kernel-blocked (EACCES) for app processes, so pidusage
+# falls back to os.uptime() and prints a console.warn per poll — flooding
+# `pm2 logs`. pidusage upstream honors PIDUSAGE_SILENT; make the silence
+# automatic on the android platform (env-var override still works).
+patch_pm2_pidusage() {
+    local silent=$1
+    command -v pm2 >/dev/null 2>&1 || return 0
+
+    local ROOT
+    ROOT=$(npm root -g 2>/dev/null || true)
+    [ -n "$ROOT" ] && [ -d "$ROOT/pm2" ] || ROOT="$PREFIX/lib/node_modules"
+    [ -d "$ROOT/pm2" ] || return 0
+
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Patching PM2 pidusage stats for Android"
+    fi
+
+    local patched=0
+    local TARGET
+    while IFS= read -r TARGET; do
+        [ -f "$TARGET" ] || continue
+        if grep -q 'PIDUSAGE_SILENT && process.platform !== "android"' "$TARGET" 2>/dev/null; then
+            continue
+        fi
+        cp "$TARGET" "${TARGET}.bak" 2>/dev/null || true
+        if sed -i 's#if (!process\.env\.PIDUSAGE_SILENT) {#if (!process.env.PIDUSAGE_SILENT \u0026\u0026 process.platform !== "android") {#' "$TARGET" 2>/dev/null \
+            && grep -q 'PIDUSAGE_SILENT && process.platform !== "android"' "$TARGET" 2>/dev/null; then
+            patched=$((patched + 1))
+        else
+            cp "${TARGET}.bak" "$TARGET" 2>/dev/null || true
+        fi
+    done < <(find "$ROOT/pm2" -path "*pidusage/lib/helpers/cpu.js" 2>/dev/null)
+
+    if [[ "$silent" != "silent" ]]; then
+        if [ "$patched" -gt 0 ]; then
+            success_msg "Patched $patched file(s) — run 'pm2 update' to reload the daemon"
+        else
+            success_msg "Already patched"
+        fi
+    fi
+}
+
 # Thin coordinator: invokes all patch modules.
 apply_patches() {
     local silent=$1
@@ -1391,6 +1434,7 @@ apply_patches() {
     patch_openclaw_links "$silent"
     patch_openclaw_sqlite_archive "$silent"
     patch_openclaw_pid_platform "$silent"
+    patch_pm2_pidusage "$silent"
 }
 
 # --- 5. PI CODING AGENT INSTALLATION ---
