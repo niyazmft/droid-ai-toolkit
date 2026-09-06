@@ -35,7 +35,7 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.17.1). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version (v1.17.2). `package.json` version (1.0.0) is stale — ignore it.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
 
@@ -124,6 +124,16 @@ OpenClaw 2026.9.x **defaults `channels.telegram.dmPolicy` to `"pairing"`** (`res
 `install_openclaw`'s config jq block now pins `.channels.telegram.dmPolicy = (.channels.telegram.dmPolicy // "allowlist")` (user-set values win). `commands.ownerAllowFrom` must contain the user's **numeric** channel sender IDs — channel-prefixed entries for other channels (e.g. `zulip:user@host`) do not authorize Telegram commands and are logged as "Invalid allowFrom entry" by `[telegram/bot-access]`.
 
 Testing gotcha: `openclaw gateway call chat.send` authenticates as the webchat sender (a `sha256:...` identity) which is intentionally not in `allowFrom` — slash-command tests via gateway-call always show the empty-reply fallback even with correct config. Verify from the real channel.
+
+## OpenClaw 2026.9.2 Notes — RegisterHooks, Bootstrap, Gateway Mode (v1.17.2+)
+
+Three additional fixes from device 8x (aarch64, fresh install of 2026.9.2):
+
+1. **`patch_openclaw_registerhooks` rewritten**: the original sed BRE (`.registerHooks\??.(`) was a silent no-op — GNU `\\?` makes the preceding "s" optional, so the literal `?` in `.registerHooks?.(` is unmatched. It now uses a python exact-string replacement (`.registerHooks?.(` → `.registerHooksX?.(`) with real idempotency (`registerHooksX?.(` grep) and a non-fatal warn on upstream mismatch. Do **not** convert it back to sed.
+2. **`patch_openclaw_workspace_bootstrap` (new)**: onboarding's workspace bootstrap publishes files via `fs.linkSync(staging.path, targetPath)` and upstream **deliberately refuses** to fall back on filesystems without hardlinks (`isHardlinkFallbackError` → "Workspace filesystem does not support atomic bootstrap publication"). Patch converts that branch to copy+unlink (`fs.copyFileSync` + `fs.unlinkSync`). Verified: pattern matches 2026.9.2's `workspace-*.js` chunk, replacement is valid JS (`node --check`).
+3. **`gateway.mode` pin**: a failed doctor run can leave a fresh config without `gateway.mode`, blocking gateway start ("existing config is missing gateway.mode"). The config jq block pins `.gateway.mode = (.gateway.mode // "local")`.
+
+2026.9.2 upstream changes that affect the patch suite: the `/tmp` hardcoding is **fixed upstream** (native `TMPDIR` usage — the openclaw_tmp patch is a no-op on 9.2); the process-identity `android` fix **stayed applied** (re-verified); the sqlite-archive hardlink pattern **no longer matches** 9.2's chunk (non-fatal warn; only matters for devices migrating legacy state on 9.2 — re-verify pattern before relying on it).
 
 ## Zulip Plugin Management (v1.15.3+)
 
