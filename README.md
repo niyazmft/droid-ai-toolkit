@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.17.1-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.17.2-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -157,7 +157,7 @@ openclaw onboard          # Configure API keys (run AFTER install)
 openclaw gateway status   # Check gateway health
 ```
 
-> ⚠️ **NEVER** run `openclaw doctor --fix` on Android — it fails at gateway service-owner verification (no systemd) and may hang. Decline if the in-chat agent offers to run it. All of its repairs have automatic or subcommand equivalents — see [Why the Doctor Repair Flow Is Not Needed on Android](#why-the-doctor-repair-flow-is-not-needed-on-android).
+> ⚠️ **NEVER** run `openclaw doctor --fix` while the gateway is running — it fails at gateway service-owner verification (no systemd) and may hang. Decline if the in-chat agent offers to run it. Power users: gateway stopped + env vars — see [Why the Doctor Repair Flow Is Not Needed on Android](#why-the-doctor-repair-flow-is-not-needed-on-android).
 >
 > 💡 **Version Selection (v1.15.3+):** The toolkit now supports installing a **specific OpenClaw version** (e.g. `2026.6.30`) instead of always pulling `@latest`. Use **[V] Install Specific Version** from the OpenClaw menu.
 >
@@ -224,6 +224,7 @@ All patches are applied by `apply_patches()` on every **[I] Install**, **[R] Rep
 | **Telegram `dmPolicy` pinned to `allowlist`** | 2026.9.x defaults to `pairing`, which silently revokes slash-command authorization |
 | **Path redirection** | `/bin/npm`, `/bin/node`, `/tmp/openclaw` → Termux `$PREFIX`-based paths |
 | **Plugin pruning** | Disables 118 stock plugins to reduce memory footprint — only `telegram`, `ollama`, `memory-core` stay enabled; re-enable with `openclaw plugins enable <id>` (see [checklist](#post-install-checklist-user-work)) |
+| **Workspace bootstrap hardlink → copy** | Onboarding dies with `EACCES: permission denied, link ...AGENTS.md` on Android; the bootstrap publication falls back to copy+unlink |
 
 ### Automatic Legacy-State Migration
 
@@ -256,7 +257,17 @@ That does not leave a functionality gap. Every state-changing repair the doctor 
 | State SQLite compact | `openclaw doctor --state-sqlite` — works on Android |
 | Advisory health notes | Cosmetic — no action required |
 
-If a future OpenClaw release adds a repair the toolkit does not cover yet, prefer its **dedicated subcommand** (e.g. `openclaw doctor --session-sqlite dry-run` to preview) over the full `--fix`, which will still fail at the maintenance step.
+If a future OpenClaw release adds a repair the toolkit does not cover yet, prefer its **dedicated subcommand** (e.g. `openclaw doctor --session-sqlite dry-run` to preview) over the full `--fix` while the gateway is running.
+
+**Power-user exception — running the full doctor flow on Android:** with the gateway **stopped** and the external-supervisor env vars set, `doctor --fix` completes successfully (verified on 2026.9.1 — it even performed a real HEARTBEAT.md → cron-scratch migration):
+
+```bash
+pm2 stop openclaw
+yes "" | OPENCLAW_SERVICE_REPAIR_POLICY=external OPENCLAW_SUPERVISOR_MODE=external openclaw doctor --fix
+pm2 start openclaw
+```
+
+Doctor will not stop or restart the gateway on Android — you own those steps. Minor known degradation: the TOOLS.md migration backup uses hardlinks (`EACCES` on Android) and is skipped with a warning; the repair completes regardless.
 
 ### Post-Install Checklist (User Work)
 
@@ -290,7 +301,7 @@ After `openclaw onboard`, complete these steps — the toolkit cannot know your 
 ### Hard Warnings
 
 - ❌ **Never run `openclaw update`** — it overwrites the Android patches. Use the toolkit's **[R] Repair** / **[U] Update**.
-- ❌ **Never run `openclaw doctor --fix` on Android** — it fails at gateway service-owner verification and may hang. If the in-chat agent offers to run it, decline; the migrations it proposes were already applied by the toolkit. Every repair it performs has an Android equivalent — see [Why the Doctor Repair Flow Is Not Needed on Android](#why-the-doctor-repair-flow-is-not-needed-on-android).
+- ❌ **Never run `openclaw doctor --fix` while the gateway is running** — it fails at gateway service-ownership verification and may hang. If the in-chat agent offers to run it, decline; the migrations it proposes were already applied by the toolkit. Power users can run the full flow safely with the gateway stopped + env vars — see the [doctor recipe](#why-the-doctor-repair-flow-is-not-needed-on-android).
 - ❌ **Do not hand-edit the migration gates** — skipping migrations leaves half-migrated state (old sessions invisible, gateway retry loops). Run the toolkit repair instead.
 
 Diagnostic pointers: gateway file log at `$TMPDIR/openclaw-*/openclaw-<date>.log`, PM2 console at `~/.pm2/logs/openclaw-out.log` / `openclaw-error.log`, startup-failure bundles at `~/.openclaw/logs/stability/`.
