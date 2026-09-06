@@ -1496,8 +1496,11 @@ old = """\t\t\telse if (!linked \u0026\u0026 isHardlinkFallbackError(error)) out
 \t\t\t\tkind: "failed",
 \t\t\t\terror: new Error("Workspace filesystem does not support atomic bootstrap publication. Use a workspace on a filesystem with hard-link support.", { cause: error })
 \t\t\t};"""
-new = """\t\t\telse if (!linked \u0026\u0026 isHardlinkFallbackError(error)) {
-\t\t\t\t/* droid-ai-toolkit: bootstrap copy fallback */
+new = """\t\t\telse if (!linked) {
+\t\t\t\t/* droid-ai-toolkit: bootstrap copy fallback — must trigger on ANY link
+\t\t\t\t * error, not isHardlinkFallbackError: upstream HARDLINK_FALLBACK_CODES
+\t\t\t\t * lacks EACCES (Android returns EACCES for hardlinks, not EPERM),
+\t\t\t\t * so that check never fires here. */
 \t\t\t\tfs.copyFileSync(staging.path, targetPath);
 \t\t\t\tfs.unlinkSync(staging.path);
 \t\t\t\tlinked = true;
