@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.1"
+VERSION="1.17.2"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -709,6 +709,10 @@ install_openclaw() {
             # remove legacy streaming keys, set Telegram token.
             jq '
                 .channelToken = ((.channelToken // {}) + {"telegram": (.channelToken.telegram // "YOUR_BOT_TOKEN")}) |
+                # 2026.9.x: a failed doctor run can leave a fresh config without
+                # gateway.mode, which blocks gateway start ("existing config is
+                # missing gateway.mode"). Pin local (PM2-managed on this toolkit).
+                .gateway.mode = (.gateway.mode // "local") |
                 .ui.showSystemPrompt = false |
                 .disableAudio = true |
                 .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= . + {"enabled": false})) |
@@ -725,7 +729,11 @@ install_openclaw() {
                 del(.channels.slack.streamMode, .channels.slack.chunkMode, .channels.slack.blockStreaming, .channels.slack.blockStreamingCoalesce, .channels.slack.nativeStreaming) |
                 if (.channels.telegram.streaming? | type) != "object" then del(.channels.telegram.streaming) else . end |
                 if (.channels.slack.streaming? | type) != "object" then del(.channels.slack.streaming) else . end' "$CONFIG_PATH" > "$tmp_cfg" && mv "$tmp_cfg" "$CONFIG_PATH"
-                        yes "" | openclaw doctor --fix >> "$LOG_FILE" 2>&1 || true
+                        # Android: doctor's service-ownership step requires a service
+                        # manager; the external-supervisor env vars skip it by upstream
+                        # design (gateway is already stopped here — prepare_for_install
+                        # killed PM2 apps). Verified on 2026.9.1 / device y6.
+                        yes "" | OPENCLAW_SERVICE_REPAIR_POLICY=external OPENCLAW_SUPERVISOR_MODE=external openclaw doctor --fix >> "$LOG_FILE" 2>&1 || true
             success_msg
         fi
         apply_patches "silent"
@@ -938,22 +946,55 @@ patch_openclaw_registerhooks() {
     fi
 
     # Check if already patched
-    if grep -q 'PATCHED: registerHooks disabled' "$TARGET" 2>/dev/null; then
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    # Use glob since the cache-buster hash changes between versions
+    local TARGET
+    TARGET=$(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'plugin-module-loader-cache-*.js' -print -quit 2>/dev/null)
+    [ -n "$TARGET" ] && [ -f "$TARGET" ] || return 0
+
+    # Idempotency: the rename is content-based; a re-run finds nothing to match
+    if grep -q 'registerHooksX?.(' "$TARGET" 2>/dev/null; then
         if [[ "$silent" != "silent" ]]; then
             success_msg "Already patched"
         fi
         return 0
     fi
 
-    # Backup original
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Patching OpenClaw registerHooks for Android/Node 24"
+    fi
+
     cp "$TARGET" "${TARGET}.bak" 2>/dev/null || true
 
-    # Patch: rename registerHooks to registerHooksX so optional chaining short-circuits
-    # This is safer than multi-line block comments in minified JS
-    sed -i 's/\.registerHooks\?\.( /\.registerHooksX?.(/g' "$TARGET" 2>/dev/null || true
+    # Rename registerHooks -> registerHooksX so the optional-chained call
+    # short-circuits (the module hooks API deadlocks the Node 24 gateway on
+    # Android). NOTE: a sed BRE with \? here can never match
+    # ".registerHooks?.(" — GNU \? makes the preceding "s" optional, so the
+    # literal "?" in the text is unmatched — use exact-string replacement.
+    if python3 - "$TARGET" <<'PYOCR'
+import sys
 
-    if [[ "$silent" != "silent" ]]; then
-        success_msg
+path = sys.argv[1]
+data = open(path, encoding="utf-8", errors="replace").read()
+old = ".registerHooks?.("
+count = data.count(old)
+if count == 0:
+    sys.exit("registerHooks call sites not found (upstream may have fixed the deadlock)")
+data = data.replace(old, ".registerHooksX?.(")
+open(path, "w", encoding="utf-8", errors="replace").write(data)
+print(f"renamed {count} registerHooks call(s)")
+PYOCR
+    then
+        if [[ "$silent" != "silent" ]]; then
+            success_msg
+        fi
+    else
+        # Non-fatal: newer OpenClaw may have fixed the deadlock upstream
+        cp "${TARGET}.bak" "$TARGET" 2>/dev/null || true
+        if [[ "$silent" != "silent" ]]; then
+            warn_msg "registerHooks pattern not matched (upstream changed) — verify gateway startup manually"
+        fi
     fi
 }
 
@@ -1423,6 +1464,72 @@ patch_pm2_pidusage() {
     fi
 }
 
+# OpenClaw's workspace bootstrap (onboard/first run) publishes files by
+# hardlinking a staging copy into the workspace (fs.linkSync). Android blocks
+# hardlinks (EACCES), so onboarding dies with "EACCES: permission denied,
+# link ...". Upstream detects the unsupported-hardlink case
+# (isHardlinkFallbackError) but deliberately fails instead of degrading —
+# patch that branch to publish by copy+unlink instead.
+patch_openclaw_workspace_bootstrap() {
+    local silent=$1
+    [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Patching OpenClaw workspace bootstrap for Android"
+    fi
+
+    local patched=0
+    local TARGET
+    while IFS= read -r TARGET; do
+        [ -f "$TARGET" ] || continue
+        grep -q 'fs.linkSync(staging.path, targetPath)' "$TARGET" 2>/dev/null || continue
+        grep -q 'droid-ai-toolkit: bootstrap copy fallback' "$TARGET" 2>/dev/null && continue
+        cp "$TARGET" "${TARGET}.bak" 2>/dev/null || true
+        if python3 - "$TARGET" <<'PYOCBS'
+import shutil, sys
+
+path = sys.argv[1]
+data = open(path, encoding="utf-8", errors="replace").read()
+
+old = """\t\t\telse if (!linked \u0026\u0026 isHardlinkFallbackError(error)) outcome = {
+\t\t\t\tkind: "failed",
+\t\t\t\terror: new Error("Workspace filesystem does not support atomic bootstrap publication. Use a workspace on a filesystem with hard-link support.", { cause: error })
+\t\t\t};"""
+new = """\t\t\telse if (!linked \u0026\u0026 isHardlinkFallbackError(error)) {
+\t\t\t\t/* droid-ai-toolkit: bootstrap copy fallback */
+\t\t\t\tfs.copyFileSync(staging.path, targetPath);
+\t\t\t\tfs.unlinkSync(staging.path);
+\t\t\t\tlinked = true;
+\t\t\t\toutcome = { kind: "created" };
+\t\t\t}"""
+
+count = data.count(old)
+if count != 1:
+    sys.exit("bootstrap publication pattern not found or not unique (count=%d)" % count)
+data = data.replace(old, new)
+open(path, "w", encoding="utf-8", errors="replace").write(data)
+PYOCBS
+        then
+            patched=$((patched + 1))
+        else
+            # Non-fatal: newer OpenClaw may have changed the publication code
+            cp "${TARGET}.bak" "$TARGET" 2>/dev/null || true
+            if [[ "$silent" != "silent" ]]; then
+                warn_msg "workspace bootstrap pattern not matched (upstream changed) — onboarding may fail on Android"
+            fi
+        fi
+    done < <(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'workspace-*.js' 2>/dev/null)
+
+    if [[ "$silent" != "silent" ]]; then
+        if [ "$patched" -gt 0 ]; then
+            success_msg "Patched $patched file(s)"
+        else
+            success_msg "Already patched or not applicable"
+        fi
+    fi
+}
+
 # Thin coordinator: invokes all patch modules.
 apply_patches() {
     local silent=$1
@@ -1435,6 +1542,7 @@ apply_patches() {
     patch_openclaw_sqlite_archive "$silent"
     patch_openclaw_pid_platform "$silent"
     patch_pm2_pidusage "$silent"
+    patch_openclaw_workspace_bootstrap "$silent"
 }
 
 # --- 5. PI CODING AGENT INSTALLATION ---
