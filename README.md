@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.17.3-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.17.4-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -131,6 +131,35 @@ To keep tools running even after you close Termux:
 1. Run the toolkit and choose **SERVICES → PM2 Process Management**.
 2. Select the service you want to start (OpenClaw, n8n, Ollama, Paperclip, etc.).
 3. View logs with: `pm2 logs`
+
+> **Surviving a reboot:** see [Keeping services alive after a reboot](#keeping-services-alive-after-a-reboot) below — it needs the **Termux:Boot** app as well as the script the toolkit writes.
+
+#### Keeping services alive after a reboot
+
+PM2 on Termux has no systemd to hook into, so the command you would normally use — `pm2 startup` — cannot work on Android. The toolkit does something simpler instead: opening **SERVICES → PM2** writes a small script to `~/.termux/boot/start-pm2.sh`, and Android runs it when the device boots.
+
+##### What it does
+
+- Runs `pm2 resurrect` at boot, which restarts every service you previously saved with `pm2 save`.
+- Restores each app's saved settings too, including its memory limit and environment variables.
+
+##### What it does not do
+
+- It does not start Termux by itself — the separate **Termux:Boot** app does that.
+- It does not start OpenClaw (or anything else) by name. It restores exactly what `pm2 save` recorded, so a service that was not running when you saved will not come back.
+
+##### What you need for it to work
+
+| Requirement | Why it matters |
+| --- | --- |
+| **Termux:Boot** app from F-Droid, opened at least once | Without it, nothing in `~/.termux/boot/` is ever executed |
+| Termux **and** Termux:Boot exempt from battery optimization | Android will otherwise block the boot script |
+| Huawei/EMUI only: both allowed in **Battery → App launch** | EMUI adds a second, stricter startup gate |
+| `pm2 save` run while your services were up | This saved list is what gets restored |
+
+**Check that it worked:** run `pm2 save`, then reboot, then `pm2 list`. For the OpenClaw gateway specifically, `netstat -tln | grep 18789` should show it listening. **[B] Autostart on Boot** in the PM2 menu reprints the script and these notes whenever you need them.
+
+**Customising:** `start-pm2.sh` is managed by the toolkit and is rewritten when its template changes, so do not put your own commands there. Termux:Boot runs *every* executable script in `~/.termux/boot/`, so add a `start-user.sh` beside it instead — that file is never touched, and it runs after `start-pm2.sh`.
 
 ---
 

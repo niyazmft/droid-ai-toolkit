@@ -35,7 +35,7 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.17.3). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version (v1.17.4). `package.json` version (1.0.0) is stale — ignore it.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
 
@@ -140,6 +140,36 @@ Three additional fixes from device 8x (aarch64, fresh install of 2026.9.2):
 1. **`pid-alive` chunk renamed to `.mjs`**: 2026.9.3 ships `pid-alive-CdYsDTZZ.mjs` (not `.js`) — the pid_platform glob `pid-alive-*.js` missed it, so the CLI/cron path used an unpatched `getProcessStartTime` → the cron fence error ("cron run cannot acquire a durable fence without process start identity") returned even with the worker.mjs patch applied. The glob now matches both extensions.
 2. **`managed-handoff-runtime.mjs` (new)**: 2026.9.3 carries its own `getProcessStartTime` copy for the handoff/CLI path — same linux-only guard, same patch applied.
 3. **PM2 env resets on every update**: the Sep 10 update reset the PM2 process env to the default formula (`--max-old-space-size=1345` on a 1.8GB device) — the low-RAM heap cap + `--max-memory-restart 600M` applied earlier were wiped, and the Android LMK resumed silently killing the gateway ~50-100s after ready (crash loop, breaker trips, PM2 erasing the entry). After any OpenClaw update, **re-check the PM2 env** (`pm2 env <id> | grep NODE_OPTIONS`) and re-apply the device-appropriate heap cap. (User opted to manage this manually per-device — no install.sh formula change.)
+
+## PM2 Autostart on Boot (v1.17.4+)
+
+**Every PM2-managed service used to stay dead after a reboot.** Termux has no systemd/launchd, so `pm2 startup` cannot generate a working unit — and the toolkit never called it, or `pm2 resurrect`, either. `pm2 save` persists `~/.pm2/dump.pm2`, but nothing restored it, so the OpenClaw gateway (and n8n/Ollama/etc.) silently stayed down until started by hand.
+
+Verified on device y6 after a reboot: no `.pm2`/node processes at all, while `com.termux` and `com.termux.boot` were both running — Termux:Boot *was* firing, there was simply no script for it to run. (`~/.termux/boot/` was created in the n8n section but never populated.)
+
+`setup_pm2_boot()` in `install.sh` now writes `~/.termux/boot/start-pm2.sh`:
+
+```sh
+#!/data/data/com.termux/files/usr/bin/sh   # shebang derived from $TERMUX_BIN, never hardcoded
+command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
+export PATH="$TERMUX_BIN:$PATH"
+cd "$HOME" 2>/dev/null || true
+pm2 resurrect
+```
+
+It runs on entry to **SERVICES → PM2** — so the hook exists before any service is started — and via the new **[B] Autostart on Boot** menu item, which prints the file and its requirements. It is idempotent: it rewrites only when the generated template differs, so a tampered file self-heals. Because the toolkit **owns** that file, user customisations belong in a sibling `start-user.sh` — Termux:Boot executes every script in the folder, and `start-pm2.sh` sorts before `start-user.sh`, so PM2 resumes first.
+
+Note what this does and does not do: the script does **not** start Termux (the Termux:Boot app does) and does **not** start OpenClaw by name. It runs `pm2 resurrect`, which restores whatever `~/.pm2/dump.pm2` records — so OpenClaw only returns if `pm2 save` was run while it was registered.
+
+Three conditions must hold for it to fire, and `_pm2_boot_warnings()` detects the first instead of failing silently:
+
+1. The **Termux:Boot** app is installed, opened once, and allowed to start on boot. Without it, nothing in `~/.termux/boot/` is ever executed.
+2. **Termux and Termux:Boot are exempt from battery optimisation.** Verified on y6 that `com.termux.boot` was absent from the doze whitelist (`dumpsys deviceidle whitelist`) while `com.termux` was present — `dumpsys deviceidle whitelist +com.termux.boot` fixes it, and the toolkit cannot do this itself because `dumpsys` is not callable from an app UID.
+3. `pm2 save` has run while the apps were actually up — that dump is what `resurrect` restores.
+
+On EMUI there is a further gate the toolkit cannot touch: Huawei's own **App launch** (startup manager, under Battery) must allow Termux:Boot to autostart.
+
+Do not replace this with `pm2 startup`; it cannot work on Android. Before v1.17.4, telling a user to "restart the device" silently stopped every tool.
 
 ## Zulip Plugin Management (v1.15.3+)
 
