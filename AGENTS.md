@@ -35,7 +35,7 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.17.2). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version (v1.17.3). `package.json` version (1.0.0) is stale — ignore it.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
 
@@ -125,7 +125,7 @@ OpenClaw 2026.9.x **defaults `channels.telegram.dmPolicy` to `"pairing"`** (`res
 
 Testing gotcha: `openclaw gateway call chat.send` authenticates as the webchat sender (a `sha256:...` identity) which is intentionally not in `allowFrom` — slash-command tests via gateway-call always show the empty-reply fallback even with correct config. Verify from the real channel.
 
-## OpenClaw 2026.9.2 Notes — RegisterHooks, Bootstrap, Gateway Mode (v1.17.2+)
+## OpenClaw 2026.9.2/9.3 Notes — RegisterHooks, Bootstrap, Gateway Mode, .mjs Chunks (v1.17.2+)
 
 Three additional fixes from device 8x (aarch64, fresh install of 2026.9.2):
 
@@ -134,6 +134,12 @@ Three additional fixes from device 8x (aarch64, fresh install of 2026.9.2):
 3. **`gateway.mode` pin**: a failed doctor run can leave a fresh config without `gateway.mode`, blocking gateway start ("existing config is missing gateway.mode"). The config jq block pins `.gateway.mode = (.gateway.mode // "local")`.
 
 2026.9.2 upstream changes that affect the patch suite: the `/tmp` hardcoding is **fixed upstream** (native `TMPDIR` usage — the openclaw_tmp patch is a no-op on 9.2); the process-identity `android` fix **stayed applied** (re-verified); the sqlite-archive hardlink pattern **no longer matches** 9.2's chunk (non-fatal warn; only matters for devices migrating legacy state on 9.2 — re-verify pattern before relying on it).
+
+2026.9.3 findings (device y6, updated Sep 10 — same failure class, new targets):
+
+1. **`pid-alive` chunk renamed to `.mjs`**: 2026.9.3 ships `pid-alive-CdYsDTZZ.mjs` (not `.js`) — the pid_platform glob `pid-alive-*.js` missed it, so the CLI/cron path used an unpatched `getProcessStartTime` → the cron fence error ("cron run cannot acquire a durable fence without process start identity") returned even with the worker.mjs patch applied. The glob now matches both extensions.
+2. **`managed-handoff-runtime.mjs` (new)**: 2026.9.3 carries its own `getProcessStartTime` copy for the handoff/CLI path — same linux-only guard, same patch applied.
+3. **PM2 env resets on every update**: the Sep 10 update reset the PM2 process env to the default formula (`--max-old-space-size=1345` on a 1.8GB device) — the low-RAM heap cap + `--max-memory-restart 600M` applied earlier were wiped, and the Android LMK resumed silently killing the gateway ~50-100s after ready (crash loop, breaker trips, PM2 erasing the entry). After any OpenClaw update, **re-check the PM2 env** (`pm2 env <id> | grep NODE_OPTIONS`) and re-apply the device-appropriate heap cap. (User opted to manage this manually per-device — no install.sh formula change.)
 
 ## Zulip Plugin Management (v1.15.3+)
 
