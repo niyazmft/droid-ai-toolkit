@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.17.2-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.17.3-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -220,7 +220,7 @@ All patches are applied by `apply_patches()` on every **[I] Install**, **[R] Rep
 | **`/tmp` → `$TMPDIR`** | Android has no `/tmp`; OpenClaw 2026.9.1 hardcoded it for runtime state |
 | **`module.registerHooks` disabled** | Node 24 module-hooks API deadlocks on Android (gateway hangs at startup) |
 | **SQLite archive hardlink → copy fallback** | Android blocks `fs.link()` (EACCES); 2026.9.x session migration archives transcripts via hardlinks with `nlink === 2` assertions |
-| **Process identity accepts `android` platform** | 2026.9.x guards `/proc/<pid>/stat` parsing with `platform === "linux"` — on Termux it is `"android"`, breaking the cron durable fence (`cron: timer tick failed` every 2s) and file-lock staleness detection |
+| **Process identity accepts `android` platform** | 2026.9.x guards `/proc/<pid>/stat` parsing with `platform === "linux"` — on Termux it is `"android"`, breaking the cron durable fence (`cron: timer tick failed` every 2s) and file-lock staleness detection. Covers the 9.2 and 9.3 chunk layouts (`.js` and `.mjs`) |
 | **Telegram `dmPolicy` pinned to `allowlist`** | 2026.9.x defaults to `pairing`, which silently revokes slash-command authorization |
 | **Path redirection** | `/bin/npm`, `/bin/node`, `/tmp/openclaw` → Termux `$PREFIX`-based paths |
 | **Plugin pruning** | Disables 118 stock plugins to reduce memory footprint — only `telegram`, `ollama`, `memory-core` stay enabled; re-enable with `openclaw plugins enable <id>` (see [checklist](#post-install-checklist-user-work)) |
