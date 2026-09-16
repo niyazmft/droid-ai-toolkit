@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.3"
+VERSION="1.17.4"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -577,6 +577,14 @@ execute() {
 prepare_for_install() {
     local app="$1"
     shift
+    # Plain-English heads-up before acting: `pm2 kill` shuts down the ENTIRE PM2
+    # daemon, so every managed service stops — not only the app being installed —
+    # and pkill -9 gives no chance to flush state. Users should know that before it
+    # happens, and know their data survives it.
+    echo -e "${YELLOW}Stopping background services first:${NC}"
+    echo -e "  - every PM2-managed service stops, not just $app (the PM2 daemon is shut down)"
+    echo -e "  - the stop is immediate, so anything mid-run is interrupted"
+    echo -e "  - your settings and data are kept — restart services later from SERVICES -> PM2"
     status_msg "Stopping existing tasks & freeing memory"
     pkill -9 -f "$app" 2>/dev/null || true
     for pat in "$@"; do
@@ -588,8 +596,9 @@ prepare_for_install() {
 
 # Standard install preamble: clear log file, print log path.
 begin_install() {
+    # Discard the previous run's log so this run's log is unambiguous.
     rm -f "$LOG_FILE"
-    echo -e "${YELLOW}Verbose logs: $LOG_FILE${NC}
+    echo -e "${YELLOW}Verbose logs: $LOG_FILE${NC} ${BLUE}(fresh log — the previous one was cleared)${NC}
 "
 }
 
@@ -680,6 +689,14 @@ install_openclaw() {
     OPENCLAW_ROOT=$(get_openclaw_root "$PKG_MANAGER")
 
     if [[ "$mode" == "full" ]]; then
+        # Both "Install" and "Update" take this path, and it deletes the installed
+        # package before reinstalling — so a failed download leaves nothing behind.
+        # State the risk, and state what is NOT touched, since that is what users
+        # actually worry about.
+        echo -e "${YELLOW}Replacing the OpenClaw installation:${NC}"
+        echo -e "  - the installed package is deleted first, then downloaded again"
+        echo -e "  - if the download fails you are left without a working install (just re-run)"
+        echo -e "  - your settings, sessions and memories in ~/.openclaw are NOT touched"
         status_msg "Preparing clean slate"
         rm -rf "$OPENCLAW_ROOT"
         success_msg
@@ -1732,6 +1749,9 @@ install_n8n() {
             n8n_root="$(npm root -g 2>/dev/null)/n8n"
         fi
         
+        echo -e "${YELLOW}Replacing the n8n installation:${NC}"
+        echo -e "  - the installed package is deleted first, then downloaded again"
+        echo -e "  - your workflows, credentials and settings in ~/.n8n are NOT touched"
         status_msg "Preparing clean slate"
         rm -rf "$n8n_root"
         success_msg
@@ -2118,6 +2138,25 @@ _hermes_ensure_compatible_python() {
 
 # --- 9. HERMES INSTALLATION ---
 
+# Remove stale Hermes PATH exports from the user's shell config.
+# This edits a file outside the toolkit's own directories, so it always reports
+# what it changed rather than doing it silently, and stays quiet when there is
+# nothing to remove. Shared by the reinstall and uninstall paths so they behave
+# identically instead of one cleaning up and the other telling the user to.
+#
+# The pattern requires ".hermes/bin" to be a COMPLETE path element — followed by
+# a colon (normal ".../bin:$PATH") or end of line — so a line containing an
+# unrelated path such as ".hermes/binstuff" is left untouched.
+_remove_hermes_bashrc_path() {
+    # Plain ERE with no escaped-slash trickery, so grep and sed agree. sed uses an
+    # alternate delimiter (\#...#) so the pattern itself needs no escaping.
+    local pat='\.hermes/bin(:|$)'
+    [ -f "$HOME/.bashrc" ] || return 0
+    grep -qE "$pat" "$HOME/.bashrc" 2>/dev/null || return 0
+    sed -i -E "\#$pat#d" "$HOME/.bashrc" 2>/dev/null || true
+    echo -e "${BLUE}Removed the stale Hermes PATH line from ~/.bashrc (nothing else in it was changed)${NC}"
+}
+
 install_hermes() {
     # Architecture guard
     _guard_armv8l "Hermes Agent" || return 0
@@ -2272,8 +2311,10 @@ install_hermes() {
             local backup_dir="$HOME/.hermes.bak.$(date +%Y%m%d%H%M%S)"
             mv "$HOME/.hermes" "$backup_dir"
             echo -e "${BLUE}Backed up old install to $backup_dir${NC}"
+            echo -e "${BLUE}(the backup is kept — delete it yourself once you are happy)${NC}"
         fi
-        sed -i '/\.hermes\/bin/d' "$HOME/.bashrc" 2>/dev/null || true
+        # Shared with the uninstall path so both behave identically.
+        _remove_hermes_bashrc_path
         success_msg
     elif [ "$mode" == "fix" ]; then
         status_msg "Preparing broken Hermes for repair"
@@ -2772,11 +2813,87 @@ _pm2_start_app() {
     execute "pm2 start '$app_bin' --name '$app_name'$_extra && pm2 save" "Starting $app_name in PM2"
 }
 
+# --- PM2 RESURRECT-ON-BOOT ---
+# Termux has no systemd/launchd, so `pm2 startup` cannot generate a working unit
+# here. Termux:Boot instead runs every executable file in ~/.termux/boot/ at device
+# boot. Without this script, `pm2 save` persists ~/.pm2/dump.pm2 but NOTHING
+# restores it: every service (OpenClaw gateway included) silently stays down after
+# a reboot until started by hand. Verified on device y6 — after a reboot the
+# gateway was absent while com.termux/com.termux.boot were both running.
+PM2_BOOT_SCRIPT="$HOME/.termux/boot/start-pm2.sh"
+
+# Warn about the one thing that silently makes the boot script a no-op.
+_pm2_boot_warnings() {
+    if ! pm list packages 2>/dev/null | grep -q "package:com.termux.boot"; then
+        warn_msg "Termux:Boot is not installed — the autostart script will NOT run"
+        echo -e "   Install it from F-Droid, open it once, and allow it to start on boot:"
+        echo -e "   ${BLUE}https://f-droid.org/packages/com.termux.boot/${NC}"
+        echo -e "   Also exempt BOTH Termux and Termux:Boot from battery optimisation."
+    fi
+}
+
+# Write ~/.termux/boot/start-pm2.sh so PM2 restores the saved process list at boot.
+# Idempotent: rewrites only when the content actually differs, so a hand edit is
+# preserved until the generated content changes. Pass "silent" to hide progress.
+setup_pm2_boot() {
+    local silent="${1:-}"
+    [ "$silent" != "silent" ] && status_msg "Configuring PM2 autostart on boot"
+
+    if ! mkdir -p "$HOME/.termux/boot"; then
+        error_msg "Could not create $HOME/.termux/boot"
+        return 1
+    fi
+
+    # $TERMUX_BIN expands now (derived from $PREFIX, never hardcoded); $PATH and
+    # $HOME stay literal so they resolve in the boot environment instead.
+    local desired
+    desired=$(cat <<EOF
+#!$TERMUX_BIN/sh
+# Written by droid-ai-toolkit — restores the saved PM2 process list at boot.
+# Termux:Boot executes every executable file in ~/.termux/boot/ on device boot.
+#
+# This file is MANAGED: opening SERVICES -> PM2 rewrites it whenever the template
+# changes, so do not put your own commands here. Termux:Boot runs EVERY script in
+# this folder without needing the toolkit's help — put customisations in
+# start-user.sh instead. It sorts after start-pm2.sh, so PM2 resumes first.
+command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
+export PATH="$TERMUX_BIN:\$PATH"
+cd "\$HOME" 2>/dev/null || true
+pm2 resurrect
+EOF
+)
+
+    if [ -f "$PM2_BOOT_SCRIPT" ] && [ "$(cat "$PM2_BOOT_SCRIPT")" = "$desired" ]; then
+        [ "$silent" != "silent" ] && success_msg
+        _pm2_boot_warnings
+        return 0
+    fi
+
+    if ! printf '%s\n' "$desired" > "$PM2_BOOT_SCRIPT"; then
+        error_msg "Could not write $PM2_BOOT_SCRIPT"
+        return 1
+    fi
+    chmod +x "$PM2_BOOT_SCRIPT" 2>/dev/null || true
+
+    if [ "$silent" != "silent" ]; then
+        success_msg
+    else
+        # Announce even in silent mode: this writes a file into the user's home
+        # directory, and they should not be surprised by it later.
+        echo -e "${GREEN}Autostart enabled:${NC} services saved with PM2 will start by themselves after a reboot."
+        echo -e "   Details and requirements: SERVICES -> PM2 -> [B] Autostart on Boot"
+    fi
+    _pm2_boot_warnings
+}
+
 manage_pm2() {
     if ! command -v pm2 >/dev/null 2>&1; then
         whiptail_confirm "Install PM2 globally first?" || return 0
         execute "npm install -g pm2" "Installing PM2 Globally"
     fi
+    # Ensure the autostart hook exists before any service is started, so a reboot
+    # never leaves the user with silently-dead services.
+    setup_pm2_boot silent
     while true; do
         local choice
         choice=$(show_whi_menu "PM2 Management  |  Use ↑/↓ and Enter" \
@@ -2789,6 +2906,7 @@ manage_pm2() {
             ""          "" \
             "LOGS"      "[i]  View Logs (Live)" \
             "STATUS"    "[i]  View Status (Table)" \
+            "BOOT"      "[B]  Autostart on Boot" \
             "RESTART"   "[~]  Restart All Apps" \
             "STOP"      "[-]  Stop All Apps" \
             ""          "" \
@@ -2882,6 +3000,36 @@ manage_pm2() {
                 ;;
             LOGS)    pm2 logs ;;
             STATUS)  pm2 status; ;;
+            BOOT)
+                echo -e "\n${YELLOW}Autostart after a reboot — what this does${NC}"
+                echo -e "  Termux has no systemd, so the usual ${BLUE}pm2 startup${NC} command cannot work on Android."
+                echo -e "  Instead, a small script runs when your device boots and asks PM2 to restart"
+                echo -e "  every service you saved earlier with ${BLUE}pm2 save${NC}."
+                echo -e "  You do not have to open Termux and start things by hand."
+                echo
+                echo -e "${YELLOW}What you need for it to actually work${NC}"
+                echo -e "  1. Install the ${BLUE}Termux:Boot${NC} app (free, from F-Droid) and open it once."
+                echo -e "     ${BLUE}https://f-droid.org/packages/com.termux.boot/${NC}"
+                echo -e "  2. Let Termux and Termux:Boot run in the background:"
+                echo -e "     Android Settings -> Apps -> (app) -> Battery -> Unrestricted."
+                echo -e "     On Huawei/EMUI also allow both in Battery -> ${BLUE}App launch${NC}."
+                echo -e "  3. Run ${BLUE}pm2 save${NC} while your services are running."
+                echo
+                echo -e "${YELLOW}What it does not do${NC}"
+                echo -e "  It does not start Termux itself (Termux:Boot does that), and it does not"
+                echo -e "  start any app by name. It restores exactly what ${BLUE}pm2 save${NC} recorded —"
+                echo -e "  so a service that was not running at save time will not come back."
+                echo
+                setup_pm2_boot
+                echo -e "${YELLOW}Script:${NC} $PM2_BOOT_SCRIPT"
+                if [ -f "$PM2_BOOT_SCRIPT" ]; then
+                    sed 's/^/   /' "$PM2_BOOT_SCRIPT"
+                else
+                    echo -e "   ${RED}not written${NC}"
+                fi
+                echo -e "\n${YELLOW}To try it:${NC} run 'pm2 save', then reboot, then 'pm2 list'."
+                wait_to_continue
+                ;;
             RESTART) execute "pm2 restart all && pm2 save" "Restarting all running PM2 processes" ;;
             STOP)    execute "pm2 stop all && pm2 save" "Stopping all PM2 apps (Daemon remains active)" ;;
             BACK|*)  return ;;
@@ -2995,8 +3143,11 @@ uninstall_hermes() {
         execute "bash '$HOME/.hermes/uninstall.sh'" "Running Hermes uninstaller"
     else
         rm -rf "$HOME/.hermes" "$HOME/.local/bin/hermes" 2>/dev/null || true
-        echo -e "${YELLOW}Hermes directories removed. Check ~/.bashrc for stale PATH entries.${NC}"
+        echo -e "${YELLOW}Hermes directories removed.${NC}"
     fi
+    # Neither branch above reliably cleans the PATH export, so do it here instead
+    # of telling the user to go and edit ~/.bashrc themselves.
+    _remove_hermes_bashrc_path
 }
 
 uninstall_nanobot() {
