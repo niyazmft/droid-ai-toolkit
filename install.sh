@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.2"
+VERSION="1.17.3"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -1399,16 +1399,33 @@ patch_openclaw_pid_platform() {
         fi
     fi
 
-    # pid-alive-*.js (readable chunk used by the CLI/doctor path; glob hash)
+    # pid-alive chunk (readable; CLI/cron path). 2026.9.1 ships pid-alive-*.js;
+    # 2026.9.3 renamed it to pid-alive-*.mjs — match both extensions.
     local PA
-    PA=$(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'pid-alive-*.js' -print -quit 2>/dev/null)
-    if [ -n "$PA" ] && [ -f "$PA" ] && ! grep -q 'process.platform !== "linux" && process.platform !== "android"' "$PA" 2>/dev/null; then
+    # shellcheck disable=SC2044
+    for PA in $(find "$OPENCLAW_ROOT/dist" -maxdepth 1 \( -name 'pid-alive-*.js' -o -name 'pid-alive-*.mjs' \) 2>/dev/null); do
+        [ -f "$PA" ] || continue
+        grep -q 'process.platform !== "linux" && process.platform !== "android"' "$PA" 2>/dev/null && continue
         cp "$PA" "${PA}.bak" 2>/dev/null || true
         if sed -i 's#if (!isValidPid(pid) || process.platform !== "linux") return null;#if (!isValidPid(pid) || (process.platform !== "linux" \&\& process.platform !== "android")) return null;#; s#if (process.platform !== "linux") return false;#if (process.platform !== "linux" \&\& process.platform !== "android") return false;#' "$PA" 2>/dev/null \
             && grep -q 'process.platform !== "linux" && process.platform !== "android"' "$PA" 2>/dev/null; then
             patched=$((patched + 1))
         else
             cp "${PA}.bak" "$PA" 2>/dev/null || true
+        fi
+    done
+
+    # managed-handoff-runtime.mjs (2026.9.3+: its own getProcessStartTime copy
+    # for the handoff/CLI path — same linux-only guard)
+    local MH
+    MH=$(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'managed-handoff-runtime.mjs' -print -quit 2>/dev/null)
+    if [ -n "$MH" ] && [ -f "$MH" ] && ! grep -q 'process.platform !== "linux" && process.platform !== "android"' "$MH" 2>/dev/null; then
+        cp "$MH" "${MH}.bak" 2>/dev/null || true
+        if sed -i 's#if (!isValidPid(pid) || process.platform !== "linux") return null;#if (!isValidPid(pid) || (process.platform !== "linux" \&\& process.platform !== "android")) return null;#' "$MH" 2>/dev/null \
+            && grep -q 'process.platform !== "linux" && process.platform !== "android"' "$MH" 2>/dev/null; then
+            patched=$((patched + 1))
+        else
+            cp "${MH}.bak" "$MH" 2>/dev/null || true
         fi
     fi
 
