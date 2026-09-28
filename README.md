@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.17.4-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.17.5-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -53,6 +53,9 @@ A high-performance, automated toolkit for running AI tools — [OpenClaw](https:
 - 🩹 **Zero-Config Patching**: Automatically fixes the `koffi` native bridge and `renameat2` kernel crashes for OpenClaw.
 - 🔄 **Automatic State Migrations (v1.17.0+)**: OpenClaw 2026.9.x legacy-state migrations (workspace setup state, session store, exec approvals) run automatically during install/repair — no `openclaw doctor --fix` needed on Android (where it cannot run). Legacy files are archived, never deleted.
 - 🔐 **Command Authorization Defaults (v1.17.1+)**: Pins `channels.telegram.dmPolicy` to `allowlist` so slash commands keep working after the 2026.9.x pairing-policy change.
+- 🔁 **Reachable After Reboot (v1.17.5+)**: The generated boot script restores `sshd` as well as PM2, so a reboot no longer leaves your phone answering ping while every port refuses — see [Keeping services alive after a reboot](#keeping-services-alive-after-a-reboot).
+- 🛟 **Update Safety Net (v1.17.5+)**: An OpenClaw update snapshots your working install first and rolls back automatically if the download is killed — the usual outcome on low-RAM devices — instead of leaving no working `openclaw` at all.
+- 🧩 **Your Plugin Choices Are Kept (v1.17.5+)**: The installer no longer force-disables plugins you enabled yourself (e.g. `openclaw-honcho`, `zulip`) when it re-applies its config.
 - 📂 **Path Awareness**: Aggressively redirects `/bin/npm`, `/bin/node`, and `/tmp` to Termux-compatible directories using `$PREFIX`.
 - 🚀 **PM2 Integration**: Native support for starting, stopping, and monitoring OpenClaw, n8n, Ollama, Paperclip, Pi, and Gemini CLI via PM2 with optimized memory flags.
 - 📦 **pnpm Support**: Integrated support for pnpm to speed up installations and save storage space.
