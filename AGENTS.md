@@ -35,7 +35,7 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.17.4). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version (v1.17.5). `package.json` version (1.0.0) is stale — ignore it.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
 
@@ -170,6 +170,22 @@ Three conditions must hold for it to fire, and `_pm2_boot_warnings()` detects th
 On EMUI there is a further gate the toolkit cannot touch: Huawei's own **App launch** (startup manager, under Battery) must allow Termux:Boot to autostart.
 
 Do not replace this with `pm2 startup`; it cannot work on Android. Before v1.17.4, telling a user to "restart the device" silently stopped every tool.
+
+## Boot Script Also Restores SSH (v1.17.5+)
+
+The generated `~/.termux/boot/start-pm2.sh` now brings `sshd` back as well as PM2, guarded so it is a no-op when SSH is not installed:
+
+```sh
+command -v sshd >/dev/null 2>&1 && sshd >/dev/null 2>&1
+```
+
+Why: on y6 (2026-09-28) the phone answered ping on the LAN while **every** TCP port refused — `sshd` was down, and so were the gateway and the PM2 daemon. A pingable-but-unreachable device is indistinguishable from an offline one, and recovery needed physical access to open Termux by hand. SSH is therefore restored before `pm2 resurrect`.
+
+**The incident was not a reboot, and that is the point.** `uptime` read 11 days 22:58 — the phone never restarted. `sshd`, `crond`, `postgres` and the PM2 daemon had all died at the same instant (~12:58 local) and stayed dead for ~9 hours while the device kept running. That is the signature of Android killing the **Termux app itself** (low-RAM LMK / OEM battery management), not of a reboot.
+
+Consequence: **a boot script cannot fix an in-place kill**, because Termux:Boot never fires. The only remedies for that failure mode are the battery-optimisation exemptions `_pm2_boot_warnings()` already reports (Termux + Termux:Boot) plus holding `termux-wake-lock`. Do not tell a user to "reboot to bring a service back" without first checking `uptime` — if the phone never rebooted, no amount of rebooting advice applies.
+
+Related: the toolkit does not own SSH on a device that already manages it. y6 ran a hand-written `~/.termux/boot/start-pm2` (containing `sv up sshd`) alongside the toolkit's `start-pm2.sh`, because Termux:Boot executes *every* executable file in that folder. The generated script only starts `sshd` when it exists, so it never conflicts with a device without SSH.
 
 ## Zulip Plugin Management (v1.15.3+)
 

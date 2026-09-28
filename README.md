@@ -141,6 +141,7 @@ PM2 on Termux has no systemd to hook into, so the command you would normally use
 ##### What it does
 
 - Runs `pm2 resurrect` at boot, which restarts every service you previously saved with `pm2 save`.
+- Restarts `sshd` first, if you have it installed, so you can still reach the device after a reboot.
 - Restores each app's saved settings too, including its memory limit and environment variables.
 
 ##### What it does not do
@@ -158,6 +159,8 @@ PM2 on Termux has no systemd to hook into, so the command you would normally use
 | `pm2 save` run while your services were up | This saved list is what gets restored |
 
 **Check that it worked:** run `pm2 save`, then reboot, then `pm2 list`. For the OpenClaw gateway specifically, `netstat -tln | grep 18789` should show it listening. **[B] Autostart on Boot** in the PM2 menu reprints the script and these notes whenever you need them.
+
+> **A boot script only helps after a real reboot.** If Android kills the Termux app while the phone is still on — common on low-RAM devices — nothing in `~/.termux/boot/` runs at all, and SSH dies with it. That is why Termux and Termux:Boot must be exempt from battery optimization. If a service is down, run `uptime` before assuming a reboot happened: a phone that has been up for days was killed in place, and reboot advice will not explain it.
 
 **Customising:** `start-pm2.sh` is managed by the toolkit and is rewritten when its template changes, so do not put your own commands there. Termux:Boot runs *every* executable script in `~/.termux/boot/`, so add a `start-user.sh` beside it instead — that file is never touched, and it runs after `start-pm2.sh`.
 
