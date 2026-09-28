@@ -689,22 +689,76 @@ install_openclaw() {
     OPENCLAW_ROOT=$(get_openclaw_root "$PKG_MANAGER")
 
     if [[ "$mode" == "full" ]]; then
-        # Both "Install" and "Update" take this path, and it deletes the installed
-        # package before reinstalling — so a failed download leaves nothing behind.
-        # State the risk, and state what is NOT touched, since that is what users
-        # actually worry about.
+        # Both "Install" and "Update" take this path, and it replaces the installed
+        # package — so a failed download would otherwise leave nothing behind. State
+        # the risk, and state what is NOT touched, since that is what users actually
+        # worry about.
+        #
+        # Keep the previous install recoverable. With pnpm, OPENCLAW_ROOT is a
+        # symlink into the pnpm store, so restoring one symlink brings the old
+        # version back; with npm it is a real directory, which is moved aside
+        # instead of deleted. This matters because Android's low-memory killer
+        # SIGKILLs pnpm mid-download on small-RAM devices, which looks like an
+        # ordinary failure but leaves no working `openclaw` at all — taking the
+        # gateway down with it (observed on device y6).
+        local _oc_prev_link="" _oc_prev_dir=""
+        if [ -L "$OPENCLAW_ROOT" ]; then
+            _oc_prev_link=$(readlink "$OPENCLAW_ROOT")
+        elif [ -d "$OPENCLAW_ROOT" ]; then
+            _oc_prev_dir="${OPENCLAW_ROOT}.prev-$$"
+        fi
+
         echo -e "${YELLOW}Replacing the OpenClaw installation:${NC}"
         echo -e "  - the installed package is deleted first, then downloaded again"
-        echo -e "  - if the download fails you are left without a working install (just re-run)"
+        echo -e "  - if that download is killed or fails, the previous version is restored"
         echo -e "  - your settings, sessions and memories in ~/.openclaw are NOT touched"
         status_msg "Preparing clean slate"
-        rm -rf "$OPENCLAW_ROOT"
+        if [ -n "$_oc_prev_dir" ]; then
+            mv "$OPENCLAW_ROOT" "$_oc_prev_dir" 2>/dev/null || rm -rf "$OPENCLAW_ROOT"
+        else
+            rm -rf "$OPENCLAW_ROOT"
+        fi
         success_msg
 
+        local _oc_installed=0
         if [ "$PKG_MANAGER" == "npm" ]; then
-            execute "npm install -g openclaw@${target_version}" "Installing OpenClaw ${target_version} via npm"
+            execute "npm install -g openclaw@${target_version}" "Installing OpenClaw ${target_version} via npm" && _oc_installed=1
         else
-            execute "pnpm add -g openclaw@${target_version} --force --ignore-scripts" "Installing OpenClaw ${target_version} via pnpm"
+            execute "pnpm add -g openclaw@${target_version} --force --ignore-scripts" "Installing OpenClaw ${target_version} via pnpm" && _oc_installed=1
+        fi
+
+        # A low-memory kill surfaces as a plain non-zero exit, so the only
+        # trustworthy test is whether the CLI actually runs afterwards. Checking
+        # `command -v openclaw` alone is not enough: the launcher shim survives even
+        # when the package behind it does not (that was exactly the y6 failure).
+        if [ "$_oc_installed" -eq 0 ] || ! openclaw --version >/dev/null 2>&1; then
+            warn_msg "OpenClaw did not install cleanly (an Android low-memory kill is the usual cause)"
+            echo -e "   Restoring the previous version so the device keeps working."
+            if [ -n "$_oc_prev_link" ]; then
+                mkdir -p "$(dirname "$OPENCLAW_ROOT")"
+                ln -sfn "$_oc_prev_link" "$OPENCLAW_ROOT"
+            elif [ -n "$_oc_prev_dir" ] && [ -d "$_oc_prev_dir" ]; then
+                rm -rf "$OPENCLAW_ROOT"
+                mv "$_oc_prev_dir" "$OPENCLAW_ROOT"
+            fi
+            if openclaw --version >/dev/null 2>&1; then
+                success_msg "Rolled back to $(openclaw --version 2>/dev/null | head -1) — OpenClaw is unchanged."
+                echo -e "   Free some memory (close other apps) and re-run the update to try again."
+            else
+                error_msg "Rollback failed — this device is left without a working OpenClaw."
+                if [ -n "$_oc_prev_link" ]; then
+                    echo -e "   Restore it by hand: ${BLUE}ln -sfn '$_oc_prev_link' '$OPENCLAW_ROOT'${NC}"
+                fi
+                if [ -n "$_oc_prev_dir" ]; then
+                    echo -e "   The previous install was kept at: ${BLUE}$_oc_prev_dir${NC}"
+                fi
+            fi
+            return 1
+        fi
+
+        # Install verified — drop the moved-aside copy.
+        if [ -n "$_oc_prev_dir" ]; then
+            rm -rf "$_oc_prev_dir" 2>/dev/null || true
         fi
     fi
 
@@ -722,21 +776,37 @@ install_openclaw() {
         if [ -f "$CONFIG_PATH" ]; then
             status_msg "Configuring Termux-specific settings"
             local tmp_cfg; tmp_cfg=$(mktemp)
-            # Single-pass jq: disable audio/UI, clean unsupported plugins, re-enable core ones,
-            # remove legacy streaming keys, set Telegram token.
+            # Single-pass jq: pin gateway mode, drop unsupported plugins, default
+            # unset plugins off, remove legacy streaming keys.
+            #
+            # Do NOT reintroduce `.channelToken`, `.ui.showSystemPrompt` or
+            # `.disableAudio` here. OpenClaw 2026.9.x rejects all three as
+            # unrecognized keys, which fails config validation and stops the gateway
+            # booting entirely (seen on device y6):
+            #   ui: Unrecognized key "showSystemPrompt"
+            #   <root>: Unrecognized keys "channelToken", "disableAudio"
+            # `.channelToken` was also writing a placeholder ("YOUR_BOT_TOKEN") to a
+            # key upstream no longer reads — the live token is
+            # channels.telegram.botToken.
             jq '
-                .channelToken = ((.channelToken // {}) + {"telegram": (.channelToken.telegram // "YOUR_BOT_TOKEN")}) |
                 # 2026.9.x: a failed doctor run can leave a fresh config without
                 # gateway.mode, which blocks gateway start ("existing config is
                 # missing gateway.mode"). Pin local (PM2-managed on this toolkit).
                 .gateway.mode = (.gateway.mode // "local") |
-                .ui.showSystemPrompt = false |
-                .disableAudio = true |
-                .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= . + {"enabled": false})) |
                 del(.plugins.entries["kimi-coding"], .plugins.entries["speech-core"], .plugins.entries["image-generation-core"], .plugins.entries["video-generation-core"], .plugins.entries["media-understanding-core"]) |
-                .plugins.entries.telegram = {"enabled": true} |
-                .plugins.entries.ollama = {"enabled": true} |
-                .plugins.entries["memory-core"] = {"enabled": true} |
+                .plugins.entries.telegram = ((.plugins.entries.telegram // {}) + {"enabled": true}) |
+                .plugins.entries.ollama = ((.plugins.entries.ollama // {}) + {"enabled": true}) |
+                # memory-core is only a default: if the entry already exists, that
+                # choice is kept (e.g. the user runs openclaw-honcho as the memory slot
+                # and disabled memory-core). Note the jq `//` operator treats false as
+                # empty, so this must branch on existence, not use `.enabled // true`.
+                if (.plugins.entries["memory-core"] | type) == "object" then . else .plugins.entries["memory-core"] = {"enabled": true} end |
+                # Default any remaining plugin off on low-RAM devices, but never
+                # overwrite a choice the user already made. The previous form
+                # (`.value |= . + {"enabled": false}`) rewrote every entry on every
+                # update, which silently disabled the user plugins — on y6 that was
+                # openclaw-honcho and zulip, and upstream does not re-enable them.
+                .plugins.entries = ((.plugins.entries // {}) | with_entries(.value |= (if (type == "object" and (has("enabled") | not)) then . + {"enabled": false} else . end))) |
                 del(.channels.telegram.streamMode, .channels.telegram.chunkMode, .channels.telegram.blockStreaming, .channels.telegram.draftChunk, .channels.telegram.blockStreamingCoalesce) |
                 # 2026.9.x defaults channels.telegram.dmPolicy to "pairing", which silently
                 # revokes command authorization (slash commands reply "No reply was

@@ -187,6 +187,46 @@ Consequence: **a boot script cannot fix an in-place kill**, because Termux:Boot 
 
 Related: the toolkit does not own SSH on a device that already manages it. y6 ran a hand-written `~/.termux/boot/start-pm2` (containing `sv up sshd`) alongside the toolkit's `start-pm2.sh`, because Termux:Boot executes *every* executable file in that folder. The generated script only starts `sshd` when it exists, so it never conflicts with a device without SSH.
 
+## OpenClaw Update Safety (v1.17.5+)
+
+A toolkit-driven OpenClaw update on device y6 (2026-09-28) left the phone with **no working `openclaw`** and a gateway that could not boot. Three independent faults, all in `install.sh`, were found and fixed.
+
+**1. A killed install left nothing behind.** `install_openclaw` deletes the installed package before downloading it again. On a 1.8 GiB device Android's low-memory killer SIGKILLed pnpm mid-download:
+
+```text
+install.sh: line 552: 16005 Killed   pnpm add -g openclaw@latest --force --ignore-scripts
+```
+
+An LMK kill is not reported as an out-of-memory error — it is an ordinary non-zero exit — so it silently left `$(pnpm root -g)/openclaw` deleted and `openclaw.mjs` missing. The CLI and the gateway both died. The block now snapshots the install first (the pnpm symlink target; a moved-aside directory for npm), verifies the result with `openclaw --version`, and restores the previous version on any failure. **Do not use `command -v openclaw` as the test:** the `$PREFIX/bin/openclaw` shim survives even when the package behind it is gone, which is exactly how this failure looked like success.
+
+**2. The config block wrote keys that 2026.9.x rejects.** The jq block set `.channelToken`, `.ui.showSystemPrompt` and `.disableAudio`. All three are dead in 2026.9.3 — `showSystemPrompt` appears in zero files, `disableAudio` exists only as the unrelated `disableAudioPreflight`, and `channelToken` is not a schema key. Their presence fails validation and blocks startup entirely:
+
+```text
+Gateway failed to start: Invalid config at ~/.openclaw/openclaw.json:
+openclaw.json:1319 — ui: Unrecognized key: "showSystemPrompt"
+<root>: Unrecognized keys: "channelToken", "disableAudio"
+```
+
+`.channelToken` was also writing a placeholder (`"YOUR_BOT_TOKEN"`) to a key upstream no longer reads — the live token is `channels.telegram.botToken`. Those lines are removed; **do not reintroduce them.**
+
+**3. The plugin block disabled every plugin.** `.plugins.entries = (... | with_entries(.value |= . + {"enabled": false}))` reset *every* entry, then re-enabled only telegram/ollama/memory-core. On y6 that silently disabled `openclaw-honcho`, `zulip` and `brave`: the gateway came up with `2 plugins` instead of `5`, and the Zulip bot went silent. It now defaults only entries that have no explicit `enabled`, and never overwrites a state the user chose.
+
+Two jq details cost real debugging time and should not be undone:
+
+- **`//` treats `false` as empty.** `.enabled // true` silently re-enables a deliberately disabled plugin, so the `memory-core` default branches on existence (`if (.plugins.entries["memory-core"] | type) == "object"`).
+- **No apostrophes inside the `jq '...'` block.** The program is single-quoted for the shell, so a comment containing `user's` terminates the string and breaks the whole script (`syntax error near unexpected token '=='`). `bash -n install.sh` catches it; run it after touching that block.
+
+`memory-core` is now only a default — a device that disabled it because it runs `openclaw-honcho` as the memory slot keeps that choice.
+
+Also worth knowing after any crash loop: a repeatedly-crashing gateway trips the **restart-loop breaker**, which suppresses channel autostart and keeps suppressing it after the underlying fault is fixed. Start the channel by hand:
+
+```bash
+openclaw gateway call channels.start --params '{"channel":"zulip"}'
+openclaw gateway call channels.start --params '{"channel":"telegram"}'
+```
+
+(`health-monitor` logs `channel autostart suppressed; treating as expected stopped` while this is in effect.)
+
 ## Zulip Plugin Management (v1.15.3+)
 
 A dedicated sub-menu **[Z] Zulip Plugin** under AGENTS → OpenClaw provides:
