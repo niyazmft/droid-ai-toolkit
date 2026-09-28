@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.4"
+VERSION="1.17.5"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -2813,13 +2813,23 @@ _pm2_start_app() {
     execute "pm2 start '$app_bin' --name '$app_name'$_extra && pm2 save" "Starting $app_name in PM2"
 }
 
-# --- PM2 RESURRECT-ON-BOOT ---
+# --- SSH + PM2 RESURRECT-ON-BOOT ---
 # Termux has no systemd/launchd, so `pm2 startup` cannot generate a working unit
 # here. Termux:Boot instead runs every executable file in ~/.termux/boot/ at device
 # boot. Without this script, `pm2 save` persists ~/.pm2/dump.pm2 but NOTHING
 # restores it: every service (OpenClaw gateway included) silently stays down after
 # a reboot until started by hand. Verified on device y6 — after a reboot the
 # gateway was absent while com.termux/com.termux.boot were both running.
+#
+# The same script also restarts sshd. Observed on y6 (2026-09-28): the phone still
+# answered ping but EVERY port refused — the Termux app was not running, so there
+# was no remote way in at all and the device could only be recovered by hand. A
+# pingable-but-unreachable device is indistinguishable from an offline one.
+#
+# Scope note: this only helps when the device actually REBOOTS. If Android kills
+# the Termux app in place (low-RAM LMK / battery optimisation), Termux:Boot never
+# fires and nothing here runs — the fix for that case is exempting Termux and
+# Termux:Boot from battery optimisation, which _pm2_boot_warnings() reports.
 PM2_BOOT_SCRIPT="$HOME/.termux/boot/start-pm2.sh"
 
 # Warn about the one thing that silently makes the boot script a no-op.
@@ -2832,7 +2842,7 @@ _pm2_boot_warnings() {
     fi
 }
 
-# Write ~/.termux/boot/start-pm2.sh so PM2 restores the saved process list at boot.
+# Write ~/.termux/boot/start-pm2.sh so SSH and PM2 come back at boot.
 # Idempotent: rewrites only when the content actually differs, so a hand edit is
 # preserved until the generated content changes. Pass "silent" to hide progress.
 setup_pm2_boot() {
@@ -2849,7 +2859,7 @@ setup_pm2_boot() {
     local desired
     desired=$(cat <<EOF
 #!$TERMUX_BIN/sh
-# Written by droid-ai-toolkit — restores the saved PM2 process list at boot.
+# Written by droid-ai-toolkit — restores SSH and the saved PM2 process list at boot.
 # Termux:Boot executes every executable file in ~/.termux/boot/ on device boot.
 #
 # This file is MANAGED: opening SERVICES -> PM2 rewrites it whenever the template
@@ -2859,6 +2869,13 @@ setup_pm2_boot() {
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
 export PATH="$TERMUX_BIN:\$PATH"
 cd "\$HOME" 2>/dev/null || true
+
+# Bring SSH back first. Without this the phone answers ping but every port
+# refuses, so the device is unreachable until someone opens Termux by hand and
+# starts sshd. Skipped when sshd is not installed; running it twice is harmless
+# (the second bind fails, which the redirect hides).
+command -v sshd >/dev/null 2>&1 && sshd >/dev/null 2>&1
+
 pm2 resurrect
 EOF
 )
