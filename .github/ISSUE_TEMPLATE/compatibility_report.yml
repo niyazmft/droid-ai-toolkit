@@ -1,0 +1,52 @@
+name: Compatibility report
+description: Report whether a tool version worked or broke on your device
+title: "[Compat] "
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The fastest way to fill this in is from the toolkit
+        itself: **Main Menu → [C] Tested → Report a result**. It prints a
+        ready-to-paste block with your device details, versions and log tail.
+
+        Pasting that block is usually enough. Please do not trim the device line
+        or the log tail — those are what make the report diagnosable.
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      description: Did this version work, or break?
+      options:
+        - It worked — please add it to the tested list
+        - It broke — details below
+        - Partially worked — details below
+    validations:
+      required: true
+
+  - type: input
+    id: tool
+    attributes:
+      label: Tool and version
+      description: Tool name and the version you installed, e.g. "openclaw 2026.9.4"
+      placeholder: openclaw 2026.9.4
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: Toolkit report block
+      description: Paste the block printed by Main Menu → [C] Tested → Report a result
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead. Error messages welcome.
+    validations:
+      required: false
