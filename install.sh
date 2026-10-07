@@ -1073,7 +1073,7 @@ install_openclaw() {
     fi
 
     status_msg "Applying Android patches"
-    apply_patches
+    apply_patches "" openclaw
     success_msg
 
     # Multi-stage legacy-state migration (2026.9.x gates the gateway on it;
@@ -1133,7 +1133,7 @@ install_openclaw() {
                         yes "" | OPENCLAW_SERVICE_REPAIR_POLICY=external OPENCLAW_SUPERVISOR_MODE=external openclaw doctor --fix >> "$LOG_FILE" 2>&1 || true
             success_msg
         fi
-        apply_patches "silent"
+        apply_patches "silent" openclaw
     fi
     
     echo -e "\n${GREEN}OpenClaw successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed") and patched!${NC}"
@@ -1206,17 +1206,118 @@ manage_zulip_plugin() {
 # --- 4.1. PATCH ENGINE ---
 # Modular patch functions: each handles one tool's Android-specific fixes.
 # Called individually or via apply_patches() coordinator.
+#
+# Every patch here edits a file inside the installed package. When upstream
+# renames a chunk or reformats a function, the patch does nothing while the
+# repair still reports success. That is not hypothetical: on OpenClaw 2026.9.8
+# four patches no-op'd exactly that way —
+#   plugin-module-loader-cache-*.js       renamed to *.mjs
+#   doctor-session-sqlite-restore-*.js    removed
+#   openclaw/node_modules/koffi           never created in pnpm's layout
+#   the workspace bootstrap code          moved out of workspace-*.js
+# and the only way that was discovered was by reading the installed files by
+# hand. So patches resolve their target through patch_find_first() and call
+# patch_missing() when it is absent; apply_patches() prints the total at the end.
+PATCH_STALE=()
+
+# patch_find_first <dir> <maxdepth> <glob>... -- first matching file, or empty.
+# Several globs are tried in order, so a chunk upstream renamed from .js to
+# .mjs is still found.
+patch_find_first() {
+    local dir="$1" depth="$2" glob found
+    shift 2
+    [ -d "$dir" ] || return 1
+    for glob in "$@"; do
+        found=$(find "$dir" -maxdepth "$depth" -name "$glob" -print -quit 2>/dev/null)
+        if [ -n "$found" ]; then
+            printf '%s\n' "$found"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# patch_missing <patch-name> <what-it-looked-for> -- record and report loudly.
+# Deliberately noisy: a silently skipped patch is indistinguishable from a
+# working one until the device misbehaves days later.
+patch_missing() {
+    PATCH_STALE+=("$1")
+    warn_msg "$1: target not found — $2"
+    echo -e "   Upstream moved or renamed what this patch edits, so its Android fix is"
+    echo -e "   NOT active on this version. The toolkit needs updating for this release."
+}
+
+# _openclaw_koffi_dir -- locate the koffi package directory.
+# npm installs it at <package>/node_modules/koffi. pnpm does NOT create that
+# path (it hoists into the virtual store), which is why this patch used to no-op
+# on every pnpm install. Resolve it the way Node does, then fall back to the
+# pnpm store.
+_openclaw_koffi_dir() {
+    local candidate resolved store
+    candidate="$OPENCLAW_ROOT/node_modules/koffi"
+    if [ -d "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    if command -v node >/dev/null 2>&1; then
+        resolved=$(node -e "try{process.stdout.write(require('path').dirname(require.resolve('koffi',{paths:['$OPENCLAW_ROOT']})))}catch(e){}" 2>/dev/null)
+        if [ -n "$resolved" ] && [ -d "$resolved" ]; then
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+    fi
+
+    store=$(dirname "$(pnpm_root_g 2>/dev/null)" 2>/dev/null)
+    if [ -n "$store" ] && [ -d "$store" ]; then
+        resolved=$(find "$store" -maxdepth 4 -type d -path '*koffi@*/node_modules/koffi' 2>/dev/null | head -1)
+        if [ -n "$resolved" ] && [ -d "$resolved" ]; then
+            printf '%s\n' "$resolved"
+            return 0
+        fi
+    fi
+
+    return 1
+}
 
 patch_koffi() {
     local silent=$1
-    local KOFFI_SRC="$OPENCLAW_ROOT/node_modules/koffi/lib/native/base/base.cc"
-    [ -f "$KOFFI_SRC" ] || return 0
+    [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
+
+    # Not every release depends on koffi; absence is only a problem when the
+    # package still declares it.
+    if [ -f "$OPENCLAW_ROOT/package.json" ] && ! grep -q '"koffi"' "$OPENCLAW_ROOT/package.json" 2>/dev/null; then
+        return 0
+    fi
+
+    local KOFFI_DIR KOFFI_SRC KOFFI_NODE
+    KOFFI_DIR=$(_openclaw_koffi_dir) || {
+        patch_missing "patch_koffi" "the koffi package (checked package node_modules, Node resolution, and the pnpm store)"
+        return 0
+    }
+    KOFFI_SRC="$KOFFI_DIR/lib/native/base/base.cc"
+    if [ ! -f "$KOFFI_SRC" ]; then
+        patch_missing "patch_koffi" "koffi/lib/native/base/base.cc (koffi layout changed)"
+        return 0
+    fi
 
     local K_TRIPLET="android_armsf"
     [[ "$ARCH_TYPE" == "aarch64" ]] && K_TRIPLET="android_arm64"
-    local KOFFI_NODE="$OPENCLAW_ROOT/node_modules/koffi/build/koffi/$K_TRIPLET/koffi.node"
+    local KOFFI_NODE="$KOFFI_DIR/build/koffi/$K_TRIPLET/koffi.node"
     local verbose_flag=""
     [[ "$silent" == "silent" ]] && verbose_flag="-q"
+
+    # The renameat2 call appears in both of its known forms: koffi 3.1.6+ wraps
+    # it as syscall(SYS_renameat2, dirfd, src, dirfd, dst, rflags) using local
+    # variables, while older releases inlined the arguments. The original single
+    # pattern matched NEITHER, and because a sed that matches nothing looks
+    # exactly like a sed that worked, this stayed broken unnoticed.
+    local SED_PROG='s/renameat2(AT_FDCWD, src_filename, AT_FDCWD, dest_filename, RENAME_NOREPLACE)/rename(src_filename, dest_filename)/g; s/syscall(SYS_renameat2, dirfd, src_filename, dirfd, dest_filename, rflags)/rename(src_filename, dest_filename)/g'
+
+    # Already rewritten (both forms gone) and the binary is built: nothing to do.
+    if ! grep -qE 'renameat2\(AT_FDCWD|syscall\(SYS_renameat2' "$KOFFI_SRC" 2>/dev/null && [ -f "$KOFFI_NODE" ]; then
+        return 0
+    fi
 
     # Skip rebuild if binary exists and is newer than source (saves 30-60s on ARM)
     if [ -f "$KOFFI_NODE" ] && [ "$KOFFI_NODE" -nt "$KOFFI_SRC" ] && [[ "$silent" != "silent" ]]; then
@@ -1225,14 +1326,23 @@ patch_koffi() {
         return 0
     fi
 
+    sed -i "$SED_PROG" "$KOFFI_SRC"
+
     if [[ "$silent" != "silent" ]]; then
-        execute "sed -i 's/renameat2(AT_FDCWD, src_filename, AT_FDCWD, dest_filename, RENAME_NOREPLACE)/rename(src_filename, dest_filename)/g' '$KOFFI_SRC'" "Patching Koffi native library"
-        execute "cd '$OPENCLAW_ROOT/node_modules/koffi' && JOBS=1 MAKEFLAGS='-j1' node src/cnoke/cnoke.js -p . -d src/koffi --prebuild" "Rebuilding Koffi"
+        status_msg "Koffi native library patched"
+        success_msg
+        execute "cd '$KOFFI_DIR' && JOBS=1 MAKEFLAGS='-j1' node src/cnoke/cnoke.js -p . -d src/koffi --prebuild" "Rebuilding Koffi"
         execute "mkdir -p '$K_TRIPLET' && cp 'build/koffi/$K_TRIPLET/koffi.node' '$K_TRIPLET/'" "Mapping Koffi binary"
     else
-        sed -i 's/renameat2(AT_FDCWD, src_filename, AT_FDCWD, dest_filename, RENAME_NOREPLACE)/rename(src_filename, dest_filename)/g' "$KOFFI_SRC"
-        (cd "$OPENCLAW_ROOT/node_modules/koffi" && JOBS=1 MAKEFLAGS='-j1' node src/cnoke/cnoke.js -p . -d src/koffi --prebuild $verbose_flag) 2>/dev/null || true
+        (cd "$KOFFI_DIR" && JOBS=1 MAKEFLAGS='-j1' node src/cnoke/cnoke.js -p . -d src/koffi --prebuild $verbose_flag) 2>/dev/null || true
         mkdir -p "$K_TRIPLET" && cp "build/koffi/$K_TRIPLET/koffi.node" "$K_TRIPLET/" 2>/dev/null || true
+    fi
+
+    # Verify by effect. Check the CALL, not the bare word: 'SYS_renameat2' also
+    # appears in the "#if defined(SYS_renameat2)" guard, which is not a call
+    # site and would make this report a false failure.
+    if grep -qE 'renameat2\(AT_FDCWD|syscall\(SYS_renameat2' "$KOFFI_SRC" 2>/dev/null; then
+        patch_missing "patch_koffi" "the renameat2 syscall in koffi base.cc (upstream changed the call or its arguments)"
     fi
 }
 
@@ -1244,14 +1354,43 @@ patch_gemini_cli() {
     if [[ "$silent" != "silent" ]]; then
         status_msg "Patching Gemini CLI for Android"
     fi
-    local _gp
+
+    # This is Gemini's OWN fix, not OpenClaw's: Android returns ENOENT for
+    # rename() across mount points, so the registry write becomes copy+unlink.
+    # Only projectRegistry.js inside the Gemini package is touched.
+    local _gp _file found=0 patched=0 already=0
     IFS=':' read -ra _gpaths <<< "$_gemini_paths"
     for _gp in "${_gpaths[@]}"; do
         [ -d "$_gp" ] || continue
-        find -L "$_gp" -maxdepth 6 -type f -name "projectRegistry.js" -exec sed -i 's|await fs.promises.rename(\([^,]*\), \([^)]*\))|await fs.promises.copyFile(\1, \2); await fs.promises.unlink(\1)|g' {} + 2>/dev/null || true
+        while IFS= read -r _file; do
+            [ -f "$_file" ] || continue
+            if grep -q 'droid-ai-toolkit: gemini rename' "$_file" 2>/dev/null; then
+                already=$((already + 1))
+                continue
+            fi
+            grep -q 'fs\.promises\.rename(' "$_file" 2>/dev/null || continue
+            found=$((found + 1))
+            cp "$_file" "${_file}.bak" 2>/dev/null || true
+            if sed -i 's|await fs\.promises\.rename(\([^,]*\), \([^)]*\))|await fs.promises.copyFile(\1, \2); await fs.promises.unlink(\1); /* droid-ai-toolkit: gemini rename */|g' "$_file" 2>/dev/null \
+                && grep -q 'droid-ai-toolkit: gemini rename' "$_file" 2>/dev/null; then
+                patched=$((patched + 1))
+            else
+                cp "${_file}.bak" "$_file" 2>/dev/null || true
+            fi
+        done < <(find -L "$_gp" -maxdepth 6 -type f -name 'projectRegistry.js' 2>/dev/null)
     done
-    if [[ "$silent" != "silent" ]]; then
-        success_msg
+
+    # Verify by effect, exactly like the OpenClaw patches: the previous code ran
+    # `sed ... || true` and then reported success unconditionally, so a Gemini
+    # layout or formatting change would silently leave ENOENT in place.
+    if [ "$patched" -eq 0 ] && [ "$already" -eq 0 ]; then
+        patch_missing "patch_gemini_cli" "projectRegistry.js with an 'await fs.promises.rename(...)' call under the global node paths ($found candidate file(s))"
+    elif [[ "$silent" != "silent" ]]; then
+        if [ "$patched" -gt 0 ]; then
+            success_msg "Patched $patched file(s)"
+        else
+            success_msg "Already patched"
+        fi
     fi
 }
 
@@ -1333,29 +1472,24 @@ patch_paperclip() {
 patch_openclaw_registerhooks() {
     local silent=$1
     [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
-
-    # Use glob since the cache-buster hash changes between versions
-    local TARGET
-    TARGET=$(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'plugin-module-loader-cache-*.js' -print -quit 2>/dev/null)
-    [ -n "$TARGET" ] && [ -f "$TARGET" ] || return 0
-
-    if [[ "$silent" != "silent" ]]; then
-        status_msg "Patching OpenClaw registerHooks for Android/Node 24"
-    fi
-
-    # Check if already patched
     command -v python3 >/dev/null 2>&1 || return 0
 
-    # Use glob since the cache-buster hash changes between versions
-    local TARGET
-    TARGET=$(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'plugin-module-loader-cache-*.js' -print -quit 2>/dev/null)
-    [ -n "$TARGET" ] && [ -f "$TARGET" ] || return 0
-
-    # Idempotency: the rename is content-based; a re-run finds nothing to match
-    if grep -q 'registerHooksX?.(' "$TARGET" 2>/dev/null; then
-        if [[ "$silent" != "silent" ]]; then
-            success_msg "Already patched"
+    # The call site is bundled into several chunks, not just the cache chunk:
+    # 2026.9.8 had it in five dist files. Patching only the cache chunk left the
+    # other four able to hit the Node 24 deadlock, so patch every chunk that
+    # still contains the unpatched call. Also fixes the .js -> .mjs rename, which
+    # a '*.js' glob could never match.
+    local candidates
+    candidates=$(grep -rl 'registerHooks?\.(' "$OPENCLAW_ROOT/dist" 2>/dev/null | grep -v '\.bak$')
+    if [ -z "$candidates" ]; then
+        if grep -rq 'registerHooksX?\.(' "$OPENCLAW_ROOT/dist" 2>/dev/null; then
+            if [[ "$silent" != "silent" ]]; then
+                success_msg "Already patched"
+            fi
+            return 0
         fi
+        patch_missing "patch_openclaw_registerhooks" \
+            "'.registerHooks?.(' in any dist chunk (this patch prevents a Node 24 gateway deadlock on Android)"
         return 0
     fi
 
@@ -1363,7 +1497,10 @@ patch_openclaw_registerhooks() {
         status_msg "Patching OpenClaw registerHooks for Android/Node 24"
     fi
 
-    cp "$TARGET" "${TARGET}.bak" 2>/dev/null || true
+    local patched=0
+    while IFS= read -r TARGET; do
+        [ -f "$TARGET" ] || continue
+        cp "$TARGET" "${TARGET}.bak" 2>/dev/null || true
 
     # Rename registerHooks -> registerHooksX so the optional-chained call
     # short-circuits (the module hooks API deadlocks the Node 24 gateway on
@@ -1384,14 +1521,21 @@ open(path, "w", encoding="utf-8", errors="replace").write(data)
 print(f"renamed {count} registerHooks call(s)")
 PYOCR
     then
-        if [[ "$silent" != "silent" ]]; then
-            success_msg
-        fi
+        patched=$((patched + 1))
     else
-        # Non-fatal: newer OpenClaw may have fixed the deadlock upstream
+        # Pattern missing: upstream reformatted the call. Restore the file and
+        # report — this patch prevents a Node 24 gateway deadlock on Android, so
+        # quietly skipping it is how a hung gateway looks like a mystery.
         cp "${TARGET}.bak" "$TARGET" 2>/dev/null || true
-        if [[ "$silent" != "silent" ]]; then
-            warn_msg "registerHooks pattern not matched (upstream changed) — verify gateway startup manually"
+        patch_missing "patch_openclaw_registerhooks" "'.registerHooks?.(' inside $(basename "$TARGET") (call site reformatted upstream)"
+    fi
+    done < <(printf '%s\n' "$candidates")
+
+    if [[ "$silent" != "silent" ]]; then
+        if [ "$patched" -gt 0 ]; then
+            success_msg "Patched $patched file(s)"
+        else
+            success_msg "Already patched"
         fi
     fi
 }
@@ -1447,10 +1591,20 @@ patch_openclaw_sqlite_archive() {
     [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
     command -v python3 >/dev/null 2>&1 || return 0
 
-    # Glob since the chunk hash changes between versions
+    # Target the chunk that actually carries the publication machinery. The
+    # original name (doctor-session-sqlite-restore-*.js) was REMOVED upstream —
+    # in 2026.9.8 the code lives in the sqlite worker chunks and no longer
+    # matches this patch's exact-string patterns. Say so rather than pretending
+    # the hardlink problem is fixed: without it `openclaw doctor` fails with
+    # "EACCES: permission denied, link ...database.sqlite".
     local TARGET
-    TARGET=$(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'doctor-session-sqlite-restore-*.js' -print -quit 2>/dev/null)
-    [ -n "$TARGET" ] && [ -f "$TARGET" ] || return 0
+    TARGET=$(patch_find_first "$OPENCLAW_ROOT/dist" 1 \
+        'doctor-session-sqlite-restore-*.js' 'doctor-session-sqlite-restore-*.mjs')
+    if [ -z "$TARGET" ]; then
+        patch_missing "patch_openclaw_sqlite_archive" \
+            "dist/doctor-session-sqlite-restore-* (removed upstream; the publication code moved to the sqlite worker chunks, so this patch's patterns need rewriting for 2026.9.8)"
+        return 0
+    fi
 
     # Idempotency marker embedded by the patch below
     if grep -q 'droid-ai-toolkit: Android hardlink copy fallback' "$TARGET" 2>/dev/null; then
@@ -1894,12 +2048,17 @@ patch_openclaw_workspace_bootstrap() {
         status_msg "Patching OpenClaw workspace bootstrap for Android"
     fi
 
-    local patched=0
+    local patched=0 seen=0
     local TARGET
+    # Search by CONTENT, not by name: 2026.9.8 moved the bootstrap publication
+    # code out of workspace-*.js. The old name-based glob therefore found
+    # nothing, patched nothing, and reported "Already patched or not applicable"
+    # — a false success. The unpatched pattern is the filter instead.
     while IFS= read -r TARGET; do
         [ -f "$TARGET" ] || continue
         grep -q 'fs.linkSync(staging.path, targetPath)' "$TARGET" 2>/dev/null || continue
         grep -q 'droid-ai-toolkit: bootstrap copy fallback' "$TARGET" 2>/dev/null && continue
+        seen=$((seen + 1))
         cp "$TARGET" "${TARGET}.bak" 2>/dev/null || true
         if python3 - "$TARGET" <<'PYOCBS'
 import shutil, sys
@@ -1931,36 +2090,80 @@ PYOCBS
         then
             patched=$((patched + 1))
         else
-            # Non-fatal: newer OpenClaw may have changed the publication code
             cp "${TARGET}.bak" "$TARGET" 2>/dev/null || true
-            if [[ "$silent" != "silent" ]]; then
-                warn_msg "workspace bootstrap pattern not matched (upstream changed) — onboarding may fail on Android"
-            fi
+            patch_missing "patch_openclaw_workspace_bootstrap" \
+                "the publication pattern inside $(basename "$TARGET") (upstream changed it)"
         fi
-    done < <(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'workspace-*.js' 2>/dev/null)
+    done < <(grep -rl 'staging.path' "$OPENCLAW_ROOT/dist" 2>/dev/null)
 
-    if [[ "$silent" != "silent" ]]; then
+    if [ "$patched" -eq 0 ] && [ "$seen" -eq 0 ]; then
+        patch_missing "patch_openclaw_workspace_bootstrap" \
+            "the workspace bootstrap publication code (fs.linkSync(staging.path, targetPath)) — it is no longer in any dist chunk, so onboarding may fail on Android"
+    elif [[ "$silent" != "silent" ]]; then
         if [ "$patched" -gt 0 ]; then
             success_msg "Patched $patched file(s)"
         else
-            success_msg "Already patched or not applicable"
+            success_msg "Already patched"
         fi
     fi
 }
 
 # Thin coordinator: invokes all patch modules.
+# apply_patches [silent] [scope]
+#
+# scope limits a repair to one tool's own files. Without it, repairing OpenClaw
+# also rewrote Gemini's projectRegistry.js and Paperclip's sources, and repairing
+# Paperclip rewrote OpenClaw's — a repair could touch a tool the user was not
+# repairing. Defaults to "all" for an explicit re-apply-everything.
+#   all (default) | openclaw | gemini | paperclip
 apply_patches() {
     local silent=$1
-    patch_koffi "$silent"
-    patch_gemini_cli "$silent"
-    patch_paperclip "$silent"
-    patch_openclaw_tmp "$silent"
-    patch_openclaw_registerhooks "$silent"
-    patch_openclaw_links "$silent"
-    patch_openclaw_sqlite_archive "$silent"
-    patch_openclaw_pid_platform "$silent"
+    local scope="${2:-all}"
+    PATCH_STALE=()
+
+    # PM2's pidusage fix lives in pm2's own files, so it is shared machinery
+    # rather than a tool's code: apply it for every scope.
     patch_pm2_pidusage "$silent"
-    patch_openclaw_workspace_bootstrap "$silent"
+
+    case "$scope" in
+        gemini)
+            patch_gemini_cli "$silent"
+            ;;
+        paperclip)
+            patch_paperclip "$silent"
+            ;;
+        openclaw)
+            patch_koffi "$silent"
+            patch_openclaw_tmp "$silent"
+            patch_openclaw_registerhooks "$silent"
+            patch_openclaw_links "$silent"
+            patch_openclaw_sqlite_archive "$silent"
+            patch_openclaw_pid_platform "$silent"
+            patch_openclaw_workspace_bootstrap "$silent"
+            ;;
+        all|*)
+            patch_koffi "$silent"
+            patch_gemini_cli "$silent"
+            patch_paperclip "$silent"
+            patch_openclaw_tmp "$silent"
+            patch_openclaw_registerhooks "$silent"
+            patch_openclaw_links "$silent"
+            patch_openclaw_sqlite_archive "$silent"
+            patch_openclaw_pid_platform "$silent"
+            patch_openclaw_workspace_bootstrap "$silent"
+            ;;
+    esac
+
+    # Patches that found nothing to edit are the single most misleading failure
+    # mode in this script: the repair reports success while an Android fix is
+    # simply absent. Always name them, even in silent mode.
+    if [ "${#PATCH_STALE[@]}" -gt 0 ]; then
+        echo ""
+        warn_msg "${#PATCH_STALE[@]} Android patch(es) did NOT apply: ${PATCH_STALE[*]}"
+        echo -e "   Those fixes are inactive on this version. Either upstream moved the"
+        echo -e "   code (the toolkit needs updating) or the patch is no longer needed."
+        echo -e "   See ${BLUE}COMPATIBILITY.md${NC}."
+    fi
 }
 
 # --- 5. PI CODING AGENT INSTALLATION ---
@@ -2982,7 +3185,7 @@ install_paperclip() {
     if [ "$mode" == "repair" ]; then
         echo -e "\n${BLUE}Repairing Paperclip...${NC}"
         status_msg "Re-applying Android patches"
-        apply_patches
+        apply_patches "" paperclip
         success_msg
 
         status_msg "Checking PostgreSQL"
