@@ -169,6 +169,91 @@ pnpm_root_g() {
     echo "$_CACHED_PNPM_ROOT"
 }
 
+# --- TWO-PHASE GLOBAL INSTALL (for low-memory devices) ---
+# `pnpm add -g` resolves the dependency graph, fetches and links in ONE process.
+# On a low-RAM device that peak is more than Android will tolerate: the process
+# gets SIGKILLed part-way through and the install never completes. Splitting it
+# works, because each half is affordable on its own.
+#
+# Measured on a 1.8 GB 32-bit Android 9 device (a 496-package global project):
+#   single-process pnpm add -g   -> killed, 4 attempts, never reached "added 1"
+#   phase 1  --lockfile-only     -> 496 packages resolved in 21.6s, no kill
+#   phase 2  --frozen-lockfile   -> completed in 5m48s
+#
+# Two details are load-bearing:
+#   * `--package-import-method=hardlink` when the filesystem allows it. Copying
+#     the tree instead balloons the page cache, which is what drives the kill.
+#   * phase 2 must run against a WARM virtual store. From an empty store it still
+#     dies, so this makes upgrades viable; a first-time install on such a device
+#     remains a gamble.
+
+# pnpm_global_project_dir -- the global pnpm project that owns `-g` packages
+pnpm_global_project_dir() {
+    local root
+    root=$(pnpm_root_g)
+    [ -n "$root" ] || return 1
+    dirname "$root"
+}
+
+# _fs_supports_hardlink <dir> -- can pnpm hardlink store entries into the project?
+_fs_supports_hardlink() {
+    local dir="$1" a b
+    [ -d "$dir" ] || return 1
+    a="$dir/.toolkit-hardlink-probe-$$"
+    b="$a-link"
+    : > "$a" 2>/dev/null || return 1
+    if ln "$a" "$b" 2>/dev/null; then
+        rm -f "$a" "$b"
+        return 0
+    fi
+    rm -f "$a"
+    return 1
+}
+
+# pnpm_set_global_dep <name> <spec> -- set one dependency in the global manifest
+pnpm_set_global_dep() {
+    local name="$1" spec="$2" dir manifest tmp
+    dir=$(pnpm_global_project_dir) || return 1
+    manifest="$dir/package.json"
+    [ -f "$manifest" ] || printf '{\n\t"dependencies": {}\n}\n' > "$manifest"
+    tmp=$(mktemp)
+    if jq --arg n "$name" --arg s "$spec" \
+        '.dependencies = ((.dependencies // {}) + {($n): $s})' \
+        "$manifest" > "$tmp"; then
+        mv "$tmp" "$manifest"
+    else
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+# pnpm_install_frozen <name> <spec> -- resolve first, then install from the lockfile
+pnpm_install_frozen() {
+    local name="$1" spec="$2" dir import_flag="" resolved
+    dir=$(pnpm_global_project_dir) || return 1
+
+    # Turn a moving dist-tag into a concrete version so the manifest stays
+    # reproducible (`^2026.9.8`) instead of recording `latest` forever.
+    if [ "$spec" = "latest" ] || [ -z "$spec" ]; then
+        resolved=$(npm view "$name" version 2>/dev/null | tail -1)
+        [ -n "$resolved" ] && spec="^${resolved}"
+    fi
+
+    if _fs_supports_hardlink "$(pnpm_root_g)"; then
+        import_flag="--package-import-method=hardlink"
+    fi
+
+    pnpm_set_global_dep "$name" "$spec" || return 1
+
+    execute "cd '$dir' && pnpm install --lockfile-only --ignore-scripts" \
+        "Resolving the dependency graph (phase 1/2 — cheap, no download or linking)" || return 1
+
+    # confirmModulesPurge is answered non-interactively: without it pnpm blocks on
+    # a prompt, and a detached/background run hits EOF and aborts.
+    execute "cd '$dir' && printf 'y\ny\n' | pnpm install --frozen-lockfile --ignore-scripts --child-concurrency=1 --network-concurrency=1 $import_flag --config.confirmModulesPurge=false" \
+        "Installing from the resolved lockfile (phase 2/2 — no resolution needed)"
+}
+
 get_global_node_path() {
     local node_path="$PREFIX/lib/node_modules"
     if command -v pnpm >/dev/null 2>&1; then
@@ -708,6 +793,20 @@ install_openclaw() {
             _oc_prev_dir="${OPENCLAW_ROOT}.prev-$$"
         fi
 
+        # The two-phase pnpm install rewrites the global manifest and lockfile, so
+        # snapshot them too: a failed upgrade should leave no half-applied
+        # dependency change behind either (learned the hard way on the y6).
+        local _oc_prev_manifest="" _oc_prev_lock="" _oc_global_dir=""
+        if [ "$PKG_MANAGER" != "npm" ]; then
+            _oc_global_dir=$(pnpm_global_project_dir 2>/dev/null || true)
+            if [ -n "$_oc_global_dir" ] && [ -d "$_oc_global_dir" ]; then
+                _oc_prev_manifest=$(mktemp)
+                _oc_prev_lock=$(mktemp)
+                cp "$_oc_global_dir/package.json" "$_oc_prev_manifest" 2>/dev/null || _oc_prev_manifest=""
+                cp "$_oc_global_dir/pnpm-lock.yaml" "$_oc_prev_lock" 2>/dev/null || _oc_prev_lock=""
+            fi
+        fi
+
         echo -e "${YELLOW}Replacing the OpenClaw installation:${NC}"
         echo -e "  - the installed package is deleted first, then downloaded again"
         echo -e "  - if that download is killed or fails, the previous version is restored"
@@ -724,7 +823,12 @@ install_openclaw() {
         if [ "$PKG_MANAGER" == "npm" ]; then
             execute "npm install -g openclaw@${target_version}" "Installing OpenClaw ${target_version} via npm" && _oc_installed=1
         else
-            execute "pnpm add -g openclaw@${target_version} --force --ignore-scripts" "Installing OpenClaw ${target_version} via pnpm" && _oc_installed=1
+            # Two-phase install instead of `pnpm add -g`: on a low-RAM device the
+            # combined resolve+fetch+link peak is what Android kills. See
+            # pnpm_install_frozen for the measurements.
+            echo -e "   Keep ${GREEN}Termux in the foreground${NC} until this finishes — Android kills"
+            echo -e "   background downloads on low-RAM devices."
+            pnpm_install_frozen "openclaw" "${target_version}" && _oc_installed=1
         fi
 
         # A low-memory kill surfaces as a plain non-zero exit, so the only
@@ -732,8 +836,16 @@ install_openclaw() {
         # `command -v openclaw` alone is not enough: the launcher shim survives even
         # when the package behind it does not (that was exactly the y6 failure).
         if [ "$_oc_installed" -eq 0 ] || ! openclaw --version >/dev/null 2>&1; then
-            warn_msg "OpenClaw did not install cleanly (an Android low-memory kill is the usual cause)"
-            echo -e "   Restoring the previous version so the device keeps working."
+            warn_msg "The upgrade did not complete (Android killed the install — the usual cause on low-RAM devices)"
+            echo -e "   Restoring the previous version and its dependency files so the device keeps working."
+            if [ -n "$_oc_global_dir" ]; then
+                if [ -n "$_oc_prev_manifest" ] && [ -f "$_oc_prev_manifest" ]; then
+                    cp "$_oc_prev_manifest" "$_oc_global_dir/package.json" 2>/dev/null || true
+                fi
+                if [ -n "$_oc_prev_lock" ] && [ -f "$_oc_prev_lock" ]; then
+                    cp "$_oc_prev_lock" "$_oc_global_dir/pnpm-lock.yaml" 2>/dev/null || true
+                fi
+            fi
             if [ -n "$_oc_prev_link" ]; then
                 mkdir -p "$(dirname "$OPENCLAW_ROOT")"
                 ln -sfn "$_oc_prev_link" "$OPENCLAW_ROOT"
@@ -742,8 +854,10 @@ install_openclaw() {
                 mv "$_oc_prev_dir" "$OPENCLAW_ROOT"
             fi
             if openclaw --version >/dev/null 2>&1; then
-                success_msg "Rolled back to $(openclaw --version 2>/dev/null | head -1) — OpenClaw is unchanged."
-                echo -e "   Free some memory (close other apps) and re-run the update to try again."
+                success_msg "Rolled back to $(openclaw --version 2>/dev/null | head -1) — nothing changed."
+                echo -e "   Nothing on this device was modified. Retry when more memory is free."
+                echo -e "   If it keeps dying, update the capability packages first: see"
+                echo -e "   ${BLUE}COMPATIBILITY.md${NC} (this device's class may not be able to install the newer tree)."
             else
                 error_msg "Rollback failed — this device is left without a working OpenClaw."
                 if [ -n "$_oc_prev_link" ]; then
