@@ -90,9 +90,31 @@ status_msg() { echo -ne "\r${CLEAR_LINE}${BLUE}==>${NC} $1... "; }
 error_msg() { echo -e "\n${RED}Error:${NC} $1"; }
 success_msg() { echo -e "${GREEN}Done.${NC}"; }
 warn_msg() { echo -e "\r${CLEAR_LINE}${YELLOW}Warning:${NC} $1"; }
+# Press-Enter prompt: used after every action and every informational screen.
+#
+# The keypress is read from the CONTROLLING TERMINAL, never from stdin. The
+# documented launch is `curl -sSL .../install.sh | bash`, where stdin IS the
+# script itself: a plain `read` there either returns instantly without waiting
+# (so the prompt flashes past and you never see it) or swallows a line of the
+# script. Reading /dev/tty is correct under `bash install.sh` and `curl | bash`
+# alike.
+#
+# There is deliberately no timer — the message stays until Enter is pressed.
+# With no terminal at all (cron, non-interactive ssh) there is nobody to press
+# it, so the read fails immediately and the wait is skipped rather than blocking
+# forever.
 wait_to_continue() {
-    echo -ne "\n${BLUE}>>${NC} Press Enter to continue (or wait 3s)..."
-    read -t 3 -r junk 2>/dev/null || true
+    echo -ne "\n${BLUE}>>${NC} Press Enter to continue..."
+    # Open the terminal as fd 3, and probe it inside a group so the failure is
+    # silent. Bash applies redirections left to right, so
+    # `exec 3</dev/tty 2>/dev/null` reports the failed open to the ORIGINAL
+    # stderr before 2>/dev/null takes effect — printing
+    # "/dev/tty: Device not configured" once per screen on a headless run.
+    # The group is not a subshell, so fd 3 stays open for the read below.
+    if { exec 3</dev/tty; } 2>/dev/null; then
+        read -r junk <&3 || true
+        exec 3<&-
+    fi
     echo ""
 }
 
