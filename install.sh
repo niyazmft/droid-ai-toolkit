@@ -1659,112 +1659,96 @@ patch_openclaw_links() {
 # (fs.link, nlink===2 assertions) which Android/Termux blocks with EACCES.
 # Patch the defining module (doctor-session-sqlite-restore-*.js) so the
 # migration falls back to a timestamp-preserving copy when link() is refused.
+# OpenClaw publishes SQLite snapshots with a hardlink and falls back to a copy
+# when the filesystem rejects hardlinks. That fallback exists upstream but never
+# fires on Android: HARDLINK_FALLBACK_CODES lists EPERM/EXDEV/ENOTSUP/EOPNOTSUPP/
+# ENOSYS, and Android returns EACCES for hardlinks. So `openclaw doctor` fails:
+#   SQLite database cannot be snapshotted safely: ... EACCES: permission denied,
+#   link '.../.sqlite-snapshot-*/database.sqlite' -> '.../.sqlite-publish-*/...'
+#
+# The fix is one error code. Earlier revisions carried three large string
+# rewrites aimed at a chunk that no longer exists
+# (doctor-session-sqlite-restore-*.js); the real defect is the missing code, in a
+# set that is duplicated across several bundled chunks — so this patches every
+# chunk that still has the unpatched set, and verifies by effect.
+#
+# Known limit: publish paths that pass strategy:"link-required" still throw on any
+# link failure, by upstream design. Adding EACCES covers the snapshot/publication
+# path doctor uses; those callers need their own handling.
 patch_openclaw_sqlite_archive() {
     local silent=$1
     [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
     command -v python3 >/dev/null 2>&1 || return 0
 
-    # Target the chunk that actually carries the publication machinery. The
-    # original name (doctor-session-sqlite-restore-*.js) was REMOVED upstream —
-    # in 2026.9.8 the code lives in the sqlite worker chunks and no longer
-    # matches this patch's exact-string patterns. Say so rather than pretending
-    # the hardlink problem is fixed: without it `openclaw doctor` fails with
-    # "EACCES: permission denied, link ...database.sqlite".
-    local TARGET
-    TARGET=$(patch_find_first "$OPENCLAW_ROOT/dist" 1 \
-        'doctor-session-sqlite-restore-*.js' 'doctor-session-sqlite-restore-*.mjs')
-    if [ -z "$TARGET" ]; then
-        patch_missing "patch_openclaw_sqlite_archive" \
-            "dist/doctor-session-sqlite-restore-* (removed upstream; the publication code moved to the sqlite worker chunks, so this patch's patterns need rewriting for 2026.9.8)"
-        return 0
-    fi
+    local DIST="$OPENCLAW_ROOT/dist"
+    [ -d "$DIST" ] || return 0
 
-    # Idempotency marker embedded by the patch below
-    if grep -q 'droid-ai-toolkit: Android hardlink copy fallback' "$TARGET" 2>/dev/null; then
+    # Upstream's set as emitted, and the patched form. Fixed-string matching
+    # throughout: the text contains backticks and a glob, hence SC2016 below —
+    # the backticks are upstream's template literals, not command substitution.
+    # shellcheck disable=SC2016
+    local unpatched='HARDLINK_FALLBACK_CODES=/* @__PURE__ */ new Set([`EPERM`,`EXDEV`,`ENOTSUP`,`EOPNOTSUPP`,`ENOSYS`])'
+    # shellcheck disable=SC2016
+    local patched='HARDLINK_FALLBACK_CODES=/* @__PURE__ */ new Set([`EPERM`,`EACCES`,`EXDEV`,`ENOTSUP`,`EOPNOTSUPP`,`ENOSYS`])'
+
+    local targets already=0
+    targets=$(grep -rlF "$unpatched" "$DIST" 2>/dev/null | grep -v '\.bak$')
+    already=$(grep -rlF "$patched" "$DIST" 2>/dev/null | grep -vc '\.bak$')
+
+    if [ -z "$targets" ]; then
+        if [ "$already" -gt 0 ]; then
+            if [[ "$silent" != "silent" ]]; then
+                success_msg "Already patched ($already chunk(s))"
+            fi
+            return 0
+        fi
+        patch_missing "patch_openclaw_sqlite_archive" \
+            "HARDLINK_FALLBACK_CODES in the bundled chunks (upstream changed the set — doctor's SQLite snapshot will keep failing with EACCES on Android)"
         return 0
     fi
 
     if [[ "$silent" != "silent" ]]; then
-        status_msg "Patching OpenClaw SQLite archive hardlinks for Android"
+        status_msg "Patching OpenClaw hardlink fallback for Android (EACCES)"
     fi
 
-    cp "$TARGET" "${TARGET}.bak" 2>/dev/null || true
-
-    if python3 - "$TARGET" <<'PYOCARC'
+    local patched_n=0 f
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        cp "$f" "${f}.bak" 2>/dev/null || true
+        if python3 - "$f" "$unpatched" "$patched" <<'PYOCARC'
 import sys
 
-path = sys.argv[1]
-data = open(path, encoding="utf-8").read()
-
-old1 = ("function sameMigrationArtifact(left, right) {\n"
-        "\treturn left.dev === right.dev && left.ino === right.ino && left.mtimeNs === right.mtimeNs && left.size === right.size && left.sha256 === right.sha256;\n"
-        "}")
-new1 = ("function sameMigrationArtifact(left, right) {\n"
-        "\treturn left.size === right.size && left.sha256 === right.sha256;\n"
-        "}")
-
-old2 = ("\t\tif (!sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath), expected)) throw new Error(\"artifact changed before publication\");\n"
-        "\t\tconst published = await publishFileExclusive({\n"
-        "\t\t\tsourcePath,\n"
-        "\t\t\ttargetPath,\n"
-        "\t\t\texpectedSourceIdentity: {\n"
-        "\t\t\t\tdev: BigInt(expected.dev),\n"
-        "\t\t\t\tino: BigInt(expected.ino)\n"
-        "\t\t\t},\n"
-        "\t\t\tstrategy: \"link-required\",\n"
-        "\t\t\tonSyncFailure: \"preserve\"\n"
-        "\t\t});\n"
-        "\t\trequireDirectorySync(published.directorySync, \"Recovery artifact publication\");")
-new2 = ("\t\tif (!sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath), expected)) throw new Error(\"artifact changed before publication\");\n"
-        "\t\ttry {\n"
-        "\t\t\tconst published = await publishFileExclusive({\n"
-        "\t\t\t\tsourcePath,\n"
-        "\t\t\t\ttargetPath,\n"
-        "\t\t\t\texpectedSourceIdentity: {\n"
-        "\t\t\t\t\tdev: BigInt(expected.dev),\n"
-        "\t\t\t\t\tino: BigInt(expected.ino)\n"
-        "\t\t\t\t},\n"
-        "\t\t\t\tstrategy: \"link-required\",\n"
-        "\t\t\t\tonSyncFailure: \"preserve\"\n"
-        "\t\t\t});\n"
-        "\t\t\trequireDirectorySync(published.directorySync, \"Recovery artifact publication\");\n"
-        "\t\t} catch (publishError) { /* droid-ai-toolkit: Android hardlink copy fallback */\n"
-        "\t\t\tif (fs.lstatSync(targetPath, { bigint: true, throwIfNoEntry: false })) {\n"
-        "\t\t\t\trequireDirectorySync(await syncDirectory(path.dirname(targetPath)), \"Recovery artifact publication\");\n"
-        "\t\t\t} else {\n"
-        "\t\t\t\tconst sourceStat = fs.lstatSync(sourcePath, { bigint: true });\n"
-        "\t\t\t\tfs.copyFileSync(sourcePath, targetPath);\n"
-        "\t\t\t\ttry {\n"
-        "\t\t\t\t\tfs.utimesSync(targetPath, new Date(Number(sourceStat.atimeMs)), new Date(Number(sourceStat.mtimeMs)));\n"
-        "\t\t\t\t} catch {}\n"
-        "\t\t\t\trequireDirectorySync(await syncDirectory(path.dirname(targetPath)), \"Recovery artifact publication\");\n"
-        "\t\t\t}\n"
-        "\t\t}")
-
-old3 = "\tif (!target.isFile() || !source.isFile() || target.dev !== source.dev || target.ino !== source.ino || source.nlink !== 2n || !sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath, 2n), expected) || !sameMigrationArtifact(readMigrationArtifactIdentity(targetPath, 2n), expected)) throw new Error(\"publication paths changed or have unexpected aliases\");"
-new3 = ("\tif (target.dev === source.dev && target.ino === source.ino) {\n"
-        "\t\tif (!target.isFile() || source.nlink !== 2n || !sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath, 2n), expected) || !sameMigrationArtifact(readMigrationArtifactIdentity(targetPath, 2n), expected)) throw new Error(\"publication paths changed or have unexpected aliases\");\n"
-        "\t} else if (!target.isFile() || !source.isFile() || !sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath, 1n), expected) || !sameMigrationArtifact(readMigrationArtifactIdentity(targetPath, 1n), expected)) throw new Error(\"publication paths changed or have unexpected aliases\");")
-
-for name, old, new in (("sameMigrationArtifact", old1, new1), ("moveMigrationArtifact", old2, new2), ("assertMigrationArtifactPublication", old3, new3)):
-    if old not in data or data.count(old) != 1:
-        sys.exit("pattern not found or not unique: " + name)
-    data = data.replace(old, new)
-
-open(path, "w", encoding="utf-8").write(data)
+path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+data = open(path, encoding="utf-8", errors="replace").read()
+count = data.count(old)
+if count < 1:
+    sys.exit("fallback set not found")
+data = data.replace(old, new)
+open(path, "w", encoding="utf-8", errors="replace").write(data)
+print("patched %d set(s)" % count)
 PYOCARC
-    then
-        if [[ "$silent" != "silent" ]]; then
-            success_msg
+        then
+            # Verify by effect: a replacement that did not land must not be
+            # reported as success.
+            if grep -qF "$patched" "$f" 2>/dev/null; then
+                patched_n=$((patched_n + 1))
+            else
+                cp "${f}.bak" "$f" 2>/dev/null || true
+            fi
+        else
+            cp "${f}.bak" "$f" 2>/dev/null || true
         fi
-    else
-        # Non-fatal: without the patch the session import fails at the archive
-        # step on Android; user data is untouched (import validates first).
-        cp "${TARGET}.bak" "$TARGET" 2>/dev/null || true
+    done < <(printf '%s\n' "$targets")
+
+    if [ "$patched_n" -gt 0 ]; then
         if [[ "$silent" != "silent" ]]; then
-            warn_msg "OpenClaw SQLite archive patch did not match this version — session migration may need manual 'openclaw doctor --session-sqlite import'"
+            success_msg "Patched $patched_n chunk(s)"
         fi
+        return 0
     fi
+
+    patch_missing "patch_openclaw_sqlite_archive" \
+        "HARDLINK_FALLBACK_CODES in the bundled chunks (replacement did not verify; $already already-patched)"
 }
 
 # Multi-stage legacy-state migration for OpenClaw 2026.9.x on Android/Termux.
@@ -1989,78 +1973,97 @@ PYOCEA
 # On Android/Termux process.platform is "android", so getProcessStartTime()
 # returns null and cron ticks fail every 2s with "cron run cannot acquire a
 # durable fence without process start identity". Accept both platforms.
+# Android IS Linux-like for /proc purposes, but Node on Termux reports
+# process.platform === "android", so every guard written as
+# `process.platform !== "linux"` silently disables process-identity parsing.
+# Visible consequences on device:
+#   - cron runs fail with "cannot acquire a durable fence without process start
+#     identity";
+#   - agent-database leases are written with owner_start_time = null, after which
+#     `openclaw doctor` cannot prove the owner is dead and refuses to enter
+#     maintenance ("an agent database is in use") permanently — even with no
+#     OpenClaw process running.
+#
+# The guard is duplicated across many bundled chunks: 2026.9.8 carried it in 46
+# files while the previous version of this patch covered 3 hardcoded paths, so
+# dist/state/openclaw-state-lease-heartbeat.worker.js and
+# dist/state/openclaw-state-read.worker.js were never fixed. This patches every
+# chunk that still has the unpatched guard, and verifies by effect.
+#
+# Only the NEGATIVE guard is rewritten. Positive `process.platform === "linux"`
+# checks are genuine Linux-only feature detection (systemd, libc, native
+# identity) and must stay false on Android.
 patch_openclaw_pid_platform() {
     local silent=$1
     [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
 
-    if [[ "$silent" != "silent" ]]; then
-        status_msg "Patching OpenClaw process-identity for Android platform"
-    fi
+    local DIST="$OPENCLAW_ROOT/dist"
+    [ -d "$DIST" ] || return 0
 
-    local patched=0
+    # The readable and the minified (backtick) spelling of the same guard.
+    # shellcheck disable=SC2016
+    local guard='process\.platform !== "linux"|process\.platform!==`linux`'
 
-    # worker.mjs (minified runtime; stable file name, minified var names may
-    # change between versions — non-fatal if the exact bytes are not found).
-    # Single quotes below are intentional: the sed patterns must keep the
-    # literal backticks used by upstream's template literals.
-    local WM="$OPENCLAW_ROOT/dist/worker/worker.mjs"
-    if [ -f "$WM" ]; then
-        # shellcheck disable=SC2016
-        if grep -q 'process.platform!==`android`' "$WM" 2>/dev/null; then
-            : # already patched
-        else
-            cp "$WM" "${WM}.bak" 2>/dev/null || true
-            # shellcheck disable=SC2016
-            sed -i 's#function getProcessStartTime(Ot){if(!isValidPid(Ot)||process.platform!==`linux`)return null;#function getProcessStartTime(Ot){if(!isValidPid(Ot)||\(process.platform!==`linux`\&\&process.platform!==`android`\))return null;#; s#function isZombieProcess(Ot){if(process.platform!==`linux`)return!1;#function isZombieProcess(Ot){if(process.platform!==`linux`\&\&process.platform!==`android`)return!1;#' "$WM" 2>/dev/null || true
-            # shellcheck disable=SC2016
-            if grep -q 'process.platform!==`android`' "$WM" 2>/dev/null; then
-                patched=$((patched + 1))
-            else
-                cp "${WM}.bak" "$WM" 2>/dev/null || true
-                if [[ "$silent" != "silent" ]]; then
-                    warn_msg "worker.mjs process-identity pattern not matched (upstream changed); cron may tick-fail — re-check patch"
-                fi
-            fi
-        fi
-    fi
-
-    # pid-alive chunk (readable; CLI/cron path). 2026.9.1 ships pid-alive-*.js;
-    # 2026.9.3 renamed it to pid-alive-*.mjs — match both extensions.
-    local PA
-    # shellcheck disable=SC2044
-    for PA in $(find "$OPENCLAW_ROOT/dist" -maxdepth 1 \( -name 'pid-alive-*.js' -o -name 'pid-alive-*.mjs' \) 2>/dev/null); do
-        [ -f "$PA" ] || continue
-        grep -q 'process.platform !== "linux" && process.platform !== "android"' "$PA" 2>/dev/null && continue
-        cp "$PA" "${PA}.bak" 2>/dev/null || true
-        if sed -i 's#if (!isValidPid(pid) || process.platform !== "linux") return null;#if (!isValidPid(pid) || (process.platform !== "linux" \&\& process.platform !== "android")) return null;#; s#if (process.platform !== "linux") return false;#if (process.platform !== "linux" \&\& process.platform !== "android") return false;#' "$PA" 2>/dev/null \
-            && grep -q 'process.platform !== "linux" && process.platform !== "android"' "$PA" 2>/dev/null; then
-            patched=$((patched + 1))
-        else
-            cp "${PA}.bak" "$PA" 2>/dev/null || true
-        fi
-    done
-
-    # managed-handoff-runtime.mjs (2026.9.3+: its own getProcessStartTime copy
-    # for the handoff/CLI path — same linux-only guard)
-    local MH
-    MH=$(find "$OPENCLAW_ROOT/dist" -maxdepth 1 -name 'managed-handoff-runtime.mjs' -print -quit 2>/dev/null)
-    if [ -n "$MH" ] && [ -f "$MH" ] && ! grep -q 'process.platform !== "linux" && process.platform !== "android"' "$MH" 2>/dev/null; then
-        cp "$MH" "${MH}.bak" 2>/dev/null || true
-        if sed -i 's#if (!isValidPid(pid) || process.platform !== "linux") return null;#if (!isValidPid(pid) || (process.platform !== "linux" \&\& process.platform !== "android")) return null;#' "$MH" 2>/dev/null \
-            && grep -q 'process.platform !== "linux" && process.platform !== "android"' "$MH" 2>/dev/null; then
-            patched=$((patched + 1))
-        else
-            cp "${MH}.bak" "$MH" 2>/dev/null || true
-        fi
+    local targets
+    targets=$(grep -rlE "$guard" "$DIST" 2>/dev/null | grep -v '\.bak$')
+    if [ -z "$targets" ]; then
+        patch_missing "patch_openclaw_pid_platform" \
+            "the process-identity guard (process.platform !== \"linux\") in the bundled chunks"
+        return 0
     fi
 
     if [[ "$silent" != "silent" ]]; then
-        if [ "$patched" -gt 0 ]; then
-            success_msg "Patched $patched file(s)"
-        else
-            success_msg "Already patched"
-        fi
+        status_msg "Patching OpenClaw process-identity for Android (all chunks)"
     fi
+
+    local patched_n=0 guards=0 f out
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        cp "$f" "${f}.bak" 2>/dev/null || true
+        # The lookahead matters: the patched text still CONTAINS the bare guard
+        # as a substring, so a plain count would never reach zero and this could
+        # not be both idempotent and verifiable.
+        out=$(python3 - "$f" <<'PYOCPID'
+import re
+import sys
+
+path = sys.argv[1]
+data = open(path, encoding="utf-8", errors="replace").read()
+
+dq = re.compile(r'process\.platform !== "linux"(?! && process\.platform !== "android")')
+bt = re.compile(r'process\.platform!==`linux`(?!&&process\.platform!==`android`)')
+found = len(dq.findall(data)) + len(bt.findall(data))
+if found == 0:
+    # Matched by the grep but nothing left to change (the guard appears only
+    # inside an already-patched form). Report 0 quietly rather than exiting with
+    # a message, which the shell would surface as noise for every such file.
+    print(0)
+    sys.exit(0)
+
+data = dq.sub('(process.platform !== "linux" && process.platform !== "android")', data)
+data = bt.sub('(process.platform!==`linux`&&process.platform!==`android`)', data)
+open(path, "w", encoding="utf-8", errors="replace").write(data)
+print(found)
+PYOCPID
+        )
+        if [ -n "$out" ] && [ "$out" -gt 0 ] 2>/dev/null; then
+            patched_n=$((patched_n + 1))
+            guards=$((guards + out))
+        else
+            cp "${f}.bak" "$f" 2>/dev/null || true
+        fi
+    done < <(printf '%s\n' "$targets")
+
+    if [ "$patched_n" -gt 0 ]; then
+        if [[ "$silent" != "silent" ]]; then
+            success_msg "Patched $patched_n chunk(s), $guards guard(s)"
+        fi
+        return 0
+    fi
+
+    patch_missing "patch_openclaw_pid_platform" \
+        "the process-identity guard in the bundled chunks (replacement did not verify)"
 }
 
 # PM2's pidusage stats poller warns on every poll on Android:
