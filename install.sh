@@ -35,6 +35,41 @@ N8N_SERVICE_DIR="$PREFIX/var/service/n8n"
 PAPERCLIP_SERVICE_DIR="$PREFIX/var/service/paperclip"
 TERMUX_BIN="$PREFIX/bin"
 
+# --- COMPATIBILITY: TESTED-VERSION MANIFEST (single source of truth) ---
+# Upstream versions this toolkit has been verified against on a real device.
+# "unknown" means it has never been verified and renders as "-" in the docs.
+#
+# Nothing here is enforced at install time. It is a statement of what has been
+# tested, plus a pointer for users to report back either way. Update a value the
+# day you confirm that version on a device.
+#
+# scripts/gen_compat.py renders COMPATIBILITY.md from this block, and
+# `pnpm run lint:compat` fails if the doc drifts from it. Edit it HERE only.
+COMPAT_UPDATED="2026-10-05"
+REPORT_URL="https://github.com/niyazmft/droid-ai-toolkit/issues/new?template=compatibility_report.yml"
+# Verified *environments*, not device models. A model name tells a stranger
+# nothing and reads as "only these phones are supported"; the class (arch,
+# Android version, RAM band) is what someone can map onto their own device.
+# Model names belong in user reports — the report block prints them, which is
+# diagnostic data, not a claim about what has been tested.
+#
+# Architecture is per-environment, so there is deliberately no single
+# TESTED_ARCH: the two test devices differ (one 32-bit ARM, one 64-bit).
+# Fields within an entry are comma-separated; entries are separated by `|`.
+#
+# Keep the highest verified version per tool. `scripts/gen_compat.py --adopt
+# <ssh-host>` will not downgrade a recorded value (the y6 pi must not overwrite
+# the newer 8x pi).
+TESTED_ENVS="armv8l (32-bit), Android 9 (API 28), 1.8 GB RAM | aarch64 (64-bit), Android 10 (API 29), 3.6 GB RAM"
+TESTED_OPENCLAW="2026.9.3"
+TESTED_HERMES="0.20.0"
+TESTED_GEMINI="0.43.0"
+TESTED_PI="0.80.3"
+TESTED_OLLAMA="0.31.1"
+TESTED_N8N="unknown"
+TESTED_PAPERCLIP="unknown"
+TESTED_NANOBOT="unknown"
+
 # Force correct npm path and bypass platform checks for LanceDB (Android support)
 export npm_execpath="$TERMUX_BIN/npm"
 export npm_config_force=true
@@ -69,6 +104,155 @@ _running_indicator() {
     else
         echo "${RED}(stopped)${NC}"
     fi
+}
+
+# --- COMPATIBILITY HELPERS ---
+# The toolkit states which upstream versions it was tested against; it does not
+# enforce them. A user on a different version is asked to report back, which is
+# how the tested list (and COMPATIBILITY.md) gets updated.
+
+# compat_tested <key> -- tested upstream version for a tool key, or "unknown"
+compat_tested() {
+    case "$1" in
+        openclaw)  echo "$TESTED_OPENCLAW" ;;
+        hermes)    echo "$TESTED_HERMES" ;;
+        gemini)    echo "$TESTED_GEMINI" ;;
+        pi)        echo "$TESTED_PI" ;;
+        ollama)    echo "$TESTED_OLLAMA" ;;
+        n8n)       echo "$TESTED_N8N" ;;
+        paperclip) echo "$TESTED_PAPERCLIP" ;;
+        nanobot)   echo "$TESTED_NANOBOT" ;;
+        *)         echo "unknown" ;;
+    esac
+}
+
+# _first_semver <text> -- first x.y.z found in a version banner
+_first_semver() {
+    printf '%s' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
+
+# compat_installed <key> -- installed version, or "" when absent/unreadable
+compat_installed() {
+    local out=""
+    case "$1" in
+        openclaw) out=$(command -v openclaw >/dev/null 2>&1 && openclaw --version 2>/dev/null) ;;
+        gemini)   out=$(command -v gemini   >/dev/null 2>&1 && gemini   --version 2>/dev/null) ;;
+        pi)       out=$(command -v pi       >/dev/null 2>&1 && pi       --version 2>/dev/null) ;;
+        n8n)      out=$(command -v n8n      >/dev/null 2>&1 && n8n      --version 2>/dev/null) ;;
+        ollama)   out=$(command -v ollama   >/dev/null 2>&1 && ollama   --version 2>/dev/null) ;;
+        nanobot)  out=$(command -v nanobot  >/dev/null 2>&1 && nanobot  --version 2>/dev/null) ;;
+        hermes)   [ -x "$TERMUX_BIN/hermes" ] && out=$("$TERMUX_BIN/hermes" --version 2>/dev/null) ;;
+        *)        out="" ;;
+    esac
+    _first_semver "$out"
+}
+
+# device_env -- this device's environment class, for side-by-side comparison
+# with the tested list. Never used in a claim; only shown to the user.
+device_env() {
+    local android api mem
+    android=$(getprop ro.build.version.release 2>/dev/null || true)
+    api=$(getprop ro.build.version.sdk 2>/dev/null || true)
+    mem=$(awk '/^MemTotal/{printf "%.1f", $2/1048576}' /proc/meminfo 2>/dev/null || true)
+    echo "Android ${android:-?} (API ${api:-?}) / ${mem:-?} GB RAM / ${ARCH_TYPE}"
+}
+
+# compat_line <key> -- one-line status to print under a tool menu
+compat_line() {
+    local tested installed
+    tested=$(compat_tested "$1")
+    installed=$(compat_installed "$1")
+    [ "$tested" = "unknown" ] && tested="not recorded"
+    if [ -n "$installed" ]; then
+        echo "tested ${tested}  |  installed ${installed}"
+    else
+        echo "tested ${tested}  |  not installed"
+    fi
+}
+
+# compat_after_install <key> -- report-back prompt when a version differs
+compat_after_install() {
+    local key="$1" tested installed
+    tested=$(compat_tested "$key")
+    installed=$(compat_installed "$key")
+    [ -z "$installed" ] && return 0
+    if [ "$tested" = "unknown" ]; then
+        echo -e "   ${YELLOW}Not in the tested list yet.${NC} If ${key} ${installed} works, say so — that records it for everyone:"
+        echo -e "   ${BLUE}${REPORT_URL}${NC}"
+    elif [ "$installed" != "$tested" ]; then
+        echo -e "\n   ${YELLOW}Untested version:${NC} ${key} ${installed} (tested: ${tested})"
+        echo -e "   Works, or breaks? Either answer updates the list: ${BLUE}${REPORT_URL}${NC}"
+    fi
+}
+
+# show_report_block [key] [result] [detail] -- paste-ready compatibility report
+show_report_block() {
+    local key="${1:-none}" result="${2:-unknown}" detail="${3:-}"
+    local tested installed model android mem disk
+    tested=$(compat_tested "$key")
+    installed=$(compat_installed "$key")
+    model=$(getprop ro.product.model 2>/dev/null || true)
+    android=$(getprop ro.build.version.release 2>/dev/null || true)
+    mem=$(awk '/^MemTotal/{printf "%.1f", $2/1048576}' /proc/meminfo 2>/dev/null || true)
+    disk=$(df -h "$HOME" 2>/dev/null | awk 'NR==2{print $4}' || true)
+    echo ""
+    echo -e "${MAGENTA}--- copy from here into your report ---${NC}"
+    echo ""
+    echo "Toolkit:  v${VERSION}"
+    echo "Device:   ${model:-?} / ${ARCH_TYPE} / Android ${android:-?} / ${mem:-?} GB RAM / ${disk:-?} free"
+    echo "Tool:     ${key} (installed: ${installed:-none}, tested: ${tested})"
+    echo "Result:   ${result}"
+    [ -n "$detail" ] && echo "Detail:   ${detail}"
+    echo ""
+    echo "Log tail:"
+    if [ -f "$LOG_FILE" ]; then tail -n 15 "$LOG_FILE"; else echo "  (no log)"; fi
+    echo ""
+    echo -e "${MAGENTA}--- end of report ---${NC}"
+    echo ""
+    echo -e "Paste it at: ${BLUE}${REPORT_URL}${NC}"
+    echo -e "${YELLOW}If a newer version worked for you, report that too — it updates the tested list.${NC}"
+}
+
+# _compat_table_render -- the compatibility table as text, for whiptail_msg.
+# Must NOT be printed straight to stdout: show_whi_menu clears the screen, which
+# is why a raw `echo` table vanished behind the gum title box.
+_compat_table_render() {
+    local key tested installed
+    echo -e "${BLUE}Compatibility — versions this toolkit was tested against${NC}"
+    echo -e "${YELLOW}Last updated: ${COMPAT_UPDATED}${NC}"
+    echo -e "${YELLOW}Verified environments: ${TESTED_ENVS//|/ ·}${NC}"
+    echo -e "${BLUE}This device:         $(device_env)${NC}"
+    echo ""
+    printf '  %-11s %-14s %-14s\n' "TOOL" "TESTED" "INSTALLED"
+    printf '  %-11s %-14s %-14s\n' "-----------" "------------" "------------"
+    for key in openclaw hermes nanobot gemini pi ollama n8n paperclip; do
+        tested=$(compat_tested "$key")
+        installed=$(compat_installed "$key")
+        [ "$tested" = "unknown" ] && tested="-"
+        [ -z "$installed" ] && installed="-"
+        printf '  %-11s %-14s %-14s\n' "$key" "$tested" "$installed"
+    done
+    echo ""
+    echo -e "${YELLOW}A version different from the tested one is untested.${NC}"
+    echo "Report either outcome (works or breaks) and the list gets updated for everyone."
+}
+
+# menu_compat -- tested versions, and the report path
+menu_compat() {
+    local choice menu_exit
+    while true; do
+        whiptail_msg "$(_compat_table_render)" auto
+
+        menu_exit=0
+        choice=$(show_whi_menu "Compatibility  |  Use ↑/↓ and Enter" \
+            "REPORT" "Report a result — print a paste-ready report" \
+            "BACK"   "<--  BACK TO MAIN MENU") || menu_exit=$?
+        [ $menu_exit -ne 0 ] && return
+        case "$choice" in
+            REPORT) show_report_block "none" "problem" "symptom / which tool"; wait_to_continue ;;
+            BACK|*) return ;;
+        esac
+    done
 }
 
 ensure_deps() {
@@ -509,13 +693,22 @@ whiptail_confirm() {
 # msgbox <text>
 whiptail_msg() {
     local text="$1"
+    # Second arg: fixed box height, or "auto" to size to the message and clamp
+    # to the terminal. "auto" exists for multi-line tables (the compatibility
+    # screen); the default stays 8 so existing callers are unchanged.
+    local height="${2:-8}"
+    if [ "$height" = "auto" ]; then
+        height=$(( $(printf '%s\n' "$text" | wc -l) + 4 ))
+        [ "$height" -lt 8 ] && height=8
+    fi
+    [ "${WHI_ROWS:-0}" -gt 0 ] && [ "$height" -gt "$WHI_ROWS" ] && height="$WHI_ROWS"
     if command -v gum >/dev/null 2>&1; then
         echo ""
         gum style --border normal --border-foreground 212 --padding "1 2" "$text"
         echo -n "Press Enter to continue..."
         read -r
     else
-        whiptail --title "Notice" --msgbox "$text" 8 "$WHI_COLS" 3>&1 1>&2 2>&3
+        whiptail --title "Notice" --msgbox "$text" "$height" "$WHI_COLS" 3>&1 1>&2 2>&3
     fi
 }
 
@@ -616,6 +809,8 @@ check_termux() {
 install_openclaw() {
     local mode="repair"
     local target_version="latest"
+
+    echo -e "${YELLOW}Compatibility:${NC} $(compat_line openclaw)\n"
 
     if is_installed "openclaw"; then
         local choice
@@ -753,6 +948,7 @@ install_openclaw() {
                     echo -e "   The previous install was kept at: ${BLUE}$_oc_prev_dir${NC}"
                 fi
             fi
+            show_report_block openclaw "install failed" "pnpm/npm install did not produce a working CLI (rollback state above)"
             return 1
         fi
 
@@ -828,6 +1024,7 @@ install_openclaw() {
     
     echo -e "\n${GREEN}OpenClaw successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed") and patched!${NC}"
     health_check "OpenClaw" "command -v openclaw" || true
+    compat_after_install openclaw
     echo -e "\n${YELLOW}NEXT STEPS:${NC}"
     echo -e "1. Run ${GREEN}openclaw onboard${NC} to configure your API keys."
     echo -e "2. Select ${BLUE}SERVICES${NC} -> ${BLUE}PM2${NC} (Recommended) or ${BLUE}Native Services${NC} to configure background services."
@@ -3499,6 +3696,10 @@ ${GREEN}UTILITIES${NC}  — Developer tools
   Ollama      Local LLM runner for ARM devices
   GCP Bridge  SSH tunnel to expose n8n publicly
 
+${GREEN}COMPAT${NC}    — Version compatibility
+  Tested      Which upstream versions this toolkit was verified against,
+              and a paste-ready report if your version differs
+
 ${GREEN}SERVICES${NC}   — Background process management
   PM2         Recommended process manager
   Native      Termux native services (sv)
@@ -3518,6 +3719,7 @@ while true; do
         "UTILITIES"  "Developer    — Gemini CLI, Pi, Ollama, GCP Bridge" \
         "SERVICES"   "Background   — PM2, Native Services" \
         ""           "" \
+        "COMPAT"     "[C]  Tested    — Versions verified & how to report" \
         "UNINSTALL"  "Uninstall    — Remove Tools & Reset" \
         "HELP"       "[?]  Help      — What each tool does" \
         ""           "" \
@@ -3528,6 +3730,7 @@ while true; do
         WORKFLOWS)  menu_workflows ;;
         UTILITIES)  menu_utilities ;;
         SERVICES)   menu_services ;;
+        COMPAT)     menu_compat ;;
         UNINSTALL)  menu_uninstall ;;
         HELP)       menu_help ;;
         EXIT|*)     exit 0 ;;
