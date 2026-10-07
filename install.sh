@@ -88,7 +88,18 @@ _HAS_JQ=$(command -v jq 2>/dev/null || true)
 
 status_msg() { echo -ne "\r${CLEAR_LINE}${BLUE}==>${NC} $1... "; }
 error_msg() { echo -e "\n${RED}Error:${NC} $1"; }
-success_msg() { echo -e "${GREEN}Done.${NC}"; }
+# Prints "Done." with no argument, or the given message when there is one.
+# Sixteen call sites already pass a message (patch counts, rollback outcome,
+# migration results) and were having it silently discarded because this function
+# ignored its argument — so "Rolled back to X — nothing changed" reached the user
+# as a bare "Done.".
+success_msg() {
+    if [ -n "$1" ]; then
+        echo -e "${GREEN}$1${NC}"
+    else
+        echo -e "${GREEN}Done.${NC}"
+    fi
+}
 warn_msg() { echo -e "\r${CLEAR_LINE}${YELLOW}Warning:${NC} $1"; }
 # Press-Enter prompt: used after every action and every informational screen.
 #
@@ -1171,6 +1182,11 @@ install_openclaw() {
     echo -e "2. Select ${BLUE}SERVICES${NC} -> ${BLUE}PM2${NC} (Recommended) or ${BLUE}Native Services${NC} to configure background services."
     echo -e "\n${RED}DO NOT USE 'openclaw update'${NC}"
     echo -e "   This will break patches. Select ${BLUE}AGENTS${NC} -> ${BLUE}OpenClaw${NC} from the main menu to update."
+    echo -e "\n${RED}DO NOT USE 'openclaw doctor --fix'${NC}"
+    echo -e "   It cannot take gateway ownership on Android (there is no systemd), so it fails"
+    echo -e "   and can hang. Use ${BLUE}AGENTS${NC} -> ${BLUE}OpenClaw${NC} -> ${BLUE}[R] Repair${NC} for state migrations instead."
+    echo -e "   These subcommands DO work here (handled before the broken step):"
+    echo -e "   ${GREEN}openclaw doctor --session-sqlite import${NC}  /  ${GREEN}openclaw doctor --state-sqlite${NC}"
     wait_to_continue
 }
 
@@ -1271,7 +1287,8 @@ patch_missing() {
     PATCH_STALE+=("$1")
     warn_msg "$1: target not found — $2"
     echo -e "   Upstream moved or renamed what this patch edits, so its Android fix is"
-    echo -e "   NOT active on this version. The toolkit needs updating for this release."
+    echo -e "   NOT active here. This is a gap in the toolkit for this release, not"
+    echo -e "   something that can be fixed on the device — see the summary below."
 }
 
 # _openclaw_koffi_dir -- locate the koffi package directory.
@@ -2017,15 +2034,17 @@ patch_openclaw_pid_platform() {
         status_msg "Patching OpenClaw process-identity for Android (all chunks)"
     fi
 
-    local patched_n=0 guards=0 f out
+    local patched_n=0 guards=0 already_n=0 f out
     while IFS= read -r f; do
         [ -f "$f" ] || continue
-        cp "$f" "${f}.bak" 2>/dev/null || true
-        # The lookahead matters: the patched text still CONTAINS the bare guard
-        # as a substring, so a plain count would never reach zero and this could
-        # not be both idempotent and verifiable.
+        # One python call per file does the edit AND reports which of three
+        # states it is in. The lookahead matters: the patched text still CONTAINS
+        # the bare guard as a substring, so a plain count can never reach zero.
+        # Without distinguishing "already patched" from "no match", a second
+        # repair reported this patch as failed even though it had succeeded.
         out=$(python3 - "$f" <<'PYOCPID'
 import re
+import shutil
 import sys
 
 path = sys.argv[1]
@@ -2034,25 +2053,29 @@ data = open(path, encoding="utf-8", errors="replace").read()
 dq = re.compile(r'process\.platform !== "linux"(?! && process\.platform !== "android")')
 bt = re.compile(r'process\.platform!==`linux`(?!&&process\.platform!==`android`)')
 found = len(dq.findall(data)) + len(bt.findall(data))
-if found == 0:
-    # Matched by the grep but nothing left to change (the guard appears only
-    # inside an already-patched form). Report 0 quietly rather than exiting with
-    # a message, which the shell would surface as noise for every such file.
-    print(0)
-    sys.exit(0)
 
-data = dq.sub('(process.platform !== "linux" && process.platform !== "android")', data)
-data = bt.sub('(process.platform!==`linux`&&process.platform!==`android`)', data)
-open(path, "w", encoding="utf-8", errors="replace").write(data)
-print(found)
+if found:
+    shutil.copy(path, path + ".bak")
+    data = dq.sub('(process.platform !== "linux" && process.platform !== "android")', data)
+    data = bt.sub('(process.platform!==`linux`&&process.platform!==`android`)', data)
+    open(path, "w", encoding="utf-8", errors="replace").write(data)
+    print("patched:%d" % found)
+elif 'process.platform !== "android"' in data or 'process.platform!==`android`' in data:
+    print("already")
+else:
+    print("none")
 PYOCPID
         )
-        if [ -n "$out" ] && [ "$out" -gt 0 ] 2>/dev/null; then
-            patched_n=$((patched_n + 1))
-            guards=$((guards + out))
-        else
-            cp "${f}.bak" "$f" 2>/dev/null || true
-        fi
+        case "$out" in
+            patched:*)
+                patched_n=$((patched_n + 1))
+                guards=$((guards + ${out#patched:}))
+                ;;
+            already)
+                already_n=$((already_n + 1))
+                ;;
+            *) : ;;
+        esac
     done < <(printf '%s\n' "$targets")
 
     if [ "$patched_n" -gt 0 ]; then
@@ -2062,8 +2085,17 @@ PYOCPID
         return 0
     fi
 
+    # Nothing rewritten because it was already done: report that, rather than
+    # raising a failure on every repair after the first.
+    if [ "$already_n" -gt 0 ]; then
+        if [[ "$silent" != "silent" ]]; then
+            success_msg "Already patched ($already_n chunk(s))"
+        fi
+        return 0
+    fi
+
     patch_missing "patch_openclaw_pid_platform" \
-        "the process-identity guard in the bundled chunks (replacement did not verify)"
+        "the process-identity guard in the bundled chunks"
 }
 
 # PM2's pidusage stats poller warns on every poll on Android:
@@ -2232,13 +2264,17 @@ apply_patches() {
 
     # Patches that found nothing to edit are the single most misleading failure
     # mode in this script: the repair reports success while an Android fix is
-    # simply absent. Always name them, even in silent mode.
+    # simply absent. Always name them, even in silent mode — and say what the
+    # user can actually do, because "the toolkit needs updating" is not an action
+    # a user can take.
     if [ "${#PATCH_STALE[@]}" -gt 0 ]; then
         echo ""
         warn_msg "${#PATCH_STALE[@]} Android patch(es) did NOT apply: ${PATCH_STALE[*]}"
-        echo -e "   Those fixes are inactive on this version. Either upstream moved the"
-        echo -e "   code (the toolkit needs updating) or the patch is no longer needed."
-        echo -e "   See ${BLUE}COMPATIBILITY.md${NC}."
+        echo -e "   Those fixes are inactive on this OpenClaw version. Everything else keeps"
+        echo -e "   working, and this is a toolkit-side gap — there is nothing to change here."
+        echo -e "   Reporting it is what gets the patch updated for this release:"
+        echo -e "   ${BLUE}${REPORT_URL}${NC}"
+        echo -e "   Known issues, and the commands that still work: ${BLUE}COMPATIBILITY.md${NC}."
     fi
 }
 

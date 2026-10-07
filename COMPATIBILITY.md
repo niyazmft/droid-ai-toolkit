@@ -90,6 +90,31 @@ it again — but say so if a newer version fixed it.
   patch accepts both. If you still see it, the patch did not match your build —
   please report.
 
+#### `openclaw doctor --fix` cannot run here — what to use instead
+
+It fails **by design**: its first step takes *maintenance ownership* of the
+gateway by stopping and restarting it through a system service manager. Android
+has neither systemd nor launchd, so ownership can never be verified — and it can
+hang if the gateway is still running. Decline it if an in-chat agent offers to
+run it.
+
+That does not leave a functionality gap. Every state-changing repair the doctor
+performs has an equivalent that works here:
+
+| Doctor repair | What to use instead |
+| :--- | :--- |
+| Workspace / session / exec-approvals migration | Automatic — **AGENTS → OpenClaw → [R] Repair** |
+| Database schema migrations | Automatic — the gateway applies them at startup |
+| Config normalization | Automatic — gateway at load; the installer's config step |
+| Session SQLite repair or compact | `openclaw doctor --session-sqlite dry-run\|import\|compact` |
+| State SQLite compact | `openclaw doctor --state-sqlite` |
+| Advisory health notes | Cosmetic — no action needed |
+
+The `--session-sqlite` and `--state-sqlite` subcommands are handled by the CLI
+*before* the broken maintenance step, so they run fine on Android. If a future
+release adds a repair this toolkit does not cover yet, prefer its dedicated
+subcommand over the full `--fix`.
+
 ### After any toolkit update
 
 - **The heap cap can be reset.** An update can restore the default Node memory
