@@ -847,9 +847,11 @@ execute() {
     # Ensure spinner dies if user hits Ctrl+C — print context before aborting
     trap 'echo -e "\n${YELLOW}Interrupted by user.${NC}"; kill $spinner_pid 2>/dev/null; rm -f "$tmp_log"; exit 1' INT TERM
     
-    # Run command and capture exit code
+    # Run the command in a subshell so a `cd` inside it cannot leak into later
+    # steps (the koffi patch's `cd` used to relocate every following command,
+    # which is how a stray directory appeared inside the installed package).
     local exit_code=0
-    eval "$cmd" > "$tmp_log" 2>&1 || exit_code=$?
+    ( eval "$cmd" ) > "$tmp_log" 2>&1 || exit_code=$?
     
     # Stop spinner & cleanup trap
     kill $spinner_pid 2>/dev/null || true
@@ -865,7 +867,10 @@ execute() {
     else
         printf "\r${CLEAR_LINE}${BLUE}==>${NC} %s ${RED}Failed!${NC}\n" "$msg"
         echo -e "\n${RED}Error details for this step:${NC}"
-        tail -n 15 "$LOG_FILE"
+        # Tail THIS step's output. Tailing the whole log showed the previous
+        # step's error instead, so a later failure looked like a repeat of the
+        # earlier one (two "Failed!" blocks, identical stack traces).
+        tail -n 15 "$tmp_log"
         echo -e "\n${YELLOW}Full log available at: $LOG_FILE${NC}"
         return $exit_code
     fi
@@ -1274,30 +1279,41 @@ patch_missing() {
 # path (it hoists into the virtual store), which is why this patch used to no-op
 # on every pnpm install. Resolve it the way Node does, then fall back to the
 # pnpm store.
+# _openclaw_koffi_dir -- locate the koffi package directory.
+# Prefer what Node actually resolves. An installed tree can hold a STALE virtual
+# store: the y6 kept koffi@3.1.6 in global/5/.pnpm while openclaw actually used
+# koffi@3.3.1 from global/5/node_modules/.pnpm. Patching the stale copy changes a
+# package nothing loads, which is worse than not patching at all.
 _openclaw_koffi_dir() {
-    local candidate resolved store
+    local candidate resolved store_dir
     candidate="$OPENCLAW_ROOT/node_modules/koffi"
     if [ -d "$candidate" ]; then
         printf '%s\n' "$candidate"
         return 0
     fi
 
+    # Resolve from the package directory. NB: require.resolve's `paths` option
+    # does NOT find this (verified on device: returns nothing) while resolving
+    # with the package as cwd does — so cd, do not pass paths.
     if command -v node >/dev/null 2>&1; then
-        resolved=$(node -e "try{process.stdout.write(require('path').dirname(require.resolve('koffi',{paths:['$OPENCLAW_ROOT']})))}catch(e){}" 2>/dev/null)
+        resolved=$(cd "$OPENCLAW_ROOT" 2>/dev/null && node -e "try{process.stdout.write(require('path').dirname(require.resolve('koffi')))}catch(e){}" 2>/dev/null)
         if [ -n "$resolved" ] && [ -d "$resolved" ]; then
             printf '%s\n' "$resolved"
             return 0
         fi
     fi
 
-    store=$(dirname "$(pnpm_root_g 2>/dev/null)" 2>/dev/null)
-    if [ -n "$store" ] && [ -d "$store" ]; then
-        resolved=$(find "$store" -maxdepth 4 -type d -path '*koffi@*/node_modules/koffi' 2>/dev/null | head -1)
+    # Fallback search: the LIVE store first (sibling of the package), then the
+    # legacy location. Highest version wins so a stale lower version cannot be
+    # chosen over the live one.
+    for store_dir in "$(dirname "$OPENCLAW_ROOT")/.pnpm" "$(dirname "$(dirname "$OPENCLAW_ROOT")")/.pnpm"; do
+        [ -d "$store_dir" ] || continue
+        resolved=$(find "$store_dir" -maxdepth 4 -type d -path '*koffi@*/node_modules/koffi' 2>/dev/null | sort -V | tail -1)
         if [ -n "$resolved" ] && [ -d "$resolved" ]; then
             printf '%s\n' "$resolved"
             return 0
         fi
-    fi
+    done
 
     return 1
 }
@@ -1312,9 +1328,9 @@ patch_koffi() {
         return 0
     fi
 
-    local KOFFI_DIR KOFFI_SRC KOFFI_NODE
+    local KOFFI_DIR KOFFI_SRC
     KOFFI_DIR=$(_openclaw_koffi_dir) || {
-        patch_missing "patch_koffi" "the koffi package (checked package node_modules, Node resolution, and the pnpm store)"
+        patch_missing "patch_koffi" "the koffi package (checked the package's node_modules, Node resolution, and the live pnpm store)"
         return 0
     }
     KOFFI_SRC="$KOFFI_DIR/lib/native/base/base.cc"
@@ -1323,49 +1339,84 @@ patch_koffi() {
         return 0
     fi
 
-    local K_TRIPLET="android_armsf"
-    [[ "$ARCH_TYPE" == "aarch64" ]] && K_TRIPLET="android_arm64"
-    local KOFFI_NODE="$KOFFI_DIR/build/koffi/$K_TRIPLET/koffi.node"
-    local verbose_flag=""
-    [[ "$silent" == "silent" ]] && verbose_flag="-q"
+    # koffi has used three spellings for this call across versions:
+    #   renameat2(AT_FDCWD, src_filename, AT_FDCWD, dest_filename, RENAME_NOREPLACE)
+    #   syscall(SYS_renameat2, dirfd, src_filename, dirfd, dest_filename, rflags)   (3.1.6)
+    #   syscall(__NR_renameat2, dirfd, src_filename, dirfd, dest_filename, rflags)  (3.3.1)
+    # Android's kernel rejects renameat2 + RENAME_NOREPLACE here, so it becomes a
+    # plain rename(). The original single pattern matched NONE of these — and a
+    # sed that matches nothing is indistinguishable from one that worked.
+    local call_re='renameat2\(AT_FDCWD|syscall\((SYS|__NR)_renameat2'
+    local sed_prog='s/renameat2(AT_FDCWD, src_filename, AT_FDCWD, dest_filename, RENAME_NOREPLACE)/rename(src_filename, dest_filename)/g; s/syscall(SYS_renameat2, dirfd, src_filename, dirfd, dest_filename, rflags)/rename(src_filename, dest_filename)/g; s/syscall(__NR_renameat2, dirfd, src_filename, dirfd, dest_filename, rflags)/rename(src_filename, dest_filename)/g'
 
-    # The renameat2 call appears in both of its known forms: koffi 3.1.6+ wraps
-    # it as syscall(SYS_renameat2, dirfd, src, dirfd, dst, rflags) using local
-    # variables, while older releases inlined the arguments. The original single
-    # pattern matched NEITHER, and because a sed that matches nothing looks
-    # exactly like a sed that worked, this stayed broken unnoticed.
-    local SED_PROG='s/renameat2(AT_FDCWD, src_filename, AT_FDCWD, dest_filename, RENAME_NOREPLACE)/rename(src_filename, dest_filename)/g; s/syscall(SYS_renameat2, dirfd, src_filename, dirfd, dest_filename, rflags)/rename(src_filename, dest_filename)/g'
+    local native_bin
+    native_bin=$(find "$KOFFI_DIR" -name 'koffi.node' 2>/dev/null | head -1)
 
-    # Already rewritten (both forms gone) and the binary is built: nothing to do.
-    if ! grep -qE 'renameat2\(AT_FDCWD|syscall\(SYS_renameat2' "$KOFFI_SRC" 2>/dev/null && [ -f "$KOFFI_NODE" ]; then
+    # Source already rewritten and a newer binary exists: nothing to do.
+    if ! grep -qE "$call_re" "$KOFFI_SRC" 2>/dev/null && [ -n "$native_bin" ] && [ "$native_bin" -nt "$KOFFI_SRC" ]; then
         return 0
     fi
 
-    # Skip rebuild if binary exists and is newer than source (saves 30-60s on ARM)
-    if [ -f "$KOFFI_NODE" ] && [ "$KOFFI_NODE" -nt "$KOFFI_SRC" ] && [[ "$silent" != "silent" ]]; then
-        status_msg "Koffi binary already built"
-        success_msg
-        return 0
+    if grep -qE "$call_re" "$KOFFI_SRC" 2>/dev/null; then
+        if [[ "$silent" != "silent" ]]; then
+            status_msg "Patching Koffi native library"
+        fi
+        sed -i "$sed_prog" "$KOFFI_SRC"
+        # Verify by effect: check the CALL, not the bare word — '__NR_renameat2'
+        # also appears in the "#if defined(...)" guard, which is not a call site.
+        if grep -qE "$call_re" "$KOFFI_SRC" 2>/dev/null; then
+            patch_missing "patch_koffi" "the renameat2 call in koffi base.cc (upstream changed the call or its variable names)"
+            return 0
+        fi
+        if [[ "$silent" != "silent" ]]; then
+            success_msg
+        fi
     fi
 
-    sed -i "$SED_PROG" "$KOFFI_SRC"
+    # Build entry point. koffi 3.x ships cnoke.cjs at the package ROOT and uses
+    # uppercase -P/-D. The old hardcoded 'src/cnoke/cnoke.js -p . -d ...' could
+    # only ever fail with MODULE_NOT_FOUND: koffi has no src/ directory, which is
+    # exactly the error this produced on device.
+    local -a build_cmd=()
+    if [ -f "$KOFFI_DIR/cnoke.cjs" ]; then
+        build_cmd=(node ./cnoke.cjs -P . -D src/koffi --prebuild --release)
+    elif [ -f "$KOFFI_DIR/src/cnoke/cnoke.js" ]; then
+        build_cmd=(node src/cnoke/cnoke.js -p . -d src/koffi --prebuild)
+    fi
+
+    if [ "${#build_cmd[@]}" -eq 0 ]; then
+        warn_msg "patch_koffi: no build entry point in koffi — native library not built"
+        return 0
+    fi
 
     if [[ "$silent" != "silent" ]]; then
-        status_msg "Koffi native library patched"
-        success_msg
-        execute "cd '$KOFFI_DIR' && JOBS=1 MAKEFLAGS='-j1' node src/cnoke/cnoke.js -p . -d src/koffi --prebuild" "Rebuilding Koffi"
-        execute "mkdir -p '$K_TRIPLET' && cp 'build/koffi/$K_TRIPLET/koffi.node' '$K_TRIPLET/'" "Mapping Koffi binary"
-    else
-        (cd "$KOFFI_DIR" && JOBS=1 MAKEFLAGS='-j1' node src/cnoke/cnoke.js -p . -d src/koffi --prebuild $verbose_flag) 2>/dev/null || true
-        mkdir -p "$K_TRIPLET" && cp "build/koffi/$K_TRIPLET/koffi.node" "$K_TRIPLET/" 2>/dev/null || true
+        status_msg "Building the Koffi native library (the slow step on ARM)"
     fi
 
-    # Verify by effect. Check the CALL, not the bare word: 'SYS_renameat2' also
-    # appears in the "#if defined(SYS_renameat2)" guard, which is not a call
-    # site and would make this report a false failure.
-    if grep -qE 'renameat2\(AT_FDCWD|syscall\(SYS_renameat2' "$KOFFI_SRC" 2>/dev/null; then
-        patch_missing "patch_koffi" "the renameat2 syscall in koffi base.cc (upstream changed the call or its arguments)"
+    # Subshell, so the build cannot leak its cwd into later steps — the old code
+    # left the shell inside the koffi directory, which is how a stray
+    # android_armsf/ directory ended up inside the package. Output goes to the
+    # log: on failure the old code printed two alarming "Failed!" blocks whose
+    # stack traces both belonged to the FIRST step.
+    ( cd "$KOFFI_DIR" && JOBS=1 MAKEFLAGS='-j1' "${build_cmd[@]}" ) >> "$LOG_FILE" 2>&1 || true
+
+    native_bin=$(find "$KOFFI_DIR" -name 'koffi.node' 2>/dev/null | head -1)
+    if [ -n "$native_bin" ]; then
+        if [[ "$silent" != "silent" ]]; then
+            success_msg
+        fi
+        return 0
     fi
+
+    # Honest and non-fatal: the source fix is applied, the binary is not. There is
+    # no Android prebuilt to fall back on for 32-bit ARM — @koromix/koffi-android-arm
+    # is not published (only -android-arm64 and -android-x64) — so compiling is the
+    # only route, and it needs cmake plus a C toolchain.
+    warn_msg "patch_koffi: renameat2 rewritten in source, but the native library did not build"
+    echo -e "   Needs cmake and a C toolchain, and the build is heavy — a low-RAM device can"
+    echo -e "   have it killed mid-build. OpenClaw still runs; koffi's native calls stay"
+    echo -e "   unavailable. Retry with more free memory, or build by hand:"
+    echo -e "   ${BLUE}cd ${KOFFI_DIR} && ${build_cmd[*]}${NC}"
 }
 
 patch_gemini_cli() {
