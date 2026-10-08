@@ -2108,6 +2108,180 @@ PYOCBS
     fi
 }
 
+# --- 4.x patch_openclaw_sqlite_identity (Android 2026.9.8) ---
+# Migrating the agent DB (schema 19 -> 24) with `openclaw doctor --fix` cannot
+# finish on Android/Termux because three upstream assumptions are false here:
+#
+#   1. @openclaw/fs-safe refuses hard-links with EPERM/ENOSYS/... but Android
+#      /data returns EACCES, so its verified copy fallback never fires and the
+#      snapshot publication throws "SQLite database cannot be snapshotted ...
+#      EACCES" -> doctor cannot enter maintenance.
+#   2. The gateway's identity/"generation" checks include birthtime. This fs has
+#      no btime: Node aliases birthtimeNs === ctimeNs, so OpenClaw's own writes
+#      change the "generation" and the check trips on itself
+#      ("Existing shared-state database generation changed", and later
+#      "Session membership store changed before publication" /
+#      "Agent worker lease differs from its captured native owner"). dev+ino
+#      (identity.key = file:<dev>:<ino>) is the real identity and stays intact.
+#   3. agent_database_leases rows whose owner_pid was recycled by another app
+#      look permanently "active": the app uid cannot read /proc/<pid>/stat for
+#      another app, kill(pid,0) returns EPERM (not ESRCH), so the start-time
+#      mismatch branch can never fire and doctor refuses maintenance (preflight
+#      "An agent database is in use").
+#
+# All three edits are reversible (.bak-android-* alongside) and idempotent.
+# NOTE: like every patch here, this edits dist/ inside the installed package, so
+# it is lost on a native `openclaw update` — re-run [R] Repair after one.
+patch_openclaw_sqlite_identity() {
+    local silent=$1
+    [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Patching OpenClaw SQLite identity/hardlink handling for Android"
+    fi
+
+    # --- 1) @openclaw/fs-safe: EACCES must trigger the verified copy fallback ---
+    local FSSAFE="" store resolved
+    FSSAFE=$(patch_find_first "$OPENCLAW_ROOT" 6 'publish-file.js' 2>/dev/null || true)
+    if [ -z "$FSSAFE" ]; then
+        store=$(dirname "$(pnpm_root_g 2>/dev/null)" 2>/dev/null)
+        if [ -n "$store" ] && [ -d "$store" ]; then
+            resolved=$(find "$store" -maxdepth 5 -type d -path '*@openclaw+fs-safe@*/node_modules/@openclaw/fs-safe' 2>/dev/null | head -1)
+            [ -n "$resolved" ] && FSSAFE="$resolved/dist/publish-file.js"
+        fi
+    fi
+
+    if [ -n "$FSSAFE" ] && [ -f "$FSSAFE" ]; then
+        if ! grep -q 'droid-ai-toolkit: android hardlink EACCES' "$FSSAFE" 2>/dev/null; then
+            if python3 - "$FSSAFE" <<'PYOCFSSAFE'
+import sys
+p = sys.argv[1]
+data = open(p, encoding="utf-8", errors="replace").read()
+old = 'const HARDLINK_FALLBACK_CODES = new Set(["EPERM", "EXDEV", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);'
+new = ('const HARDLINK_FALLBACK_CODES = new Set(["EPERM", "EXDEV", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EACCES"]); '
+       '/* droid-ai-toolkit: android hardlink EACCES */')
+if old not in data:
+    sys.exit(3)
+open(p + ".bak-android-fssafe", "w", encoding="utf-8").write(data)
+open(p, "w", encoding="utf-8").write(data.replace(old, new, 1))
+PYOCFSSAFE
+            then
+                :
+            else
+                patch_missing "patch_openclaw_sqlite_identity" \
+                    "HARDLINK_FALLBACK_CODES in @openclaw/fs-safe/dist/publish-file.js (upstream changed the set) — doctor --fix will fail with 'EACCES: permission denied, link ...database.sqlite'"
+            fi
+        fi
+    else
+        patch_missing "patch_openclaw_sqlite_identity" \
+            "@openclaw/fs-safe/dist/publish-file.js (package layout changed or fs-safe not installed)"
+    fi
+
+    # --- 2) birthtime-independent identity/generation checks ---
+    # Rewrite the identity `birthtime` producer to a constant so every
+    # downstream `.birthtime` equality holds, and neutralise the numeric
+    # `birthtimeNs` comparisons in the minified bundles. dev+ino identity is
+    # untouched. Linear/bounded patterns only: the worker bundles are ~50 MB and
+    # a backtracking regex OOMs the device.
+    local BT
+    if BT=$(python3 - "$OPENCLAW_ROOT/dist" <<'PYOCBT'
+import os, re, sys
+root = sys.argv[1]
+
+PROD = re.compile(r'birthtime:\s?[A-Za-z0-9_$?.]{1,48}\.birthtimeNs\.toString\(\)')
+CMP_NS = re.compile(r'([A-Za-z0-9_$?.]+)\.birthtimeNs\s*(===|!==)\s*([A-Za-z0-9_$?.]+)\.birthtimeNs')
+CMP_STR = re.compile(r'([A-Za-z0-9_$?.]+)\.birthtime\s*(===|!==)\s*([A-Za-z0-9_$?.]+)\.birthtime(?!Ns)')
+
+changed = 0
+for dirpath, _dirs, names in os.walk(root):
+    for n in names:
+        if not n.endswith((".js", ".mjs")) or ".bak" in n:
+            continue
+        p = os.path.join(dirpath, n)
+        try:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                data = fh.read()
+        except OSError:
+            continue
+        if "birthtime" not in data or "droid-ai-toolkit: bt-stable" in data:
+            continue
+        orig = data
+        data, k1 = PROD.subn('birthtime:"1"', data)
+        data, k2 = CMP_NS.subn(lambda m: "true" if m.group(2) == "===" else "false", data)
+        data, k3 = CMP_STR.subn(lambda m: "true" if m.group(2) == "===" else "false", data)
+        if k1 or k2 or k3:
+            with open(p + ".bak-android-bt", "w", encoding="utf-8") as fh:
+                fh.write(orig)
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("/* droid-ai-toolkit: bt-stable */\n" + data)
+            changed += 1
+print(changed)
+PYOCBT
+    ); then
+        if [ "$BT" = "0" ]; then
+            patch_missing "patch_openclaw_sqlite_identity" \
+                "birthtime identity/comparison patterns under dist/ (upstream removed them or already patched) — identity checks will break on filesystems without btime"
+        fi
+    else
+        patch_missing "patch_openclaw_sqlite_identity" \
+            "birthtime patch step (python failed) — identity checks will break on filesystems without btime"
+    fi
+
+    # --- 3) reclaim phantom agent leases left by Android PID recycling ---
+    # Only rows that Android PID recycling makes permanently "active":
+    # kill(pid,0) is not ESRCH (EPERM -> another app) AND /proc/<pid>/stat is
+    # unreadable, so OpenClaw's start-time mismatch check can never fire.
+    local STATE_DB="$HOME/.openclaw/state/openclaw.sqlite"
+    if [ -f "$STATE_DB" ]; then
+        python3 - "$STATE_DB" <<'PYOCLEASE' || true
+import os, re, sqlite3, sys
+db = sys.argv[1]
+
+def definitely_dead(pid):
+    if not (isinstance(pid, int) and pid > 0):
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    try:
+        s = open("/proc/%d/status" % pid).read()
+        return bool(re.search(r"^State:\s+Z", s, re.M) and re.search(r"^Threads:\s+1\s*$", s, re.M))
+    except OSError:
+        return False
+
+def start_time(pid):
+    try:
+        return int(open("/proc/%d/stat" % pid).read().rsplit(")", 1)[1].split()[19])
+    except OSError:
+        return None
+
+try:
+    c = sqlite3.connect(db)
+    c.row_factory = sqlite3.Row
+    rows = list(c.execute("SELECT lease_id, owner_pid, owner_start_time FROM agent_database_leases"))
+except sqlite3.Error:
+    sys.exit(0)
+removed = 0
+for r in rows:
+    if (not definitely_dead(r["owner_pid"]) and start_time(r["owner_pid"]) is None
+            and r["owner_start_time"] is not None):
+        c.execute("DELETE FROM agent_database_leases WHERE lease_id = ?", (r["lease_id"],))
+        removed += 1
+if removed:
+    c.commit()
+c.close()
+PYOCLEASE
+    fi
+
+    if [[ "$silent" != "silent" ]]; then
+        success_msg "Android SQLite identity patch applied"
+    fi
+}
+
 # Thin coordinator: invokes all patch modules.
 # apply_patches [silent] [scope]
 #
@@ -2140,6 +2314,7 @@ apply_patches() {
             patch_openclaw_sqlite_archive "$silent"
             patch_openclaw_pid_platform "$silent"
             patch_openclaw_workspace_bootstrap "$silent"
+            patch_openclaw_sqlite_identity "$silent"
             ;;
         all|*)
             patch_koffi "$silent"
@@ -2151,6 +2326,7 @@ apply_patches() {
             patch_openclaw_sqlite_archive "$silent"
             patch_openclaw_pid_platform "$silent"
             patch_openclaw_workspace_bootstrap "$silent"
+            patch_openclaw_sqlite_identity "$silent"
             ;;
     esac
 
