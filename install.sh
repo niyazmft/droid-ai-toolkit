@@ -1768,6 +1768,121 @@ PYOCARC
         "HARDLINK_FALLBACK_CODES in the bundled chunks (replacement did not verify; $already already-patched)"
 }
 
+# OpenClaw publishes migration artifacts (session transcripts, snapshot files) by
+# hardlink, and records a filesystem *identity* receipt for each one. Android
+# rejects hardlinks (EACCES), so the copy fallback publishes them as ordinary
+# copies — after which every receipt fails to verify:
+#     artifact identity or contents changed
+# That blocks the agent-database migration outright. Observed on 2026.9.8:
+#     openclaw doctor --session-sqlite recover  ->  conflicts=219
+# and the agent DB never reaches the schema version the gateway requires, so the
+# gateway refuses to run ("uses schema version 19") and crash-loops.
+#
+# Two comparisons need changing, and only for the copy case:
+#
+#   sameMigrationArtifact  compared dev/ino/mtimeNs, none of which a copy can
+#                          preserve. Compare size+sha256 — the content — which is
+#                          what these receipts actually assert. Upstream already
+#                          accepts an ignoreDevice flag here, so content equality
+#                          is a direction it sanctions.
+#
+#   the publication assert asserted dev/ino equality AND nlink===2n, i.e. "this is
+#                          a hardlink of the source". Keep that strict check when
+#                          dev/ino DO match, and accept a single-link copy
+#                          otherwise.
+#
+# This is the change the toolkit previously shipped for the older
+# doctor-session-sqlite-restore-*.js chunk, retargeted to 2026.9.8's code. Applied
+# by content across every chunk that still carries it, verified by effect.
+patch_openclaw_artifact_identity() {
+    local silent=$1
+    [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    local DIST="$OPENCLAW_ROOT/dist"
+    [ -d "$DIST" ] || return 0
+
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Patching OpenClaw migration-artifact identity for copy-published files"
+    fi
+
+    local out
+    out=$(python3 - "$DIST" <<'PYARID'
+import os
+import shutil
+import sys
+
+dist = sys.argv[1]
+
+OLD_ID = 'function sameMigrationArtifact(Ot,Kt,Zt={}){return(Zt.ignoreDevice||Ot.dev===Kt.dev)&&Ot.ino===Kt.ino&&Ot.mtimeNs===Kt.mtimeNs&&Ot.size===Kt.size&&Ot.sha256===Kt.sha256}'
+NEW_ID = 'function sameMigrationArtifact(Ot,Kt,Zt={}){return Ot.size===Kt.size&&Ot.sha256===Kt.sha256}'
+
+THROW = 'throw new Error("publication paths changed or have unexpected aliases");'
+OLD_PUB = ('if (!target.isFile() || !source.isFile() || target.dev !== source.dev || target.ino !== source.ino '
+           '|| source.nlink !== 2n || !sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath, 2n), expected) '
+           '|| !sameMigrationArtifact(readMigrationArtifactIdentity(targetPath, 2n), expected)) ' + THROW)
+NEW_PUB = ('if (target.dev === source.dev && target.ino === source.ino) {\n'
+           '\tif (!target.isFile() || source.nlink !== 2n '
+           '|| !sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath, 2n), expected) '
+           '|| !sameMigrationArtifact(readMigrationArtifactIdentity(targetPath, 2n), expected)) ' + THROW + '\n'
+           '} else if (!target.isFile() || !source.isFile() '
+           '|| !sameMigrationArtifact(readMigrationArtifactIdentity(sourcePath, 1n), expected) '
+           '|| !sameMigrationArtifact(readMigrationArtifactIdentity(targetPath, 1n), expected)) ' + THROW)
+
+files = 0
+ids = 0
+pubs = 0
+for root, _dirs, names in os.walk(dist):
+    for name in names:
+        if name.endswith(".bak"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            data = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        n_id = data.count(OLD_ID)
+        n_pub = data.count(OLD_PUB)
+        if n_id == 0 and n_pub == 0:
+            continue
+        shutil.copy(path, path + ".bak")
+        if n_id:
+            data = data.replace(OLD_ID, NEW_ID)
+        if n_pub:
+            data = data.replace(OLD_PUB, NEW_PUB)
+        open(path, "w", encoding="utf-8", errors="replace").write(data)
+        files += 1
+        ids += n_id
+        pubs += n_pub
+
+print("%d %d %d" % (files, ids, pubs))
+PYARID
+    )
+
+    local files ids pubs
+    files=$(printf '%s' "$out" | awk '{print $1}')
+    ids=$(printf '%s' "$out" | awk '{print $2}')
+    pubs=$(printf '%s' "$out" | awk '{print $3}')
+
+    if [ -n "$files" ] && [ "$files" -gt 0 ] 2>/dev/null; then
+        if [[ "$silent" != "silent" ]]; then
+            success_msg "Patched $files file(s) — $ids identity check(s), $pubs publication assert(s)"
+        fi
+        return 0
+    fi
+
+    # Nothing changed: either already done, or upstream reshaped the code.
+    if grep -rqF 'sameMigrationArtifact(Ot,Kt,Zt={}){return Ot.size===Kt.size' "$DIST" 2>/dev/null; then
+        if [[ "$silent" != "silent" ]]; then
+            success_msg "Already patched"
+        fi
+        return 0
+    fi
+
+    patch_missing "patch_openclaw_artifact_identity" \
+        "sameMigrationArtifact / the publication assertion (upstream reshaped the migration-artifact checks)"
+}
+
 # Multi-stage legacy-state migration for OpenClaw 2026.9.x on Android/Termux.
 # Upstream 'openclaw doctor --fix' cannot run on Android (it requires a
 # systemd/launchd service owner), so the stages are run directly:
@@ -2246,6 +2361,7 @@ apply_patches() {
             patch_openclaw_registerhooks "$silent"
             patch_openclaw_links "$silent"
             patch_openclaw_sqlite_archive "$silent"
+            patch_openclaw_artifact_identity "$silent"
             patch_openclaw_pid_platform "$silent"
             patch_openclaw_workspace_bootstrap "$silent"
             ;;
@@ -2257,6 +2373,7 @@ apply_patches() {
             patch_openclaw_registerhooks "$silent"
             patch_openclaw_links "$silent"
             patch_openclaw_sqlite_archive "$silent"
+            patch_openclaw_artifact_identity "$silent"
             patch_openclaw_pid_platform "$silent"
             patch_openclaw_workspace_bootstrap "$silent"
             ;;
