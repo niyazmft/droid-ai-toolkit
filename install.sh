@@ -1806,13 +1806,14 @@ patch_openclaw_artifact_identity() {
         status_msg "Patching OpenClaw migration-artifact identity for copy-published files"
     fi
 
-    local out
-    out=$(python3 - "$DIST" <<'PYARID'
-import os
+    # Candidate files come from a C-speed grep filter. This used to read every
+    # file in dist/ in Python — 11,357 files and 616 MB on one device, which took
+    # minutes of CPU and made the toolkit look hung.
+    local out cands
+    cands=$(grep -rlF 'sameMigrationArtifact' "$DIST" 2>/dev/null | grep -v '\.bak' || true)
+    out=$(python3 - "$cands" <<'PYARID'
 import shutil
 import sys
-
-dist = sys.argv[1]
 
 OLD_ID = 'function sameMigrationArtifact(Ot,Kt,Zt={}){return(Zt.ignoreDevice||Ot.dev===Kt.dev)&&Ot.ino===Kt.ino&&Ot.mtimeNs===Kt.mtimeNs&&Ot.size===Kt.size&&Ot.sha256===Kt.sha256}'
 NEW_ID = 'function sameMigrationArtifact(Ot,Kt,Zt={}){return Ot.size===Kt.size&&Ot.sha256===Kt.sha256}'
@@ -1832,28 +1833,27 @@ NEW_PUB = ('if (target.dev === source.dev && target.ino === source.ino) {\n'
 files = 0
 ids = 0
 pubs = 0
-for root, _dirs, names in os.walk(dist):
-    for name in names:
-        if name.endswith(".bak"):
-            continue
-        path = os.path.join(root, name)
-        try:
-            data = open(path, encoding="utf-8", errors="replace").read()
-        except OSError:
-            continue
-        n_id = data.count(OLD_ID)
-        n_pub = data.count(OLD_PUB)
-        if n_id == 0 and n_pub == 0:
-            continue
-        shutil.copy(path, path + ".bak")
-        if n_id:
-            data = data.replace(OLD_ID, NEW_ID)
-        if n_pub:
-            data = data.replace(OLD_PUB, NEW_PUB)
-        open(path, "w", encoding="utf-8", errors="replace").write(data)
-        files += 1
-        ids += n_id
-        pubs += n_pub
+for path in sys.argv[1].splitlines():
+    path = path.strip()
+    if not path:
+        continue
+    try:
+        data = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        continue
+    n_id = data.count(OLD_ID)
+    n_pub = data.count(OLD_PUB)
+    if n_id == 0 and n_pub == 0:
+        continue
+    shutil.copy(path, path + ".bak")
+    if n_id:
+        data = data.replace(OLD_ID, NEW_ID)
+    if n_pub:
+        data = data.replace(OLD_PUB, NEW_PUB)
+    open(path, "w", encoding="utf-8", errors="replace").write(data)
+    files += 1
+    ids += n_id
+    pubs += n_pub
 
 print("%d %d %d" % (files, ids, pubs))
 PYARID
@@ -2407,38 +2407,46 @@ PYOCFSSAFE
     # `birthtimeNs` comparisons in the minified bundles. dev+ino identity is
     # untouched. Linear/bounded patterns only: the worker bundles are ~50 MB and
     # a backtracking regex OOMs the device.
-    local BT
-    if BT=$(python3 - "$OPENCLAW_ROOT/dist" <<'PYOCBT'
-import os, re, sys
-root = sys.argv[1]
+    # Candidates come from a C-speed grep filter: reading the whole dist in Python
+    # took minutes on a 616 MB / 11k-file tree and made the toolkit look hung.
+    local BT cands
+    cands=$(grep -rl --include='*.js' --include='*.mjs' -F 'birthtime' "$OPENCLAW_ROOT/dist" 2>/dev/null | grep -v '\.bak' || true)
+    if BT=$(python3 - "$cands" <<'PYOCBT'
+import re
+import sys
 
 PROD = re.compile(r'birthtime:\s?[A-Za-z0-9_$?.]{1,48}\.birthtimeNs\.toString\(\)')
 CMP_NS = re.compile(r'([A-Za-z0-9_$?.]+)\.birthtimeNs\s*(===|!==)\s*([A-Za-z0-9_$?.]+)\.birthtimeNs')
 CMP_STR = re.compile(r'([A-Za-z0-9_$?.]+)\.birthtime\s*(===|!==)\s*([A-Za-z0-9_$?.]+)\.birthtime(?!Ns)')
+# The producer above is rewritten to a constant, so an assertion that compares
+# the REAL file value against it can never hold. Neutralise that inequality too —
+# otherwise this patch turns "gateway will not start" into a permanent restart
+# loop (observed on device: 448 restarts). dev+ino identity is still untouched.
+CMP_BT = re.compile(r'[A-Za-z0-9_$.]{0,24}birthtimeNs\.toString\(\)\s*!==\s*expectedBirthtime')
 
 changed = 0
-for dirpath, _dirs, names in os.walk(root):
-    for n in names:
-        if not n.endswith((".js", ".mjs")) or ".bak" in n:
-            continue
-        p = os.path.join(dirpath, n)
-        try:
-            with open(p, encoding="utf-8", errors="replace") as fh:
-                data = fh.read()
-        except OSError:
-            continue
-        if "birthtime" not in data or "droid-ai-toolkit: bt-stable" in data:
-            continue
-        orig = data
-        data, k1 = PROD.subn('birthtime:"1"', data)
-        data, k2 = CMP_NS.subn(lambda m: "true" if m.group(2) == "===" else "false", data)
-        data, k3 = CMP_STR.subn(lambda m: "true" if m.group(2) == "===" else "false", data)
-        if k1 or k2 or k3:
-            with open(p + ".bak-android-bt", "w", encoding="utf-8") as fh:
-                fh.write(orig)
-            with open(p, "w", encoding="utf-8") as fh:
-                fh.write("/* droid-ai-toolkit: bt-stable */\n" + data)
-            changed += 1
+for path in sys.argv[1].splitlines():
+    path = path.strip()
+    if not path:
+        continue
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            data = fh.read()
+    except OSError:
+        continue
+    if "birthtime" not in data or "droid-ai-toolkit: bt-stable" in data:
+        continue
+    orig = data
+    data, k1 = PROD.subn('birthtime:"1"', data)
+    data, k2 = CMP_NS.subn(lambda m: "true" if m.group(2) == "===" else "false", data)
+    data, k3 = CMP_STR.subn(lambda m: "true" if m.group(2) == "===" else "false", data)
+    data, k4 = CMP_BT.subn('false', data)
+    if k1 or k2 or k3 or k4:
+        with open(path + ".bak-android-bt", "w", encoding="utf-8") as fh:
+            fh.write(orig)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("/* droid-ai-toolkit: bt-stable */\n" + data)
+        changed += 1
 print(changed)
 PYOCBT
     ); then
