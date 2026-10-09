@@ -2407,8 +2407,12 @@ PYOCFSSAFE
     # `birthtimeNs` comparisons in the minified bundles. dev+ino identity is
     # untouched. Linear/bounded patterns only: the worker bundles are ~50 MB and
     # a backtracking regex OOMs the device.
-    # Candidates come from a C-speed grep filter: reading the whole dist in Python
-    # took minutes on a 616 MB / 11k-file tree and made the toolkit look hung.
+    # Candidates come from a C-speed grep filter: reading every file in dist/ in
+    # Python took minutes on a 550 MB / 11k-file tree and made the toolkit look
+    # hung. NOTE for anyone reading a hanging log: this step is still genuinely
+    # expensive — the matching files total ~181 MB of bundled JS and four regex
+    # passes over that take minutes on a phone. It is not stuck. Give it a
+    # generous budget and do not tighten the timeout.
     local BT cands
     cands=$(grep -rl --include='*.js' --include='*.mjs' -F 'birthtime' "$OPENCLAW_ROOT/dist" 2>/dev/null | grep -v '\.bak' || true)
     if BT=$(python3 - "$cands" <<'PYOCBT'
@@ -2437,10 +2441,19 @@ for path in sys.argv[1].splitlines():
     if "birthtime" not in data or "droid-ai-toolkit: bt-stable" in data:
         continue
     orig = data
-    data, k1 = PROD.subn('birthtime:"1"', data)
-    data, k2 = CMP_NS.subn(lambda m: "true" if m.group(2) == "===" else "false", data)
-    data, k3 = CMP_STR.subn(lambda m: "true" if m.group(2) == "===" else "false", data)
-    data, k4 = CMP_BT.subn('false', data)
+    # Each pass is guarded by a cheap C-speed substring test first. Running four
+    # regexes over an 80 MB bundle is the expensive part, and most candidates hold
+    # at most one marker: of 55 files matching the word "birthtime", only 13 carry
+    # the producer pattern and 7 the assertion. Guarding cuts the regex work
+    # sharply without changing what matches.
+    k1 = k2 = k3 = k4 = 0
+    if "birthtimeNs.toString()" in data:
+        data, k1 = PROD.subn('birthtime:"1"', data)
+        data, k4 = CMP_BT.subn('false', data)
+    if ".birthtimeNs" in data:
+        data, k2 = CMP_NS.subn(lambda m: "true" if m.group(2) == "===" else "false", data)
+    if ".birthtime" in data:
+        data, k3 = CMP_STR.subn(lambda m: "true" if m.group(2) == "===" else "false", data)
     if k1 or k2 or k3 or k4:
         with open(path + ".bak-android-bt", "w", encoding="utf-8") as fh:
             fh.write(orig)
