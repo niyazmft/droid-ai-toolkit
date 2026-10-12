@@ -444,6 +444,65 @@ pnpm_set_global_dep() {
     fi
 }
 
+# pnpm_heap_limit -- heap cap for the package manager's own Node process.
+#
+# get_mem_limit() (75% of RAM, capped at 2048) is sized for the long-running
+# gateway, not for a one-shot package manager, and every MB V8 is permitted to
+# grow is a MB Android's memory killer can see. Holding a ~500-package graph does
+# not need a gigabyte, so this bounds it at a third of RAM: floor 384 (pnpm will
+# not fit below that), ceiling 1024 (no supported device needs more).
+#
+# This is a secondary measure. The primary response to a low-memory kill is the
+# retry in _survive_low_memory_kill below, because a kill does not mean the work
+# was wasted.
+pnpm_heap_limit() {
+    local total_ram mb
+    total_ram=$(free -m | awk '/^Mem:/{print $2}')
+    [ -n "$total_ram" ] || { printf '768'; return; }
+    mb=$(( total_ram * 33 / 100 ))
+    [ "$mb" -lt 384 ] && mb=384
+    [ "$mb" -gt 1024 ] && mb=1024
+    printf '%s' "$mb"
+}
+
+# _survive_low_memory_kill <command> <message> -- run an install step, retrying
+# when Android kills it.
+#
+# A low-memory kill is SIGKILL: no error text, no partial-failure report, the log
+# simply stops. The shell reports it as exit 137. Observed on the y6 (1.8 GB):
+#
+#   Progress: resolved 496, reused 427, downloaded 0, added 427
+#   install.sh: line 865: 28947 Killed | pnpm install --frozen-lockfile ...
+#
+# That attempt had already linked 427 of 427 packages — it died at the finish
+# line. Retrying is therefore the correct response rather than a fallback: the
+# virtual store is warm afterwards, so each attempt has strictly less left to do
+# than the one before, and the sequence converges instead of restarting from zero.
+#
+# A real error (bad spec, network, permissions, heap limit) is NOT retried —
+# repeating it would waste five minutes to reach the same message.
+_survive_low_memory_kill() {
+    local cmd="$1" msg="$2" attempt=1 max=3 rc=0
+    while [ "$attempt" -le "$max" ]; do
+        execute "$cmd" "$msg — attempt $attempt/$max"
+        rc=$?
+        [ "$rc" -eq 0 ] && return 0
+        # 128+n is death by signal n; 137 = SIGKILL, the memory killer.
+        if [ "$rc" -lt 128 ]; then
+            return "$rc"
+        fi
+        warn_msg "Android killed the package manager (signal $((rc - 128))) — the memory killer, not a package-manager error"
+        if [ "$attempt" -lt "$max" ]; then
+            echo -e "   The virtual store is now warm, so this attempt has less left to do."
+            echo -e "   Waiting 15s for memory to settle, then retrying."
+            sleep 15
+        fi
+        attempt=$((attempt + 1))
+    done
+    warn_msg "Killed on all $max attempts"
+    return "$rc"
+}
+
 # pnpm_install_frozen <name> <spec> -- resolve first, then install from the lockfile
 pnpm_install_frozen() {
     local name="$1" spec="$2" dir import_flag="" resolved
@@ -462,12 +521,16 @@ pnpm_install_frozen() {
 
     pnpm_set_global_dep "$name" "$spec" || return 1
 
-    execute "cd '$dir' && pnpm install --lockfile-only --ignore-scripts" \
+    local heap_mb node_env
+    heap_mb=$(pnpm_heap_limit)
+    node_env="NODE_OPTIONS='--dns-result-order=ipv4first --max-old-space-size=$heap_mb'"
+
+    _survive_low_memory_kill "cd '$dir' && $node_env pnpm install --lockfile-only --ignore-scripts" \
         "Resolving the dependency graph (phase 1/2 — cheap, no download or linking)" || return 1
 
     # confirmModulesPurge is answered non-interactively: without it pnpm blocks on
     # a prompt, and a detached/background run hits EOF and aborts.
-    execute "cd '$dir' && printf 'y\ny\n' | pnpm install --frozen-lockfile --ignore-scripts --child-concurrency=1 --network-concurrency=1 $import_flag --config.confirmModulesPurge=false" \
+    _survive_low_memory_kill "cd '$dir' && printf 'y\ny\n' | $node_env pnpm install --frozen-lockfile --ignore-scripts --child-concurrency=1 --network-concurrency=1 $import_flag --config.confirmModulesPurge=false" \
         "Installing from the resolved lockfile (phase 2/2 — no resolution needed)"
 }
 
@@ -1289,6 +1352,117 @@ patch_missing() {
     echo -e "   Upstream moved or renamed what this patch edits, so its Android fix is"
     echo -e "   NOT active here. This is a gap in the toolkit for this release, not"
     echo -e "   something that can be fixed on the device — see the summary below."
+}
+
+# Where the birthtime emulation lives once installed. Kept in the OpenClaw state
+# dir so an uninstall that removes that dir takes it too.
+OC_BTIME_SHIM="$HOME/.openclaw/btime-shim.cjs"
+
+# _oc_btime_shim_needed -- true (exit 0) when this platform needs the emulation.
+#
+# Gated on the platform, not on a timing probe, and both halves of that were
+# corrections. The first version measured birthtime across a write: a real
+# defect, but an unreliable *test*. This kernel stamps files on 4 ms ticks
+# (measured on the y6), so a probe that writes inside the same tick reads an
+# unchanged birthtime and concludes the platform is healthy. It skipped the shim
+# on the very device that needs it, and intermittently at that — the right answer
+# when run alone, the wrong one when called from inside the patch.
+#
+# The defect is a property of the platform, and Node states it directly: Termux
+# runs with process.platform === "android", while Linux and macOS — where
+# birthtime really is a birth time — report "linux"/"darwin".
+#
+# It returns 0 for "needed" so callers read naturally:
+#     if ! _oc_btime_shim_needed; then <platform is fine>; fi
+# The first version returned 1 for "needed" and was still called as `if ! ...`,
+# which inverted the meaning and made every Android device skip the fix — while
+# every unit check passed. Keep the polarity explicit.
+_oc_btime_shim_needed() {
+    command -v node >/dev/null 2>&1 || return 1
+    node -e 'process.exit(process.platform === "android" ? 0 : 1);' 2>/dev/null
+}
+
+# _oc_node_options <heap-limit-mb> -- NODE_OPTIONS for OpenClaw processes.
+# One definition so the runit script and PM2 cannot drift apart; the shim is
+# appended only when it is actually installed.
+_oc_node_options() {
+    local opts="--dns-result-order=ipv4first --max-old-space-size=$1"
+    [ -f "$OC_BTIME_SHIM" ] && opts="$opts --require $OC_BTIME_SHIM"
+    printf '%s' "$opts"
+}
+
+# _oc_live_node_options <pid> <pm2-id> -- NODE_OPTIONS of the running process.
+# The live environment is authoritative; PM2's stored copy is only a fallback for
+# kernels that mount /proc with hidepid.
+_oc_live_node_options() {
+    if [ -r "/proc/$1/environ" ]; then
+        tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n 's/^NODE_OPTIONS=//p'
+    else
+        pm2 env "$2" 2>/dev/null | sed -n 's/^NODE_OPTIONS: *//p'
+    fi
+}
+
+# _oc_verify_launch_env -- confirm the RUNNING gateway actually received the
+# Android fixes that live in its environment, and say so either way.
+#
+# Why this exists: the birthtime shim is a --require preload, so it exists only
+# if it is in NODE_OPTIONS at the instant the process starts. PM2 stores that
+# environment in its dump, and the dump is what `pm2 resurrect` restores —
+# including the boot script and any user guard. So an update that recreates the
+# process, or a dump saved before the shim existed, leaves the gateway running
+# unshimmed while the file sits on disk looking healthy. Measured on the y6:
+#
+#   shim present: yes
+#   NODE_OPTIONS on the running gateway: ... --max-old-space-size=512   (no --require)
+#
+# A fix that silently unwires itself is worse than no fix, because every later
+# symptom gets blamed on the thing it was meant to solve. This is the check that
+# makes the state observable instead of assumed.
+_oc_verify_launch_env() {
+    command -v pm2 >/dev/null 2>&1 || return 0
+
+    local pid opts
+    pid=$(pm2 pid openclaw 2>/dev/null | tail -1 | tr -d '[:space:]')
+    [ -n "$pid" ] && [ "$pid" != "0" ] || return 0   # not supervised by pm2 here
+
+    opts=$(_oc_live_node_options "$pid" 0)
+
+    if ! _oc_btime_shim_needed; then
+        status_msg "Launch environment: birthtime emulation not needed on this platform"
+        success_msg
+        return 0
+    fi
+    if [ ! -f "$OC_BTIME_SHIM" ]; then
+        warn_msg "Launch environment: birthtime shim is missing from disk"
+        return 0
+    fi
+    case "$opts" in
+        *btime-shim.cjs*)
+            status_msg "Launch environment: birthtime emulation is active"
+            success_msg
+            return 0
+            ;;
+    esac
+
+    warn_msg "Launch environment: the running gateway is NOT using the birthtime shim"
+    echo -e "   The shim is on disk but the process started without it — PM2's saved"
+    echo -e "   environment predates it, which is what an update or a resurrect leaves behind."
+    echo -e "   Rewiring now so the Android fix is actually in effect."
+    NODE_OPTIONS="$(_oc_node_options "$(get_mem_limit)")" OPENCLAW_TMP="$HOME/.openclaw/tmp" \
+        pm2 restart openclaw --update-env >/dev/null 2>&1 || true
+    pm2 save >/dev/null 2>&1 || true
+    sleep 5
+    pid=$(pm2 pid openclaw 2>/dev/null | tail -1 | tr -d '[:space:]')
+    opts=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^NODE_OPTIONS=//p')
+    case "$opts" in
+        *btime-shim.cjs*)
+            status_msg "Launch environment: birthtime emulation active (rewired)"
+            success_msg
+            ;;
+        *)
+            warn_msg "Launch environment: still inactive after rewiring — restart it from SERVICES -> PM2"
+            ;;
+    esac
 }
 
 # _openclaw_koffi_dir -- locate the koffi package directory.
@@ -2526,6 +2700,320 @@ PYOCLEASE
     fi
 }
 
+# Android has no usable birthtime, and OpenClaw leans on it everywhere.
+#
+# Measured on the y6 (armv7): stat().birthtime tracks ctime/mtime and moves on
+# every write, so it is not a creation time at all. On the 8x (aarch64) it is one
+# degenerate constant shared by every file. OpenClaw uses birthtime as the answer
+# to "has this file changed since I recorded it?" in ~137 places across ~52
+# files, so on such a device those guards answer "yes" the moment anything writes
+# the file. The gateway then refuses to start, with a different message in each
+# subsystem:
+#     Session membership store changed before publication
+#     SQLite database file identity changed before existing-only open
+#     Existing shared-state database generation changed
+#
+# These are not three bugs to patch one by one — they are one platform fact, and
+# upstream has no way to be told the filesystem cannot be trusted (there is no
+# birthtime capability flag; only HARDLINK_FALLBACK_CODES exists). Patching each
+# guard is whack-a-mole that the next release resets, so instead we make
+# birthtime behave like a real birthtime and every guard — including ones
+# upstream adds later — works unmodified. No capability is disabled.
+#
+# Scope: this covers the gateway (PM2 and the runit script) and every OpenClaw
+# process the installer itself runs, which is where the guards actually fire.
+# A bare interactive `openclaw ...` keeps the platform's own birthtime.
+patch_openclaw_btime_shim() {
+    local silent=$1
+    [ -n "$OPENCLAW_ROOT" ] && [ -d "$OPENCLAW_ROOT" ] || return 0
+
+    if ! _oc_btime_shim_needed; then
+        # Real birthtime: leave the platform alone. Replace a synthetic value
+        # with the true one if an earlier run installed a shim.
+        if [ -f "$OC_BTIME_SHIM" ]; then
+            rm -f "$OC_BTIME_SHIM" 2>/dev/null || true
+            if [[ "$silent" != "silent" ]]; then
+                status_msg "This platform has a real birthtime; removed the emulation shim"
+                success_msg
+            fi
+        fi
+        return 0
+    fi
+
+    if [[ "$silent" != "silent" ]]; then
+        status_msg "Emulating filesystem birthtime (Android reports ctime as birthtime)"
+    fi
+
+    mkdir -p "$(dirname "$OC_BTIME_SHIM")" 2>/dev/null || true
+    cat > "$OC_BTIME_SHIM" << 'OCBTEOF'
+/**
+ * openclaw-btime-shim.cjs — generated by droid-ai-toolkit. Do not edit;
+ * rewritten on every [R] Repair.
+ *
+ * Android has no usable birthtime: on the y6 it tracks ctime/mtime and moves on
+ * every write; on the 8x it is one constant shared by every file. OpenClaw uses
+ * birthtime to answer "has this file changed since I recorded it?" in ~137
+ * places, so those guards answer "yes" whenever anything writes, and the
+ * gateway refuses to start:
+ *     Session membership store changed before publication
+ *     SQLite database file identity changed before existing-only open
+ *     Existing shared-state database generation changed
+ *
+ * This replaces birthtime with a synthetic value that behaves like the real
+ * thing: identical for the same (dev, ino) across processes and restarts,
+ * unchanged by writes or renames, different for a different file. It is a pure
+ * function of (dev, ino) — no state, no sidecar files. Nothing else about a
+ * stat() result is modified.
+ *
+ * Fail-open: if anything here throws, the process runs unshimmed.
+ * Self-test: OC_BTIME_SHIM_SELFTEST=1 node --require ./openclaw-btime-shim.cjs
+ */
+"use strict";
+
+const MARK = Symbol.for("openclaw.btimeShim.patched");
+let warned = false;
+
+function warn(err) {
+  if (warned) return;
+  warned = true;
+  try {
+    process.emitWarning("[btime-shim] disabled: " + ((err && err.message) || err));
+  } catch (_) {}
+}
+
+// 2020-01-01T00:00:00Z in ns, plus a one-year span, so synthetic values stay in
+// a plausible range for anything that formats or sorts by birthtime.
+const BASE = 1577836800000000000n;
+const SPAN = 31536000000000000n;
+const MEMO = new Map();
+const MEMO_MAX = 10000;
+
+let hashKey;
+try {
+  const crypto = require("crypto");
+  hashKey = (key) => crypto.createHash("sha256").update(key).digest();
+} catch (_) {
+  hashKey = (key) => {
+    let x = 2166136261 >>> 0;
+    for (let i = 0; i < key.length; i++) {
+      x ^= key.charCodeAt(i);
+      x = Math.imul(x, 16777619) >>> 0;
+    }
+    return Buffer.from([x >>> 24, (x >>> 16) & 255, (x >>> 8) & 255, x & 255]);
+  };
+}
+
+function synthNs(dev, ino) {
+  const key = dev + ":" + ino;
+  const hit = MEMO.get(key);
+  if (hit !== undefined) return hit;
+  const bytes = hashKey(key);
+  let v = 0n;
+  for (let i = 0; i < 8 && i < bytes.length; i++) v = (v << 8n) | BigInt(bytes[i]);
+  const ns = BASE + (v % SPAN);
+  if (MEMO.size >= MEMO_MAX) MEMO.clear();
+  MEMO.set(key, ns);
+  return ns;
+}
+
+function define(obj, key, value) {
+  try {
+    Object.defineProperty(obj, key, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (_) {
+    try {
+      obj[key] = value;
+    } catch (__) {}
+  }
+}
+
+function patch(st) {
+  try {
+    if (!st || typeof st !== "object") return st;
+    if (st[MARK]) return st;
+    const dev = st.dev;
+    const ino = st.ino;
+    if (dev === undefined || ino === undefined) return st;
+    const ns = synthNs(String(dev), String(ino));
+    if (typeof st.birthtimeNs === "bigint") {
+      define(st, "birthtimeNs", ns);
+      define(st, "birthtimeMs", ns / 1000000n);
+    } else {
+      const ms = Number(ns / 1000000n);
+      define(st, "birthtime", new Date(ms));
+      define(st, "birthtimeMs", ms);
+    }
+    define(st, MARK, true);
+  } catch (err) {
+    warn(err);
+  }
+  return st;
+}
+
+function wrapSync(fn) {
+  const wrapped = function (...args) {
+    return patch(fn.apply(this, args));
+  };
+  wrapped.__ocBtimeWrapped = true;
+  return wrapped;
+}
+
+function wrapCallback(fn) {
+  const wrapped = function (...args) {
+    const last = args.length - 1;
+    if (last >= 0 && typeof args[last] === "function") {
+      const cb = args[last];
+      args[last] = function (err, st) {
+        return cb.call(this, err, err ? st : patch(st));
+      };
+    }
+    return fn.apply(this, args);
+  };
+  wrapped.__ocBtimeWrapped = true;
+  return wrapped;
+}
+
+function wrapPromise(fn) {
+  const wrapped = function (...args) {
+    const result = fn.apply(this, args);
+    return result && typeof result.then === "function" ? result.then((st) => patch(st)) : result;
+  };
+  wrapped.__ocBtimeWrapped = true;
+  return wrapped;
+}
+
+function patchInto(target, names, wrap) {
+  if (!target) return;
+  for (const name of names) {
+    try {
+      const fn = target[name];
+      if (typeof fn !== "function" || fn.__ocBtimeWrapped) continue;
+      const wrapped = wrap(fn);
+      try {
+        target[name] = wrapped;
+      } catch (_) {
+        Object.defineProperty(target, name, {
+          value: wrapped,
+          writable: true,
+          configurable: true,
+        });
+      }
+    } catch (err) {
+      warn(err);
+    }
+  }
+}
+
+function install() {
+  const SYNC = ["statSync", "lstatSync", "fstatSync"];
+  const CALLBACK = ["stat", "lstat", "fstat"];
+  const PROMISE = ["stat", "lstat"];
+
+  let fs;
+  try {
+    fs = require("fs");
+  } catch (err) {
+    warn(err);
+    return;
+  }
+
+  patchInto(fs, SYNC, wrapSync);
+  patchInto(fs, CALLBACK, wrapCallback);
+  patchInto(fs.promises, PROMISE, wrapPromise);
+
+  // node:fs/promises is its own module object, distinct from fs.promises.
+  try {
+    patchInto(require("node:fs/promises"), PROMISE, wrapPromise);
+  } catch (_) {}
+
+  // FileHandle.stat() bypasses the module functions entirely.
+  try {
+    for (const handle of [fs.promises && fs.promises.FileHandle, fs.FileHandle]) {
+      if (handle && handle.prototype && typeof handle.prototype.stat === "function") {
+        const original = handle.prototype.stat;
+        if (!original.__ocBtimeWrapped) {
+          handle.prototype.stat = function (...args) {
+            return wrapPromise(original).apply(this, args);
+          };
+          handle.prototype.stat.__ocBtimeWrapped = true;
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+try {
+  install();
+} catch (err) {
+  warn(err);
+}
+
+function selftest() {
+  const fs = require("fs");
+  const dir = process.env.HOME || "/tmp";
+  const base = dir + "/.bt-shim-selftest-" + Date.now();
+  const other = base + ".other";
+  try {
+    fs.writeFileSync(base, "a");
+    const before = fs.statSync(base, { bigint: true }).birthtimeNs;
+    fs.appendFileSync(base, "b");
+    const after = fs.statSync(base, { bigint: true }).birthtimeNs;
+    fs.writeFileSync(other, "a");
+    const otherNs = fs.statSync(other, { bigint: true }).birthtimeNs;
+
+    const moved = before !== after;
+    const collided = before === otherNs;
+    console.log("[btime-shim] selftest");
+    console.log("  birthtime stable across a write?    " + (moved ? "NO (bad)" : "yes"));
+    console.log("  distinct files get distinct btime?  " + (collided ? "NO (bad)" : "yes"));
+    console.log(
+      "  verdict: " +
+        (!moved && !collided ? "OK - birthtime now behaves like Linux" : "FAILED")
+    );
+  } catch (err) {
+    console.log("[btime-shim] selftest error: " + err.message);
+  } finally {
+    for (const f of [base, other]) {
+      try {
+        fs.unlinkSync(f);
+      } catch (_) {}
+    }
+  }
+}
+
+if (process.env.OC_BTIME_SHIM_SELFTEST === "1") selftest();
+OCBTEOF
+
+    # Verify by effect, not by grep: the shim has to make birthtime survive a
+    # write. A shim that cannot do that is worse than none, so it is removed.
+    # -e "" is load-bearing: bare `node` reads its script from stdin, so in an
+    # installer it swallows the caller's input — and on a TTY it blocks until
+    # EOF, which looks exactly like a hang. The shim's self-test runs at require
+    # time, so the eval body can be empty.
+    if ! OC_BTIME_SHIM_SELFTEST=1 NODE_OPTIONS="--require $OC_BTIME_SHIM" node -e "" 2>/dev/null | grep -q "verdict: OK"; then
+        rm -f "$OC_BTIME_SHIM" 2>/dev/null || true
+        warn_msg "birthtime shim failed its self-test and was removed"
+        echo -e "   The gateway will still start, but may hit Android birthtime guards."
+        echo -e "   Please report it: ${BLUE}${REPORT_URL}${NC}"
+        return 0
+    fi
+
+    # Use it for the rest of this install too. The migrations and the first
+    # start happen below, and those are exactly where the guards fire.
+    case "${NODE_OPTIONS:-}" in
+        *btime-shim.cjs*) : ;;
+        *) export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require $OC_BTIME_SHIM" ;;
+    esac
+
+    if [[ "$silent" != "silent" ]]; then
+        success_msg "birthtime emulation active"
+    fi
+}
+
 # Thin coordinator: invokes all patch modules.
 # apply_patches [silent] [scope]
 #
@@ -2551,6 +3039,7 @@ apply_patches() {
             patch_paperclip "$silent"
             ;;
         openclaw)
+            patch_openclaw_btime_shim "$silent"
             patch_koffi "$silent"
             patch_openclaw_tmp "$silent"
             patch_openclaw_registerhooks "$silent"
@@ -2562,6 +3051,7 @@ apply_patches() {
             patch_openclaw_sqlite_identity "$silent"
             ;;
         all|*)
+            patch_openclaw_btime_shim "$silent"
             patch_koffi "$silent"
             patch_gemini_cli "$silent"
             patch_paperclip "$silent"
@@ -3746,6 +4236,9 @@ HOME='${HOME}'
 export PATH="\$TERMUX_BIN:\$HOME/.local/share/pnpm:\$PATH"
 export npm_execpath="\$TERMUX_BIN/npm"
 export NODE_OPTIONS="--dns-result-order=ipv4first --max-old-space-size=${SAFE_LIMIT}"
+# Android reports ctime as birthtime, which breaks OpenClaw's "has this file
+# changed?" guards. Load the emulation shim when the toolkit installed one.
+[ -f "\$HOME/.openclaw/btime-shim.cjs" ] && export NODE_OPTIONS="\$NODE_OPTIONS --require \$HOME/.openclaw/btime-shim.cjs"
 export OPENCLAW_TMP="\$HOME/.openclaw/tmp"
 PNPM_NODE_PATH=""
 if command -v pnpm >/dev/null 2>&1; then
@@ -3950,8 +4443,11 @@ manage_pm2() {
                     success_msg
                     local PNPM_NODE_PATH; PNPM_NODE_PATH=$(pnpm_root_g || true)
                     local SAFE_LIMIT; SAFE_LIMIT=$(get_mem_limit)
-                    local _env="NODE_OPTIONS='--dns-result-order=ipv4first --max-old-space-size=$SAFE_LIMIT' OPENCLAW_TMP='$HOME/.openclaw/tmp' NODE_PATH='$PREFIX/lib/node_modules${PNPM_NODE_PATH:+:$PNPM_NODE_PATH}' npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH'"
+                    local _env="NODE_OPTIONS='$(_oc_node_options "$SAFE_LIMIT")' OPENCLAW_TMP='$HOME/.openclaw/tmp' NODE_PATH='$PREFIX/lib/node_modules${PNPM_NODE_PATH:+:$PNPM_NODE_PATH}' npm_execpath='$TERMUX_BIN/npm' PATH='$TERMUX_BIN:\$PATH'"
                     execute "$_env pm2 start '$openclaw_path' --name openclaw --interpreter none -- gateway run && pm2 save" "Starting OpenClaw in PM2"
+                    # A --require shim only exists if it was in NODE_OPTIONS when the
+                    # process started; verify rather than assume (see _oc_verify_launch_env).
+                    _oc_verify_launch_env
                 else
                     error_msg "OpenClaw is not installed."
                 fi
