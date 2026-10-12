@@ -994,7 +994,13 @@ check_termux() {
 
 install_openclaw() {
     local mode="repair"
-    local target_version="latest"
+    # Default to the tested pin, never to an unverified release. Two measured
+    # reasons on the 1.8 GB class (see COMPATIBILITY.md): 2026.9.8/9.9 peak
+    # ~900 MB RSS and get LMK-restarted every few minutes, while 2026.9.3 runs
+    # ~470 MB and survives; and OpenClaw's schema guard refuses a downgrade
+    # (9.3 supports state schema 16, 9.8+ migrate to 19) without a pre-update
+    # backup. "Latest" stays available as an explicit opt-in.
+    local target_version="$TESTED_OPENCLAW"
 
     echo -e "${YELLOW}Compatibility:${NC} $(compat_line openclaw)\n"
 
@@ -1002,7 +1008,8 @@ install_openclaw() {
         local choice
         choice=$(show_whi_menu "OpenClaw is already installed  |  Use ↑/↓ and Enter" \
             "REPAIR"    "[R]  Repair Patches (Fast — ~2 seconds)" \
-            "UPDATE"    "[U]  Update to Latest (Full re-install)" \
+            "UPDATE"    "[U]  Update to Tested ${TESTED_OPENCLAW} (Full re-install)" \
+            "LATEST"    "[L]  Update to Latest (unverified)" \
             "VERSION"   "[V]  Install Specific Version (e.g. 2026.6.30)" \
             "ZULIP"     "[Z]  Zulip Plugin" \
             ""          "" \
@@ -1010,7 +1017,9 @@ install_openclaw() {
         case "$choice" in
             "") return 0 ;;
             REPAIR) mode="repair" ;;
-            UPDATE) mode="full" ;;
+            UPDATE) mode="full" ;;  # target_version is already the tested pin
+            LATEST) mode="full"; target_version="latest"
+                    warn_msg "Latest is unverified on this class — see COMPATIBILITY.md" ;;
             VERSION)
                 mode="full"
                 if command -v gum >/dev/null 2>&1; then
@@ -1020,8 +1029,8 @@ install_openclaw() {
                     read -r target_version
                 fi
                 if [ -z "$target_version" ]; then
-                    warn_msg "No version entered — defaulting to latest"
-                    target_version="latest"
+                    warn_msg "No version entered — defaulting to tested ${TESTED_OPENCLAW}"
+                    target_version="$TESTED_OPENCLAW"
                 fi
                 ;;
             ZULIP) manage_zulip_plugin; return 0 ;;
@@ -1030,13 +1039,16 @@ install_openclaw() {
     else
         local choice
         choice=$(show_whi_menu "Install OpenClaw  |  Use ↑/↓ and Enter" \
-            "INSTALL"   "[I]  Install Latest" \
+            "INSTALL"   "[I]  Install Tested ${TESTED_OPENCLAW}" \
+            "LATEST"    "[L]  Install Latest (unverified)" \
             "VERSION"   "[V]  Install Specific Version (e.g. 2026.6.30)" \
             ""          "" \
             "BACK"      "<--  BACK TO AGENTS MENU") || return 0
         case "$choice" in
             "") return 0 ;;
-            INSTALL) mode="full" ;;
+            INSTALL) mode="full" ;;  # target_version is already the tested pin
+            LATEST) mode="full"; target_version="latest"
+                    warn_msg "Latest is unverified on this class — see COMPATIBILITY.md" ;;
             VERSION)
                 mode="full"
                 if command -v gum >/dev/null 2>&1; then
@@ -1046,8 +1058,8 @@ install_openclaw() {
                     read -r target_version
                 fi
                 if [ -z "$target_version" ]; then
-                    warn_msg "No version entered — defaulting to latest"
-                    target_version="latest"
+                    warn_msg "No version entered — defaulting to tested ${TESTED_OPENCLAW}"
+                    target_version="$TESTED_OPENCLAW"
                 fi
                 ;;
             BACK|*) return 0 ;;
