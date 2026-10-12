@@ -89,6 +89,14 @@ it again — but say so if a newer version fixed it.
   gated on `process.platform === "linux"`, and Termux reports `"android"`. The
   patch accepts both. If you still see it, the patch did not match your build —
   please report.
+- **Why 2026.9.3 is the pinned default.** It is the last release that fits the
+  1.8 GB class: ~470 MB RSS steady on the y6, versus a ~900 MB peak for
+  2026.9.8/9.9, which the memory killer restarts every few minutes. The menu
+  installs the tested version by default; "Latest" is an explicit opt-in.
+- **Downgrades hit a schema guard.** 2026.9.3 supports state schema 16;
+  2026.9.8+ migrate `~/.openclaw/state` to schema 19, and OpenClaw refuses to
+  open newer data. Moving back needs a pre-update backup (`openclaw backup`) —
+  without one the only path is resetting state. Take a backup before upgrading.
 
 #### `openclaw doctor --fix` cannot run here — what to use instead
 
