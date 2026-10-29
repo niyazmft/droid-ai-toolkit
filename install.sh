@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.5"
+VERSION="1.17.6"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -3449,7 +3449,17 @@ _detect_hermes_state() {
     local hcmd=""
     hcmd=$(type -P hermes 2>/dev/null || true)
     if [ -n "$hcmd" ] || [ -f "$HOME/.hermes/bin/hermes" ]; then
-        echo "yes"
+        # A `pkg upgrade` can leave the venv interpreter pointing at a new
+        # Python major version while its site-packages stay behind; Hermes then
+        # crash-loops on "No module named yaml" even though the launcher exists.
+        # Report that as broken so the menu offers [F] Fix instead of [U] Update.
+        # Only downgrade when a venv actually exists — an install without one
+        # (pip-installed elsewhere) cannot be judged by this test.
+        if [ ! -f "$HOME/.hermes/hermes-agent/venv/pyvenv.cfg" ] || _hermes_venv_resolves; then
+            echo "yes"
+        else
+            echo "partial"
+        fi
     elif grep -q 'hermes' "$HOME/.bashrc" 2>/dev/null || [ -d "$HOME/.hermes" ]; then
         echo "partial"
     else
@@ -3535,9 +3545,184 @@ _hermes_apply_termux_fix() {
     fi
 }
 
+# --- Hermes venv interpreter hardening ---
+# `pkg upgrade` reinstalls the Termux `python` package, which rewrites the
+# UNVERSIONED $PREFIX/bin/python symlink to the newest major version (3.11 ->
+# 3.14, for example). Upstream creates the venv with `python -m venv`, so the
+# venv records its interpreter as venv/bin/python -> /usr/bin/python, i.e. the
+# unversioned name. When that symlink moves, the venv silently switches ABI
+# while its site-packages stay in lib/python3.11 -- every import then fails
+# ("No module named 'pip'", "'yaml'") and Hermes crash-loops (observed on
+# device 8x: 323 restart attempts, gateway dead for hours).
+#
+# Pinning venv/bin/python to the ABSOLUTE VERSIONED binary ($PREFIX/bin/python3.11)
+# makes the venv immune: `pkg upgrade` never rewrites a versioned path. Verified
+# on-device that a pinned venv keeps working across a 3.11 -> 3.14 flip.
+#
+# Reads the target version from the venv's own pyvenv.cfg, so it also works for
+# a 3.12/3.13 venv. Idempotent: a healthy venv is left untouched.
+_hermes_venv_want_minor() {
+    local cfg="${1:-$HOME/.hermes/hermes-agent/venv}/pyvenv.cfg"
+    [ -f "$cfg" ] || return 1
+    sed -n 's/^version *= *\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$cfg" 2>/dev/null | head -n1
+}
+
+# Filesystem-only check (no interpreter spawn) so it is cheap enough to run on
+# menu rendering. Returns 0 when the venv's interpreter currently resolves to the
+# version recorded at creation time AND its site-packages still exist.
+#
+# NOTE: this is a NOW test, not a SAFE test. An unpinned venv whose
+# venv/bin/python -> /usr/bin/python -> python3.11 passes it today and fails
+# tomorrow, the moment `pkg upgrade` moves the unversioned symlink. Use
+# _hermes_venv_is_pinned to decide whether the venv still needs hardening.
+_hermes_venv_resolves() {
+    local venv="${1:-$HOME/.hermes/hermes-agent}"
+    [ "$(basename "$venv")" = "venv" ] || venv="$venv/venv"
+    local want resolved
+    want=$(_hermes_venv_want_minor "$venv") || return 1
+    [ -n "$want" ] || return 1
+    [ -d "$venv/lib/python$want/site-packages" ] || return 1
+    resolved=$(readlink -f "$venv/bin/python" 2>/dev/null) || return 1
+    [ "$(basename "$resolved")" = "python$want" ] || return 1
+    return 0
+}
+
+# Returns 0 only when the venv cannot be re-pointed by a system-level
+# `pkg upgrade`: its unversioned alias must point at the versioned alias inside
+# the venv, and that versioned alias must be an absolute path to the versioned
+# system binary. Any other layout is repaired by _hermes_pin_venv_interpreter.
+_hermes_venv_is_pinned() {
+    local venv="${1:-$HOME/.hermes/hermes-agent}"
+    [ "$(basename "$venv")" = "venv" ] || venv="$venv/venv"
+    local want
+    want=$(_hermes_venv_want_minor "$venv") || return 1
+    [ -n "$want" ] || return 1
+    [ "$(readlink "$venv/bin/python" 2>/dev/null)" = "python$want" ] || return 1
+    [ "$(readlink "$venv/bin/python$want" 2>/dev/null)" = "$TERMUX_BIN/python$want" ] || return 1
+    return 0
+}
+
+_hermes_pin_venv_interpreter() {
+    local src_dir="${1:-$HOME/.hermes/hermes-agent}"
+    local venv="$src_dir/venv"
+    [ -f "$venv/pyvenv.cfg" ] || return 0
+    [ -d "$venv/bin" ] || return 0
+
+    local want target
+    want=$(_hermes_venv_want_minor "$venv") || return 1
+    if [ -z "$want" ]; then
+        warn_msg "Cannot read the Python version from $venv/pyvenv.cfg"
+        return 1
+    fi
+
+    target="$TERMUX_BIN/python$want"
+    if [ ! -x "$target" ]; then
+        warn_msg "Hermes venv needs python$want but $target is missing"
+        echo -e "  ${BLUE}Restore it with:${NC} ${YELLOW}pkg install tur-repo && pkg install python$want${NC}"
+        return 1
+    fi
+    if [ ! -d "$venv/lib/python$want/site-packages" ]; then
+        warn_msg "Hermes venv is missing lib/python$want/site-packages"
+        return 1
+    fi
+
+    # Already hardened -- the normal case after the first run of this version.
+    _hermes_venv_is_pinned "$venv" && return 0
+
+    # Distinguish "unpinned but working today" (silent hardening) from "already
+    # broken by a pkg upgrade" (needs to be reported loudly).
+    local have=""
+    have=$("$venv/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)
+
+    # Record the layout before touching it so the repair is auditable.
+    local was_link; was_link=$(readlink "$venv/bin/python" 2>/dev/null || true)
+
+    # Point the versioned link at the absolute versioned binary first, then have
+    # the unversioned aliases follow it (this is the layout `python3.X -m venv`
+    # produces, so nothing downstream can tell the difference).
+    ln -sfn "$target" "$venv/bin/python$want" 2>/dev/null || true
+    ln -sfn "python$want" "$venv/bin/python" 2>/dev/null || true
+    ln -sfn "python$want" "$venv/bin/python3" 2>/dev/null || true
+
+    local now
+    now=$("$venv/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)
+    if [ "$now" != "$want" ]; then
+        warn_msg "Could not pin the venv to python$want (runs: ${now:-nothing})"
+        return 1
+    fi
+
+    # pip is a console script whose shebang is venv/bin/python, so it comes back
+    # with the interpreter. Bootstrap only when the module is genuinely missing.
+    if ! "$venv/bin/python" -c 'import pip' >/dev/null 2>&1; then
+        status_msg "Bootstrapping pip inside the Hermes venv"
+        "$venv/bin/python" -m ensurepip --upgrade >>"$LOG_FILE" 2>&1 || true
+    fi
+
+    if [ "$have" != "$want" ]; then
+        warn_msg "Hermes venv was broken (ran ${have:-nothing}, needs $want) — repaired; no reinstall required"
+    else
+        status_msg "Hardened Hermes venv against pkg upgrade (was $was_link)"
+        success_msg
+    fi
+    return 0
+}
+
+# --- Hermes git pre-flight ---
+# A `git stash pop` that conflicts (upstream touched the same lines) leaves
+# stage-1/2/3 entries in the index with conflict markers in the worktree. While
+# that state persists BOTH `git stash push` and `git pull` refuse to run
+# ("Pulling is not possible because you have unmerged files"), so every later
+# update silently becomes a no-op and the source tree stays frozen at whatever
+# commit it reached (observed on 8x: stuck at the 2026-08-04 commit while
+# upstream HEAD had moved months ahead).
+#
+# The Termux fix is regenerated from scratch after every pull, so keeping
+# upstream's side of the conflict loses nothing.
+_hermes_clear_unmerged_index() {
+    local src="${1:-$HOME/.hermes/hermes-agent}"
+    [ -d "$src/.git" ] || return 0
+
+    local unmerged
+    unmerged=$( (cd "$src" && git ls-files -u 2>/dev/null) | awk '{print $4}' | sort -u )
+    [ -n "$unmerged" ] || return 0
+
+    warn_msg "Hermes repo has an unfinished merge — resetting it before update"
+    local f
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        # Resets index and worktree to HEAD in one step, clearing the conflict.
+        (cd "$src" && git checkout HEAD -- "$f" 2>/dev/null) || true
+    done <<HERMES_UNMERGED
+$unmerged
+HERMES_UNMERGED
+
+    # Stashes left behind by the same interrupted run are now redundant. Drop
+    # only stashes this toolkit created (both the current name and the older
+    # "toolkit-termux-fix" one) — never a stash the user made themselves.
+    #
+    # Recompute the ref on every pass instead of caching a list: dropping an
+    # entry renumbers stash@{N}, so a cached list would silently fail on the
+    # second removal and leave a toolkit stash behind.
+    local ref
+    while :; do
+        ref=$( (cd "$src" && git stash list --format='%gd %s' 2>/dev/null) \
+            | grep -E ': (toolkit-termux-fix|termux-fix-pre-update)$' \
+            | tail -n1 | awk '{print $1}' ) || true
+        [ -n "$ref" ] || break
+        (cd "$src" && git stash drop "$ref" >/dev/null 2>&1) || break
+    done
+    success_msg
+}
+
 _hermes_ensure_termux_deps() {
     local venv_pip="$HOME/.hermes/hermes-agent/venv/bin/pip"
     local src_dir="$HOME/.hermes/hermes-agent"
+
+    # Repair a venv whose interpreter was re-pointed by a `pkg upgrade` before
+    # any pip call: on a drifted venv venv/bin/pip exists but cannot import pip,
+    # so the -x guard below would pass and every following pip call would fail.
+    _hermes_pin_venv_interpreter "$src_dir" || return 0
+
     [ -x "$venv_pip" ] || return 0
     [ -d "$src_dir" ] || return 0
 
@@ -3749,31 +3934,47 @@ install_hermes() {
         # trigger a source build (maturin needs ANDROID_API_LEVEL on Termux).
         _setup_rust_env >/dev/null
 
-        # Stash the Termux fix patch before pulling, so git pull doesn't
-        # fail on the local modification to hermes_cli/main.py. The stash
-        # is popped and re-applied after the pull completes.
         local _hermes_src="$HOME/.hermes/hermes-agent"
-        local _had_termux_fix=false
-        if [ -d "$_hermes_src" ]; then
-            if (cd "$_hermes_src" && git diff --quiet hermes_cli/main.py 2>/dev/null); then
-                : # clean — nothing to stash
+
+        # Repair the venv BEFORE anything pip-related. A `pkg upgrade` since the
+        # last run may have re-pointed /usr/bin/python to a new major version,
+        # which silently breaks every import inside the venv. See
+        # _hermes_pin_venv_interpreter.
+        _hermes_pin_venv_interpreter "$_hermes_src" || true
+
+        # Clear any index left unmerged by an interrupted stash pop; otherwise
+        # the pull below refuses to run and the update becomes a silent no-op.
+        _hermes_clear_unmerged_index "$_hermes_src"
+
+        # Discard our own patch instead of stashing it. The patch is regenerated
+        # from scratch after the pull, so this cannot lose anything, and it
+        # eliminates the stash/pop conflict that used to poison the index.
+        # Only files carrying OUR marker are discarded; a hand edit the user made
+        # to the same file is stashed instead of being silently thrown away.
+        if [ -d "$_hermes_src/.git" ]; then
+            if (cd "$_hermes_src" && git diff --quiet -- hermes_cli/main.py 2>/dev/null); then
+                : # no local changes — nothing to undo
+            elif (cd "$_hermes_src" && git diff -- hermes_cli/main.py 2>/dev/null | grep -q 'Termux fix'); then
+                (cd "$_hermes_src" && git checkout HEAD -- hermes_cli/main.py 2>/dev/null) || true
             else
-                (cd "$_hermes_src" && git stash push -m "termux-fix-pre-update" \
-                    hermes_cli/main.py 2>/dev/null) && _had_termux_fix=true
+                warn_msg "hermes_cli/main.py has local edits that are not ours — stashing them"
+                (cd "$_hermes_src" && git stash push -m "hermes-local-edits-pre-update" \
+                    hermes_cli/main.py 2>/dev/null) || true
             fi
         fi
 
         status_msg "Git pulling latest code"
-        (cd "$_hermes_src" && git pull origin main) 2>>"$LOG_FILE" || true
-        success_msg
-
-        # Re-apply the Termux fix patch if we stashed it earlier.
-        if [ "$_had_termux_fix" = true ] && [ -d "$_hermes_src" ]; then
-            (cd "$_hermes_src" && git stash pop 2>/dev/null) || true
-            # If pop conflicted (upstream changed the same lines), resolve
-            # by re-running the patch logic from the post-install step.
-            _hermes_apply_termux_fix "$_hermes_src"
+        local _pull_rc=0
+        (cd "$_hermes_src" && git pull origin main) 2>>"$LOG_FILE" || _pull_rc=$?
+        if [ "$_pull_rc" -eq 0 ]; then
+            success_msg
+        else
+            warn_msg "git pull failed (exit $_pull_rc) — continuing with the current source tree"
         fi
+
+        # Re-apply the Termux fix unconditionally: it is idempotent, and it is
+        # the only local modification we ever make to the checkout.
+        _hermes_apply_termux_fix "$_hermes_src"
 
         _hermes_ensure_termux_deps
 
@@ -3834,6 +4035,26 @@ install_hermes() {
         # Clean stale update markers that block startup
         rm -f "$HOME/.hermes/hermes-agent/.update-incomplete" \
               "$HOME/.hermes/hermes-agent/.update-incomplete.lock"
+        success_msg
+
+        # A venv whose interpreter was re-pointed by `pkg upgrade` looks exactly
+        # like a broken install, but it is repaired by one symlink, not by a
+        # reinstall (which can mean an hour of Rust builds). Try the cheap fix
+        # first and only fall through to the upstream installer if it does not
+        # bring the venv back to life.
+        if _hermes_pin_venv_interpreter "$HOME/.hermes/hermes-agent" 2>/dev/null; then
+            if "$HOME/.hermes/hermes-agent/venv/bin/python" \
+                 -c "import pip, yaml" >/dev/null 2>&1; then
+                echo -e "\n${GREEN} Hermes repaired in place — no reinstall needed.${NC}"
+                if command -v pm2 >/dev/null 2>&1; then
+                    pm2 restart hermes --update-env 2>/dev/null || true
+                fi
+                health_check "Hermes" "command -v hermes" || true
+                wait_to_continue
+                return 0
+            fi
+        fi
+        status_msg "Cheap repair was not enough — running the full installer"
         success_msg
     fi
 
