@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.17.5-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.17.6-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -56,6 +56,7 @@ A high-performance, automated toolkit for running AI tools — [OpenClaw](https:
 - 🔁 **Reachable After Reboot (v1.17.5+)**: The generated boot script restores `sshd` as well as PM2, so a reboot no longer leaves your phone answering ping while every port refuses — see [Keeping services alive after a reboot](#keeping-services-alive-after-a-reboot).
 - 🛟 **Update Safety Net (v1.17.5+)**: An OpenClaw update snapshots your working install first and rolls back automatically if the download is killed — the usual outcome on low-RAM devices — instead of leaving no working `openclaw` at all.
 - 🧩 **Your Plugin Choices Are Kept (v1.17.5+)**: The installer no longer force-disables plugins you enabled yourself (e.g. `openclaw-honcho`, `zulip`) when it re-applies its config.
+- 🐍 **Survives `pkg upgrade` (v1.17.6+)**: A Termux `pkg upgrade` moves the unversioned `python` symlink to a new major version, which used to silently break the Hermes virtualenv (`No module named 'pip'` / `'yaml'`) and leave the gateway crash-looping. The venv is now pinned to the versioned interpreter, so upgrades cannot break it — see [Hermes — Nous Research Agent](#hermes--nous-research-agent).
 - 📂 **Path Awareness**: Aggressively redirects `/bin/npm`, `/bin/node`, and `/tmp` to Termux-compatible directories using `$PREFIX`.
 - 🚀 **PM2 Integration**: Native support for starting, stopping, and monitoring OpenClaw, n8n, Ollama, Paperclip, Pi, and Gemini CLI via PM2 with optimized memory flags.
 - 📦 **pnpm Support**: Integrated support for pnpm to speed up installations and save storage space.
@@ -218,6 +219,8 @@ hermes                # Start the agent
 > **💡 Wheel Cache (v1.15.3+):** After your first successful Hermes install, compiled Python wheels (`cryptography`, `Pillow`, `pydantic-core`, `jiter`, etc.) are automatically saved to `~/.hermes/wheel-cache`. Future **[R] Reinstall** or **[U] Update** operations skip compilation entirely and reuse these cached wheels, dropping install time from ~90 minutes to under 2 minutes on the same device.
 >
 > **🔧 v1.16.0 Update Fix:** The `[U] Update` path for Hermes now handles upstream code changes gracefully: the Termux fix patch is **stashed before `git pull`** and re-applied after, preventing merge conflicts. Stale `.update-incomplete` markers from interrupted upstream updates are cleaned automatically. Build backends (`maturin`, `pybind11`) are pre-installed so pip can compile new dependency versions from source. PM2 is restarted with `--interpreter bash` to ensure the Hermes bash wrapper runs correctly.
+>
+> **🔧 v1.17.6 `pkg upgrade` Resilience:** A Termux `pkg upgrade` that reinstalls the `python` package rewrites the **unversioned** `/usr/bin/python` symlink (3.11 → 3.14). The Hermes virtualenv used to follow it, so its interpreter changed major version while its packages stayed in `venv/lib/python3.11` — every import then failed (`No module named 'pip'` / `'yaml'`) and the gateway restart-looped. The venv's interpreter is now pinned to the **versioned** binary (`$PREFIX/bin/python3.11`), which `pkg upgrade` never rewrites, so upgrades can no longer break it. An already-drifted venv is detected and repaired in place — **[F] Fix** costs one symlink, not a reinstall.
 >
 > **🔧 v1.15.7 Update Fix:** The `[U] Update` path for Hermes now bypasses upstream `hermes update` on Termux, which internally uses `uv` — a tool that rejects Android-built wheels and attempts to compile itself from source (causing OOM/hang). Instead, the toolkit performs a manual `git pull origin main` followed by `pip install -e .`, ensuring a clean and reliable update. Stale gateway locks are also cleaned automatically after the process kill.
 

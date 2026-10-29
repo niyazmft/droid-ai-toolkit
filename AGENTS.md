@@ -35,7 +35,7 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.17.5). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version (v1.17.6). `package.json` version (1.0.0) is stale — ignore it.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
 
@@ -226,6 +226,36 @@ openclaw gateway call channels.start --params '{"channel":"telegram"}'
 ```
 
 (`health-monitor` logs `channel autostart suppressed; treating as expected stopped` while this is in effect.)
+
+## Hermes venv survives `pkg upgrade` (v1.17.6+)
+
+Device 8x (2026-10-29) ran `pkg upgrade` and then a toolkit Hermes update. The update failed with `ModuleNotFoundError: No module named 'pip'` (and `'yaml'` for every gateway start), and the gateway restart-looped — pm2 showed hundreds of restarts.
+
+**Nothing was corrupt. The venv's interpreter had moved underneath it.** The chain:
+
+1. Termux's `python` package owns an **unversioned** `/usr/bin/python` symlink. `apt full-upgrade` on 2026-10-29 22:54 replaced the `python` package (3.14.6 → 3.14.8) and rewrote that symlink to `python3.14` (dpkg `python.list` mtime matches).
+2. Upstream creates the venv with bare `python -m venv`, so the venv records `venv/bin/python -> /usr/bin/python` — the unversioned name.
+3. After the flip the venv's interpreter became 3.14 while its 233 packages stayed in `venv/lib/python3.11`. Every import then failed.
+
+Evidence that this is the whole story: re-entering the same venv through a `python3.11` symlink made `import pip, yaml` and `hermes --version` work with **zero** package changes (`Hermes Agent v0.20.0`, `Python: 3.11.17`). So the fix is one symlink, not a reinstall.
+
+**The fix is to pin the venv's interpreter to the versioned binary**, which `pkg upgrade` never rewrites:
+
+- `_hermes_venv_want_minor()` reads the target `X.Y` from the venv's own `pyvenv.cfg` (so 3.12/3.13 venvs work too).
+- `_hermes_pin_venv_interpreter()` sets `venv/bin/pythonX.Y -> $PREFIX/bin/pythonX.Y` (absolute) and `venv/bin/python` / `python3 -> pythonX.Y`, then verifies by running the interpreter. If `pip` is genuinely absent it bootstraps with `ensurepip`.
+- `_hermes_venv_resolves()` (does it work *now*) and `_hermes_venv_is_pinned()` (can `pkg upgrade` break it) are deliberately separate. A venv that works today through the unversioned chain **passes the first and fails the second** — that is the exact 8x state, and using only the first would have skipped the hardening.
+
+Call sites: the top of `_hermes_ensure_termux_deps()` (the single funnel for every pip call, so it covers install/fix/update), the top of the UPDATE branch, and `[F] Fix` — which now repairs in place and only falls through to the upstream installer if the cheap repair is insufficient. `_detect_hermes_state()` uses the resolve test so a drifted venv is reported as `partial`, offering the user `[F] Fix` instead of an `[U] Update` that cannot succeed.
+
+Verified on-device against a scratch venv in three states (fragile/unpinned, already-broken, healthy): fragile and broken are repaired to the same pinned layout, healthy is a silent no-op, and a second run is silent. Durability was verified by pinning a venv, flipping `/usr/bin/python` to 3.14, and confirming the venv still ran 3.11.17.
+
+Related fix in the same path — **the git index no longer poisons updates.** The old update flow stashed its own patch, pulled, then `git stash pop`ed. A pop that conflicts (upstream edits the same lines) leaves stage-1/2/3 entries in the index, and from then on **both** `git stash push` and `git pull` refuse to run (`Pulling is not possible because you have unmerged files`); 8x had been frozen at the 2026-08-04 commit for ~3 months because of this, and the `2>/dev/null` + `|| true` around the stash call hid it. Now:
+
+- `_hermes_clear_unmerged_index()` resolves any unfinished merge with `git checkout HEAD -- <path>` (which clears index and worktree in one step) and drops **only** stashes tagged `termux-fix-pre-update` — never a stash the user created.
+- The update path no longer stashes at all: it discards its own patch with `git checkout HEAD -- hermes_cli/main.py` and re-applies it afterwards, since `_hermes_apply_termux_fix` regenerates it from scratch. This removes the conflict source entirely.
+- `git pull` failure is reported (`warn_msg` with the exit code) instead of being followed by an unconditional `success_msg`.
+
+Do not "fix" the venv by re-pointing the system `/usr/bin/python` to 3.11. That is what `_hermes_ensure_compatible_python` does for the upstream installer, and the next `pkg upgrade` reverts it; it also changes the default interpreter for every other tool (3.14 packages such as `python-numpy` are installed alongside). Pin the venv instead.
 
 ## Zulip Plugin Management (v1.15.3+)
 
