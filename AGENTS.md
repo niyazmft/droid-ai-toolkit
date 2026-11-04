@@ -257,6 +257,44 @@ Related fix in the same path — **the git index no longer poisons updates.** Th
 
 Do not "fix" the venv by re-pointing the system `/usr/bin/python` to 3.11. That is what `_hermes_ensure_compatible_python` does for the upstream installer, and the next `pkg upgrade` reverts it; it also changes the default interpreter for every other tool (3.14 packages such as `python-numpy` are installed alongside). Pin the venv instead.
 
+## Hermes 2026.9.24 on Termux — stash-pop brick, missing `os.link`, dependency ownership (v1.17.7+)
+
+Device 8x (2026-11-05) ran a toolkit update and came back with **no working `hermes`**: every launch died at
+
+```text
+File "~/.hermes/hermes-agent/hermes_cli/main.py", line 334
+    <<<<<<< Updated upstream
+    ^^
+SyntaxError: invalid syntax
+```
+
+and pm2 restart-looped (32 restarts, `errored`). Three separate faults, one per layer.
+
+**1. The run used a stale copy of the toolkit.** `~/install.sh` (2026-10-07, pre-v1.17.6) was still on disk next to the current `~/droid-ai-toolkit/install.sh`. The old copy still did `git stash push -m termux-fix-pre-update` → `git pull` → `git stash pop`, and upstream had rewritten the same region, so the pop left conflict markers in the worktree and stage 1/2/3 entries in the index. v1.17.6 removed that stash/pop entirely, so the fix for this class was already shipped — the device simply ran the wrong file. **When a Hermes update goes wrong, first check which script ran** (`ls -la ~/install*.sh`); 8x had the old copy at `~/install.sh`, now parked as `~/install.sh.stale-2026-10-07.bak`. **Do not re-add a stash around the pull.**
+
+**2. `os.link` does not exist in this Termux Python build.** 8x runs CPython 3.11.17 built 2026-10-14 where `hasattr(os, "link")` is **False** (`os.symlink` is present). Upstream assumes the POSIX contract — `os.link` raises `OSError` where hardlinks are unsupported — and Android's bionic `link()` does fail with `EACCES` under `/data/data`, which is the exact fallback path upstream already implements. Without the attribute, upstream gets an `AttributeError` it never catches:
+
+```text
+hermes: source-update completion failed: module 'os' has no attribute 'link'; running with the previous dependencies
+```
+
+raised from `hermes_cli/update_lock.py::_publish_exclusive` (`os.link(tmp, path)`; its `except OSError` fallback never runs). Every other `os.link` call site in the tree has the same shape (`cron/cancellation.py`, `web_routers/local_models.py`, `update_cmd_zip.py`, `hosted_room_peer.py`).
+
+**The fix is a venv-level `sitecustomize.py`**, not a patch to those files: it defines `os.link` through `libc` with `ctypes` when the attribute is missing, so callers get a real `OSError(EACCES)` and their own fallbacks run. Writing it into `venv/lib/pythonX.Y/site-packages/` (rather than the checkout) means `git pull` cannot clobber it, the tree stays clean for the updater's dirty-tree check, and it applies to every interpreter in that venv, including pip subprocesses and pm workers.
+
+**3. Upstream wants to finish the checkout with its own PM store, which this install must not use.** 2026.9.24 completes a git checkout by syncing dependencies through PM: a pinned `uv` (on bionic, a `.deb` from `packages.termux.dev`), a pinned **CPython 3.14**, and `uv.lock` resolution. On a 3.6 GB device that is the same class of path that OOMs (`uv` compiling Rust, glibc wheels), and it would replace the pip-managed 3.11 venv the toolkit pins and fills from the wheel cache. `pm.venv_is_current()` therefore reports **False** forever on a toolkit-managed install — it is not a fault, it is the split of ownership.
+
+The shim sets `HERMES_DISABLE_LAZY_INSTALLS=1` (upstream's documented escape hatch; `venv_sync.prepare_launch` returns immediately) via `os.environ.setdefault`, so an operator can still export `=0` to opt back in. `install.sh` owns Hermes deps on Termux: `git pull` + pip into the venv + wheel cache, never `hermes update` and never the PM tail.
+
+Supporting `install.sh` changes in the same release:
+
+- **`_hermes_checkout_broken`** treats lines starting with `<<<<<<<` or `>>>>>>>` in `hermes_cli/main.py` as a broken install, so `_detect_hermes_state` reports `partial` and offers **[F] Fix** instead of pretending the launcher proves health.
+- **[F] Fix** now clears an unmerged index, resets `hermes_cli/main.py` to HEAD, re-applies the Termux fix, re-pins the venv, reinstalls the platform shims, and only claims success after `hermes --version` exits 0.
+- **The update path verifies with `hermes --version`**, never with `command -v hermes` (the `$PREFIX/bin` shim survives a deleted package and a conflict-marked checkout — that is exactly how this update reported success on a broken install). Post-pull conflict markers are reset automatically.
+- **`snowballstemmer` is installed** with the deps: `pyproject.toml` declares it only for `python_version >= '3.14'` while `tools/tool_search_catalog.py` imports it unconditionally, so a 3.11 venv loses tool search with `Tool search assembly skipped: No module named 'snowballstemmer'`.
+
+Verified on 8x after the repair: `hermes --version` → `vgt.a53912d (2026.9.24)`, `hermes status` shows the gateway running with Telegram + Zulip, gateway reached `Connected to Telegram (polling mode)` with no tracebacks, `pip check` clean, tree clean, stash list empty, `pm2 save` written. The shim writer is idempotent (identical payload → no rewrite) and refuses to overwrite a `sitecustomize.py` it does not own.
+
 ## Zulip Plugin Management (v1.15.3+)
 
 A dedicated sub-menu **[Z] Zulip Plugin** under AGENTS → OpenClaw provides:
