@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.6"
+VERSION="1.17.7"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -3456,7 +3456,14 @@ _detect_hermes_state() {
         # Only downgrade when a venv actually exists — an install without one
         # (pip-installed elsewhere) cannot be judged by this test.
         if [ ! -f "$HOME/.hermes/hermes-agent/venv/pyvenv.cfg" ] || _hermes_venv_resolves; then
-            echo "yes"
+            # The launcher existing proves nothing: a checkout left with merge
+            # conflict markers (an interrupted merge / conflicted stash pop) has
+            # a launcher that dies on import, and that state must offer [F] Fix.
+            if _hermes_checkout_broken; then
+                echo "partial"
+            else
+                echo "yes"
+            fi
         else
             echo "partial"
         fi
@@ -3543,6 +3550,13 @@ _hermes_apply_termux_fix() {
     if grep -q '^if _try_ultrafast_version():' "$_main" 2>/dev/null; then
         sed -i 's/^if _try_ultrafast_version():/if False:  # Termux fix (upstream PROJECT_ROOT race)/' "$_main" 2>/dev/null || true
     fi
+    # 2026.9.24+ has NEITHER call site: the fast path is now
+    # `if _startup_fast.try_fast_version():`, preceded by
+    # _startup_fast.ensure_project_root_on_path(), and it works on Termux as-is
+    # (verified on 8x: `hermes --version` answers correctly with no patch). Both
+    # patterns above therefore no-op on current upstream — kept only for installs
+    # still sitting on the older call sites. Do not "fix" the grep by adding the
+    # new call site: disabling it would reintroduce the slow path it replaced.
 }
 
 # --- Hermes venv interpreter hardening ---
@@ -3667,6 +3681,159 @@ _hermes_pin_venv_interpreter() {
     return 0
 }
 
+# --- Hermes Android platform shims (sitecustomize) ---
+# Two host assumptions are wrong on Termux, and both are fixed from OUTSIDE the
+# git checkout: a venv file survives `git pull`, cannot be clobbered by upstream,
+# and keeps the tree clean (the updater refuses to pull over local edits, and any
+# edit we did make to a tracked file would have to be regenerated every update).
+#
+# 1. `os.link` may not exist at all. Some Termux Python builds ship without it
+#    (HAVE_LINK/HAVE_LINKAT not detected), so every `os.link(...)` raises
+#    AttributeError instead of the OSError upstream code is written against.
+#    On Android, bionic link() itself fails with EACCES under /data/data — the
+#    very "filesystem has no hard links" path upstream already falls back from.
+#    Restoring the attribute through libc therefore restores the contract.
+#    (8x, 2026-11-05: `hermes` died in hermes_cli/update_lock._publish_exclusive
+#    with "source-update completion failed: module 'os' has no attribute 'link'".)
+#
+# 2. `HERMES_DISABLE_LAZY_INSTALLS`. Finishing a git checkout upstream-side means
+#    syncing dependencies through Hermes' own PM store (pinned uv + a pinned
+#    CPython from the Termux repo, resolved from uv.lock). On these devices that
+#    path is the one that OOMs or installs a dependency generation the install
+#    cannot use — install.sh owns the dependencies (pip into the venv, wheel
+#    cache, pythonX.Y pin above). This documented escape hatch makes
+#    hermes_cli/venv_sync.prepare_launch return immediately, so a launch from
+#    the source checkout never re-syncs behind our back. Export
+#    HERMES_DISABLE_LAZY_INSTALLS=0 to opt back in.
+HERMES_SHIM_MARKER="# Installed by droid-ai-toolkit (install.sh). Do not edit by hand."
+
+_hermes_shim_payload() {
+    cat <<'HERMES_SITECUSTOMIZE'
+# Installed by droid-ai-toolkit (install.sh). Do not edit by hand.
+#
+# Two platform shims for Hermes on Android/Termux.  Both are no-ops on a host
+# where the condition they compensate for does not hold.
+#
+# 1) os.link
+#    Termux Python builds can be compiled WITHOUT os.link (HAVE_LINK/HAVE_LINKAT
+#    not detected), so every `os.link(...)` raises
+#        AttributeError: module 'os' has no attribute 'link'
+#    instead of the OSError upstream code is written against. On Android, bionic
+#    link() itself fails with EACCES inside /data/data, which is exactly the
+#    "filesystem has no hard links" path upstream already falls back from.
+#    Restoring the attribute through libc restores the contract: callers get an
+#    OSError they already catch, instead of an AttributeError that bricks them.
+#    (Observed on 8x: `hermes` died in hermes_cli/update_lock._publish_exclusive
+#    with "source-update completion failed: module 'os' has no attribute 'link'".)
+#
+# 2) HERMES_DISABLE_LAZY_INSTALLS
+#    Upstream finishes a git checkout by syncing dependencies through its own PM
+#    store (pinned uv + pinned python 3.14, uv.lock resolution). On Termux that
+#    path is the one that OOMs or installs a generation this device cannot use,
+#    and this install's dependencies are owned by install.sh (pip into the 3.11
+#    venv, with the wheel cache). Setting this documented escape hatch keeps
+#    `hermes` launched from a source checkout from re-syncing behind our back:
+#    hermes_cli/venv_sync.prepare_launch returns immediately when it is set.
+#    Export HERMES_DISABLE_LAZY_INSTALLS=0 to opt back in.
+import os as _os
+
+if not hasattr(_os, "link"):
+    import ctypes as _ctypes
+
+    _libc = _ctypes.CDLL(None, use_errno=True)
+    _libc_link = _libc.link
+    _libc_link.argtypes = [_ctypes.c_char_p, _ctypes.c_char_p]
+    _libc_link.restype = _ctypes.c_int
+
+    def _termux_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None,
+                     follow_symlinks=True):
+        """os.link(2) through libc (droid-ai-toolkit shim for Termux)."""
+        if src_dir_fd is not None or dst_dir_fd is not None:
+            raise NotImplementedError(
+                "os.link dir_fd arguments are not supported on this platform")
+        if _libc_link(_os.fsencode(src), _os.fsencode(dst)) != 0:
+            err = _ctypes.get_errno()
+            raise OSError(err, _os.strerror(err), _os.fsdecode(src),
+                          None, _os.fsdecode(dst))
+        return None
+
+    _os.link = _termux_link
+
+_os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
+HERMES_SITECUSTOMIZE
+}
+# Writes the shim into the venv's site-packages. Idempotent: an identical file is
+# left alone, and a foreign sitecustomize.py is never overwritten.
+_hermes_install_platform_shims() {
+    local src_dir="${1:-$HOME/.hermes/hermes-agent}"
+    local venv="$src_dir/venv"
+    [ -f "$venv/pyvenv.cfg" ] || return 0
+
+    local want
+    want=$(_hermes_venv_want_minor "$venv") || return 0
+    [ -n "$want" ] || return 0
+    local site_packages="$venv/lib/python$want/site-packages"
+    [ -d "$site_packages" ] || return 0
+
+    local target="$site_packages/sitecustomize.py"
+    if [ -e "$target" ] && ! grep -qF "$HERMES_SHIM_MARKER" "$target" 2>/dev/null; then
+        warn_msg "sitecustomize.py already exists and is not ours — skipping Hermes platform shims"
+        return 1
+    fi
+
+    local tmp
+    tmp=$(mktemp) || return 1
+    _hermes_shim_payload > "$tmp"
+    if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
+        rm -f "$tmp"
+        return 0
+    fi
+    if cp "$tmp" "$target" 2>>"$LOG_FILE"; then
+        chmod 644 "$target" 2>/dev/null || true
+        status_msg "Installed Hermes platform shims (os.link, dependency ownership)"
+    else
+        warn_msg "Could not write $target"
+        rm -f "$tmp"
+        return 1
+    fi
+    rm -f "$tmp"
+
+    # A shim that does not load is worse than no shim: it is silent. os.link is
+    # only defined by the shim when the platform lacks it, so this proves it ran.
+    if ! "$venv/bin/python" -c 'import os, sys; sys.exit(0 if hasattr(os, "link") else 1)' \
+         >/dev/null 2>&1; then
+        warn_msg "Hermes platform shims did not load from $target"
+        return 1
+    fi
+    success_msg
+}
+
+# A checkout can end up unparsable: an interrupted merge, or (8x, 2026-11-05) a
+# `git stash pop` that conflicted left `<<<<<<< Updated upstream` in
+# hermes_cli/main.py, so every launch died with SyntaxError line 334 and pm2
+# restart-looped. `command -v hermes` still succeeds in that state — the launcher
+# exists, importing it is what fails — which is why the update reported success.
+_hermes_checkout_broken() {
+    local src="${1:-$HOME/.hermes/hermes-agent}"
+    local main="$src/hermes_cli/main.py"
+    [ -f "$main" ] || return 1
+    grep -qE '^(<<<<<<< |>>>>>>> )' "$main" 2>/dev/null || return 1
+    return 0
+}
+
+# Prints the CLI version when the checkout actually runs; non-zero when it does
+# not, so callers report a broken install instead of a missing PATH entry.
+_hermes_cli_smoke_test() {
+    local out="" rc=0
+    if command -v timeout >/dev/null 2>&1; then
+        out=$(timeout 180 hermes --version 2>&1) || rc=$?
+    else
+        out=$(hermes --version 2>&1) || rc=$?
+    fi
+    printf '%s\n' "$out"
+    return "$rc"
+}
+
 # --- Hermes git pre-flight ---
 # A `git stash pop` that conflicts (upstream touched the same lines) leaves
 # stage-1/2/3 entries in the index with conflict markers in the worktree. While
@@ -3723,6 +3890,11 @@ _hermes_ensure_termux_deps() {
     # so the -x guard below would pass and every following pip call would fail.
     _hermes_pin_venv_interpreter "$src_dir" || return 0
 
+    # Platform shims (os.link, dependency ownership) belong with the interpreter
+    # fix: both are properties of this venv, and a launch that beats the pip run
+    # below must already have them.
+    _hermes_install_platform_shims "$src_dir" || true
+
     [ -x "$venv_pip" ] || return 0
     [ -d "$src_dir" ] || return 0
 
@@ -3769,6 +3941,15 @@ _hermes_ensure_termux_deps() {
     local _pip_exit=0
     "$venv_pip" install --force-reinstall --no-deps -e "$src_dir" \
         --no-build-isolation 2>>"$LOG_FILE" || _pip_exit=$?
+
+    # snowballstemmer is declared for python_version >= '3.14' but imported
+    # unconditionally by tools/tool_search_catalog.py, so a 3.11 venv warns
+    # "Tool search assembly skipped: No module named 'snowballstemmer'" and
+    # loses tool search. Pure python, ~1s, idempotent.
+    if [ "$_pip_exit" -eq 0 ]; then
+        "$venv_pip" install snowballstemmer \
+            2>>"$LOG_FILE" || true
+    fi
 
     if [ "$_pip_exit" -eq 0 ] && [ -f "$src_dir/constraints-termux.txt" ]; then
         "$venv_pip" install -e "${src_dir}[termux]" \
@@ -3976,6 +4157,18 @@ install_hermes() {
         # the only local modification we ever make to the checkout.
         _hermes_apply_termux_fix "$_hermes_src"
 
+        # Belt and braces after the pull: conflict markers mean the worktree
+        # carries an unfinished merge (an older install.sh popped its own stash
+        # here and conflicted). Reset that one file — the Termux fix is
+        # regenerated from scratch, so upstream's side loses nothing — then
+        # re-apply. Without this the update ends "successfully" on a checkout
+        # that cannot even import hermes_cli.main.
+        if _hermes_checkout_broken "$_hermes_src"; then
+            warn_msg "hermes_cli/main.py carries merge conflict markers — resetting it to HEAD"
+            (cd "$_hermes_src" && git checkout HEAD -- hermes_cli/main.py 2>>"$LOG_FILE") || true
+            _hermes_apply_termux_fix "$_hermes_src"
+        fi
+
         _hermes_ensure_termux_deps
 
         # Smoke test: verify the venv can import the current source tree.
@@ -4000,14 +4193,28 @@ install_hermes() {
             pm2 save 2>/dev/null || true
         fi
 
-        # Verify
+        # Verify with the CLI itself. `command -v hermes` proves nothing: the
+        # $PREFIX/bin shim survives a deleted package and a checkout with
+        # conflict markers still has a launcher that dies on import — that is
+        # exactly how the 8x update reported success on a bricked install.
         local hermes_final_path=""
         hermes_final_path=$(type -P hermes 2>/dev/null || true)
-        if [ -n "$hermes_final_path" ] && [ -x "$hermes_final_path" ]; then
+        if [ -z "$hermes_final_path" ] || [ ! -x "$hermes_final_path" ]; then
+            error_msg "Hermes update incomplete — the hermes launcher is missing"
+            echo -e "  ${BLUE}Check $LOG_FILE, then run SERVICES → Hermes → [F] Fix${NC}"
+            wait_to_continue
+            return 0
+        fi
+
+        local hermes_smoke_out="" hermes_smoke_rc=0
+        hermes_smoke_out=$(_hermes_cli_smoke_test) || hermes_smoke_rc=$?
+        if [ "$hermes_smoke_rc" -eq 0 ]; then
             echo -e "\n${GREEN} Hermes successfully updated!${NC}"
-            health_check "Hermes" "command -v hermes" || true
+            printf '%s\n' "$hermes_smoke_out" | sed -n '1p'
         else
-            error_msg "Hermes update incomplete — check $LOG_FILE"
+            error_msg "Hermes updated but the CLI does not start (exit $hermes_smoke_rc)"
+            printf '%s\n' "$hermes_smoke_out" | tail -n 10
+            echo -e "  ${BLUE}Repair with SERVICES → Hermes → [F] Fix (details in $LOG_FILE)${NC}"
         fi
         wait_to_continue
         return 0
@@ -4037,21 +4244,50 @@ install_hermes() {
               "$HOME/.hermes/hermes-agent/.update-incomplete.lock"
         success_msg
 
+        local _hermes_fix_src="$HOME/.hermes/hermes-agent"
+
+        # A conflicted `git stash pop` (an older toolkit popped its own patch
+        # after a pull that moved the same lines) leaves merge markers in
+        # hermes_cli/main.py, and every launch then dies with SyntaxError. That
+        # is a one-file repair, not a reinstall — and it must come before any
+        # "is it installed?" test, which a launcher alone always passes.
+        if [ -d "$_hermes_fix_src/.git" ]; then
+            _hermes_clear_unmerged_index "$_hermes_fix_src" || true
+            if _hermes_checkout_broken "$_hermes_fix_src"; then
+                warn_msg "hermes_cli/main.py carries merge conflict markers — resetting it to HEAD"
+                (cd "$_hermes_fix_src" && git checkout HEAD -- hermes_cli/main.py \
+                    2>>"$LOG_FILE") || true
+                _hermes_apply_termux_fix "$_hermes_fix_src"
+            fi
+        fi
+
         # A venv whose interpreter was re-pointed by `pkg upgrade` looks exactly
         # like a broken install, but it is repaired by one symlink, not by a
         # reinstall (which can mean an hour of Rust builds). Try the cheap fix
         # first and only fall through to the upstream installer if it does not
         # bring the venv back to life.
-        if _hermes_pin_venv_interpreter "$HOME/.hermes/hermes-agent" 2>/dev/null; then
-            if "$HOME/.hermes/hermes-agent/venv/bin/python" \
+        if _hermes_pin_venv_interpreter "$_hermes_fix_src" 2>/dev/null; then
+            _hermes_install_platform_shims "$_hermes_fix_src" || true
+            if "$_hermes_fix_src/venv/bin/python" \
                  -c "import pip, yaml" >/dev/null 2>&1; then
-                echo -e "\n${GREEN} Hermes repaired in place — no reinstall needed.${NC}"
-                if command -v pm2 >/dev/null 2>&1; then
-                    pm2 restart hermes --update-env 2>/dev/null || true
+                local fix_smoke_rc=0 fix_smoke_out=""
+                fix_smoke_out=$(_hermes_cli_smoke_test) || fix_smoke_rc=$?
+                if [ "$fix_smoke_rc" -eq 0 ]; then
+                    echo -e "\n${GREEN} Hermes repaired in place — no reinstall needed.${NC}"
+                    printf '%s\n' "$fix_smoke_out" | sed -n '1p'
+                    # Same restart the update path uses: delete+start pins
+                    # --interpreter bash in the PM2 dump (the hermes binary is a
+                    # bash script, so a Node interpreter restart crashes).
+                    if command -v pm2 >/dev/null 2>&1; then
+                        pm2 delete hermes 2>/dev/null || true
+                        pm2 start "$TERMUX_BIN/hermes" --name hermes --interpreter bash \
+                            -- gateway 2>/dev/null || true
+                        pm2 save 2>/dev/null || true
+                    fi
+                    wait_to_continue
+                    return 0
                 fi
-                health_check "Hermes" "command -v hermes" || true
-                wait_to_continue
-                return 0
+                warn_msg "Hermes still will not start after the cheap repair"
             fi
         fi
         status_msg "Cheap repair was not enough — running the full installer"
