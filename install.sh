@@ -3881,6 +3881,78 @@ HERMES_UNMERGED
     success_msg
 }
 
+# --- Hermes left-core memory providers (honcho) ---
+# 2026.9.24 moved honcho (plus hindsight, mem0, supermemory, openviking,
+# retaindb, byterover, holographic) out of the bundled `plugins/memory/<name>`
+# tree into catalog plugins. The in-tree directory survives as an EMPTY stub, so
+# plugins.memory.find_provider_dir() returns None and agent init reports
+# "Memory provider 'honcho' is not installed, so external memory is off for this
+# session" — silent memory loss on a home that configured
+# memory.provider: honcho.
+#
+# The documented remedy, `hermes plugins install honcho`, goes through the PM
+# runtime (isolated env + `uv lock`) and CANNOT work on Termux:
+#   error: No solution found when resolving dependencies for split
+#          (markers: python_full_version == '3.14.*' and sys_platform == 'android')
+#   cause: sherpa-onnx-core==1.13.8 has no ... android-compatible wheels
+# The plugin's only dependency is honcho-ai (already in the venv), so it is
+# installed the way find_provider_dir() reads it: the published subdirectory of
+# plastic-labs/honcho cloned into HERMES_HOME/plugins/honcho.
+_hermes_home_wants_honcho() {
+    local config="${1:-$HOME/.hermes}/config.yaml"
+    [ -f "$config" ] || return 1
+    # Scope to the memory: block; model.provider is a different key entirely.
+    awk '
+        /^memory:/ { inside = 1; next }
+        inside && /^[^[:space:]#]/ { inside = 0 }
+        inside && /^[[:space:]]+provider:[[:space:]]*["'"'"']?honcho["'"'"']?[[:space:]]*$/ { found = 1 }
+        END { exit !found }
+    ' "$config" 2>/dev/null
+}
+
+_hermes_ensure_honcho_memory_plugin() {
+    local src_dir="${1:-$HOME/.hermes/hermes-agent}"
+    local home="${HERMES_HOME:-$HOME/.hermes}"
+    local venv="$src_dir/venv"
+
+    [ -x "$venv/bin/python" ] || return 0
+    _hermes_home_wants_honcho "$home" || return 0
+    [ -d "$home/plugins/honcho" ] && return 0
+    # The provider may still resolve on an older checkout that bundles it.
+    if (cd "$src_dir" && "$venv/bin/python" -c \
+            'from plugins.memory import find_provider_dir; raise SystemExit(0 if find_provider_dir("honcho") else 1)') \
+            >>"$LOG_FILE" 2>&1; then
+        return 0
+    fi
+
+    status_msg "Restoring the honcho memory plugin (upstream moved it out of core)"
+    local tmp="$HOME/.honcho-plugin-src"
+    rm -rf "$tmp"
+    if ! git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/plastic-labs/honcho "$tmp" >>"$LOG_FILE" 2>&1; then
+        warn_msg "Could not clone the honcho plugin — external memory stays off until it is installed"
+        rm -rf "$tmp"
+        return 1
+    fi
+    (cd "$tmp" && git sparse-checkout set hermes-plugin-honcho) >>"$LOG_FILE" 2>&1 || true
+    mkdir -p "$home/plugins"
+    if ! cp -r "$tmp/hermes-plugin-honcho" "$home/plugins/honcho" >>"$LOG_FILE" 2>&1; then
+        warn_msg "Could not copy the honcho plugin into $home/plugins"
+        rm -rf "$tmp"
+        return 1
+    fi
+    rm -rf "$tmp"
+
+    if (cd "$src_dir" && "$venv/bin/python" -c \
+            'from plugins.memory import find_provider_dir; raise SystemExit(0 if find_provider_dir("honcho") else 1)') \
+            >>"$LOG_FILE" 2>&1; then
+        success_msg
+        return 0
+    fi
+    warn_msg "honcho plugin copied but the provider still does not resolve — check $LOG_FILE"
+    return 1
+}
+
 _hermes_ensure_termux_deps() {
     local venv_pip="$HOME/.hermes/hermes-agent/venv/bin/pip"
     local src_dir="$HOME/.hermes/hermes-agent"
@@ -3962,6 +4034,11 @@ _hermes_ensure_termux_deps() {
     else
         warn_msg "pip install exited with code $_pip_exit — check $LOG_FILE"
     fi
+
+    # honcho memory left core in 2026.9.24 and its catalog install needs the PM
+    # runtime, which cannot resolve on Termux — restore it from the published
+    # plugin subdirectory instead (see _hermes_ensure_honcho_memory_plugin).
+    _hermes_ensure_honcho_memory_plugin "$src_dir" || true
 }
 
 # Hermes requires Python 3.11–3.13. Termux's default 'python' package is now

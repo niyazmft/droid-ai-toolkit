@@ -293,6 +293,28 @@ Supporting `install.sh` changes in the same release:
 - **The update path verifies with `hermes --version`**, never with `command -v hermes` (the `$PREFIX/bin` shim survives a deleted package and a conflict-marked checkout — that is exactly how this update reported success on a broken install). Post-pull conflict markers are reset automatically.
 - **`snowballstemmer` is installed** with the deps: `pyproject.toml` declares it only for `python_version >= '3.14'` while `tools/tool_search_catalog.py` imports it unconditionally, so a 3.11 venv loses tool search with `Tool search assembly skipped: No module named 'snowballstemmer'`.
 
+### Memory providers left core in 2026.9.24 — install them without PM
+
+2026.9.24 moved `honcho` (plus `hindsight`, `mem0`, `supermemory`, `openviking`, `retaindb`, `byterover`, `holographic`) out of the bundled `plugins/memory/<name>` tree into catalog plugins. The in-tree directory survives as an **empty stub**, so `plugins.memory.find_provider_dir()` returns `None` and every agent init logs:
+
+```text
+⚠ Memory provider 'honcho' is not installed, so external memory is off for this session.
+  security.allow_lazy_installs is off, so Hermes did not fetch it: run `hermes plugins install honcho`.
+```
+
+That is silent memory loss on a home whose `config.yaml` sets `memory.provider: honcho` (8x did). **The printed remedy cannot work on Termux** — `hermes plugins install` builds an isolated runtime and runs `uv lock`, which fails outright:
+
+```text
+error: No solution found when resolving dependencies for split
+       (markers: python_full_version == '3.14.*' and sys_platform == 'android')
+cause: sherpa-onnx-core==1.13.8 has no ... android-compatible wheels
+       and hermes-agent[wake] depends on sherpa-onnx-core==1.13.8
+```
+
+The plugin's own requirements are only `honcho-ai>=2.2.0,<3` and `httpx` — both already in the venv — so `_hermes_ensure_honcho_memory_plugin` installs it the way `find_provider_dir()` reads it: clone `plastic-labs/honcho` (sparse, subdirectory `hermes-plugin-honcho`) into `~/.hermes/plugins/honcho`. It runs at the end of `_hermes_ensure_termux_deps`, is a no-op unless the home's `memory:` block says `provider: honcho`, and a no-op again once the directory exists. Verified on 8x: `hermes memory status` reports `Provider: honcho / Plugin: installed ✓ / Status: available ✓` and the gateway starts without the warning.
+
+Note `hermes plugins list`/`memory status` also print `⚠ install out of sync (ffmpeg … ripgrep) — run hermes pm install`. That is the same PM split of ownership: the toolkit does not run `hermes pm install` on Termux, and the warning is cosmetic.
+
 Verified on 8x after the repair: `hermes --version` → `vgt.a53912d (2026.9.24)`, `hermes status` shows the gateway running with Telegram + Zulip, gateway reached `Connected to Telegram (polling mode)` with no tracebacks, `pip check` clean, tree clean, stash list empty, `pm2 save` written. The shim writer is idempotent (identical payload → no rewrite) and refuses to overwrite a `sitecustomize.py` it does not own.
 
 ## Zulip Plugin Management (v1.15.3+)
