@@ -3953,6 +3953,38 @@ _hermes_ensure_honcho_memory_plugin() {
     return 1
 }
 
+# --- Hermes PM store left half-built by a failed PM operation ---
+# `hermes plugins install <name>` / `hermes pm install` cannot finish on Termux
+# (uv: "No solution found ... markers: python_full_version == '3.14.*' and
+# sys_platform == 'android'"), but they get far enough to download a pinned
+# python 3.14 and uv into ~/.hermes/tools and write facts.json naming them.
+# That half-store is not merely noisy:
+#   * pm.install.drift() compares the lockfile against those facts and every
+#     `hermes` command prints "⚠ install out of sync (ffmpeg: not installed or
+#     outdated; node: …; npm: …; ripgrep: …) — run `hermes pm install`";
+#   * pm.install._store_path_dirs() then PREPENDS the store's python 3.14 bin
+#     directory to PATH for every hermes process, so cron jobs and tool
+#     subprocesses resolve `python`/`python3` to 3.14 while the venv and the
+#     Termux `python` this toolkit pins are 3.11 (Hermes requires 3.11-3.13).
+# A store that records a "venv" package is a real (completed) PM install and is
+# left alone.
+_hermes_clean_abandoned_pm_store() {
+    local home="${HERMES_HOME:-$HOME/.hermes}"
+    local store="$home/tools"
+    local facts="$store/facts.json"
+
+    [ -f "$facts" ] || return 0
+    grep -q '"venv"' "$facts" 2>/dev/null && return 0
+
+    status_msg "Discarding a half-built PM tool store (hermes pm install cannot finish on Termux)"
+    if rm -rf "$store" 2>>"$LOG_FILE"; then
+        success_msg
+        return 0
+    fi
+    warn_msg "Could not remove $store — Hermes will keep reporting 'install out of sync'"
+    return 1
+}
+
 _hermes_ensure_termux_deps() {
     local venv_pip="$HOME/.hermes/hermes-agent/venv/bin/pip"
     local src_dir="$HOME/.hermes/hermes-agent"
@@ -3966,6 +3998,10 @@ _hermes_ensure_termux_deps() {
     # fix: both are properties of this venv, and a launch that beats the pip run
     # below must already have them.
     _hermes_install_platform_shims "$src_dir" || true
+
+    # Drop a PM store a failed `hermes plugins install` left behind: it puts a
+    # python 3.14 on PATH ahead of this venv and makes every command warn.
+    _hermes_clean_abandoned_pm_store || true
 
     [ -x "$venv_pip" ] || return 0
     [ -d "$src_dir" ] || return 0
@@ -4345,6 +4381,7 @@ install_hermes() {
         # bring the venv back to life.
         if _hermes_pin_venv_interpreter "$_hermes_fix_src" 2>/dev/null; then
             _hermes_install_platform_shims "$_hermes_fix_src" || true
+            _hermes_clean_abandoned_pm_store || true
             if "$_hermes_fix_src/venv/bin/python" \
                  -c "import pip, yaml" >/dev/null 2>&1; then
                 local fix_smoke_rc=0 fix_smoke_out=""
