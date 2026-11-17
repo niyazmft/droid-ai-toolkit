@@ -322,7 +322,67 @@ Any PM operation that fails partway — `hermes pm install`, or `hermes plugins 
 
 `_hermes_clean_abandoned_pm_store` discards `~/.hermes/tools` when its `facts.json` names no `venv` package (a completed PM install records one, and is left alone). It runs from `_hermes_ensure_termux_deps` and from **[F] Fix**, and it is idempotent. After it ran on 8x, `pm.install.check()` → `[]`, `_store_path_dirs()` → `[]`, and `hermes memory status` printed no warning; 73 MB of dead store reclaimed. **Do not run `hermes pm install`** — clean up instead.
 
-Verified on 8x after the repair: `hermes --version` → `vgt.a53912d (2026.9.24)`, `hermes status` shows the gateway running with Telegram + Zulip, gateway reached `Connected to Telegram (polling mode)` with no tracebacks, `pip check` clean, tree clean, stash list empty, `pm2 save` written. The shim writer is idempotent (identical payload → no rewrite) and refuses to overwrite a `sitecustomize.py` it does not own.
+Verified on 8x after the repair: `hermes --version` → `vgit.a53912d (2026.9.24)`, `hermes status` shows the gateway running with Telegram + Zulip, gateway reached `Connected to Telegram (polling mode)` with no tracebacks, `pip check` clean, tree clean, stash list empty, `pm2 save` written. The shim writer is idempotent (identical payload → no rewrite) and refuses to overwrite a `sitecustomize.py` it does not own.
+
+### `hermes --version` does not prove staleness (v1.17.8+)
+
+A successful update on 8x (2026-11-17) looked like a failed one: `hermes --version` still printed `Hermes Agent vgit.707cf0f (2026.9.24) · stable · local 707cf0fde025` … `Up to date`, the same release string as before. Nothing was wrong — the pull was a real fast-forward (`a53912d` 2026-11-05 → `707cf0f` 2026-11-17, per `git reflog`). Four independent reasons the banner cannot show it:
+
+1. **`(2026.9.24)` is a constant.** `hermes_cli/__init__.py` sets `__release_date__ = "2026.9.24"`, last touched 2026-09-24. Upstream stopped bumping it; it is not a code date.
+2. **`vgit.<sha>` means "no tags", not "unknown version".** `version_info._git_version_info()` derives a base version from `git tag --merged HEAD --list 'v[0-9]*'` (semver) and falls back to CalVer `v2026.*` via `git describe`. The upstream curl installer leaves a **depth-1 clone with zero tags** (`git rev-parse --is-shallow-repository` → `true`, `git tag | wc -l` → `0`), so both lookups miss and the display degrades to `git.<short7>`.
+3. **`· stable · local <sha>` is normal for a channel install.** `format_banner_version_label()` only prints `· upstream <sha>` on the `main` channel; an official clone resolves to `stable` (`update_channel.resolve_update_channel`), which appends the local HEAD instead.
+4. **`Up to date` compares against the stable release, not `main`.** Our update path pulls `main`, so the checkout is *ahead* of the newest stable tag (`v0.23.2`, 479 commits at the time) — `check_for_updates(passive=True)` reports `behind == 0`.
+
+So the only trustworthy post-update evidence is the checkout's own identity. **The update path now prints it** right after the pull (`HEAD a53912d -> 707cf0f 2026-11-17`, or `HEAD 707cf0f 2026-11-17 (already current)`), which is exactly the line that distinguishes "pulled fine" from "silently did nothing". Do not add a `--tags`/`--unshallow` fetch to make the banner prettier: `.git` is already 867 MB on that device, and the repo is hundreds of commits past the last tag.
+
+Health check that does not depend on the version string: `git reflog --date=iso -3` (did HEAD move?), `git rev-parse --short origin/main` vs `HEAD`, `git status --porcelain` (clean), `pm2 list` (online, restart count 0), `~/.hermes/hermes-agent/venv/lib/python3.11/site-packages/sitecustomize.py` (the `os.link` shim survived), `venv/bin/python -> python3.11 -> $PREFIX/bin/python3.11` (still pinned), `~/.hermes/tools` empty (no abandoned PM store).
+
+## OpenClaw 2026.11.x Cannot Migrate on Termux — and Two Silent Startup Faults (v1.17.8+)
+
+Device 8x (2026-11-17) went 2026.9.8 → 2026.11.5 via **[L]**. The toolkit printed success and the gateway never ran. Three independent faults, only one of them upstream-shaped.
+
+**1. PM2 was handed a directory.** `_pm2_resolve_bin` mapped a pnpm shim to `pnpm root -g` — i.e. `<pnpm>/global/5/node_modules`:
+
+```text
+[PM2] Starting .../.local/share/pnpm/global/5/node_modules in fork_mode
+status: online   pid: N/A   mem: 0b   restarts: 0   out/err logs: 0 bytes each
+```
+
+PM2 cannot exec a directory but still reports `online`, so nothing surfaced. For pnpm installs the shim (`~/.local/share/pnpm/openclaw`) *is* the executable — it exports `NODE_PATH` for the isolated store and execs the package entry — so `_pm2_resolve_bin` now returns it verbatim.
+
+**2. A Gateway lock from 2026-05-05 blocked boot *and* the migration.** 2026.9.8+ keeps locks in `$PREFIX/tmp/openclaw-<uid>/`, not `~/.openclaw/tmp` (where the update preamble looked):
+
+```text
+Legacy Gateway lock .../gateway.b4424d84.lock still has a live or unverified owner (PID 14479)
+```
+
+The PID had been dead for six months and upstream still refuses it. `_openclaw_clear_stale_gateway_locks` now removes locks whose owner is gone, from both locations, called by `install_openclaw` and by SERVICES → PM2. The SQLite `gateway-owner` lease is a *different* lock: `openclaw gateway recover-lock` (inspect, then `--confirm <fingerprint>`) is what releases it.
+
+**3. 2026.11.x cannot migrate its own state on Android.** Once booted, the gateway refuses the agent DB:
+
+```text
+openclaw-agent.sqlite uses schema version 24; ... upgrade it to schema version 38
+```
+
+`doctor --fix` is the only migration path and cannot finish on Termux: the staging-ancestor guard rejects `/data/data` (`0771 root:root`, group-writable), and patching that only exposed the next wall — the pre-repair capture calls `publishFileExclusive(..., strategy: "rename-noreplace")`, which calls `requireNativeBinding("renameNoReplace")`, and that addon is `@openclaw/fs-safe-<target>` chosen from a **baked platform list** (`bundledTarget()`), so `android-arm64` is "Unsupported OS or architecture" and no npm package can supply it. `--force` and `OPENCLAW_FS_SAFE_NATIVE_MODE=off` both still fail with `helper-unavailable`.
+
+Net effect: the state DB migrates (19 → 36) but the agent DB stays at 24, so sessions are unavailable and `memory-core` logs `AgentDatabaseAdmissionError` every ~30 s while RSS climbs past 950 MB.
+
+**The recovery that worked (8x).** The device had been running 2026.9.8, whose data is state 19 / agent 24, and a genuine pre-update backup existed:
+
+1. `pm2 stop openclaw`, then restore `~/.openclaw/state` from the **pre-11.5** backup. Check `PRAGMA user_version` of the backup, not its timestamp — doctor migrates *before* it fails, so a later "pre-doctor" copy is already v36.
+2. Pin `dependencies.openclaw` to the exact version (`2026.9.8`, no caret: `^2026.9.8` resolves to the newest 2026.x) and run the two-phase pnpm install (`--lockfile-only`, then `--frozen-lockfile --ignore-scripts --child-concurrency=1`).
+3. Re-apply the patch suite — a replaced tree is unpatched. Call `apply_patches "" openclaw` from a sourced lib and set `$OPENCLAW_ROOT` **after** sourcing: the lib resets it to the npm path, and every `patch_openclaw_*` silently no-ops without it.
+4. Start PM2 with the shim, the heap cap and `--require $HOME/.openclaw/btime-shim.cjs`.
+
+Verified on 8x: `http server listening (15 plugins …)`, `[telegram] starting provider (@…_bot)`, `isolated polling ingress started`, 0 restarts, Hermes gateway online, `pm2 save` written.
+
+Two operational lessons from the same incident:
+
+- **`prepare_for_install` runs `pm2 kill`**, so *every* PM2 service stops — Hermes included — and only the tool being installed is restarted. After any OpenClaw update, restart Hermes explicitly and re-run `pm2 save`, or the boot dump will not contain it.
+- **`openclaw --version` is the install check** (`health_check` now uses it). `command -v openclaw` passes with the package deleted, because the pnpm shim survives.
+
+Related (y6, same day): a config stamped by a *newer* build refuses to start on an older one — `meta.lastTouchedVersion: 2026.9.8` while running 2026.9.3, message "config was last written by a newer OpenClaw". Correct the stamp to the installed version or install the version the data belongs to; never "upgrade" to satisfy a downgrade.
 
 ## Zulip Plugin Management (v1.15.3+)
 
