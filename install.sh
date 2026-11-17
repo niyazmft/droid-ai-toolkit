@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.7"
+VERSION="1.17.8"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -1069,6 +1069,10 @@ install_openclaw() {
     begin_install
     prepare_for_install "openclaw" "n8n"
     rm -f "$HOME/.openclaw/tmp/openclaw.lock" "$HOME/.openclaw/tmp/openclaw-*" "$PREFIX/var/run/crond.pid"
+    # Locks left by a previous version live in $PREFIX/tmp/openclaw-<uid>/ and are
+    # honoured by upstream even when their owner PID is long dead. Clearing them is
+    # what lets the state/schema migration and the gateway boot at all.
+    _openclaw_clear_stale_gateway_locks
 
     if [[ "$mode" == "full" ]]; then
         # Batched package installation for performance
@@ -1250,7 +1254,7 @@ install_openclaw() {
     fi
     
     echo -e "\n${GREEN}OpenClaw successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed") and patched!${NC}"
-    health_check "OpenClaw" "command -v openclaw" || true
+    health_check "OpenClaw" "openclaw --version" || true
     compat_after_install openclaw
     echo -e "\n${YELLOW}NEXT STEPS:${NC}"
     echo -e "1. Run ${GREEN}openclaw onboard${NC} to configure your API keys."
@@ -4258,10 +4262,26 @@ install_hermes() {
         fi
 
         status_msg "Git pulling latest code"
-        local _pull_rc=0
+        local _pull_rc=0 _hermes_head_before="" _hermes_head_now=""
+        _hermes_head_before=$(cd "$_hermes_src" && git rev-parse --short HEAD 2>/dev/null || true)
         (cd "$_hermes_src" && git pull origin main) 2>>"$LOG_FILE" || _pull_rc=$?
+        _hermes_head_now=$(cd "$_hermes_src" && git log -1 --format='%h %cs' HEAD 2>/dev/null || true)
         if [ "$_pull_rc" -eq 0 ]; then
             success_msg
+            # Print the checkout's own identity. `hermes --version` cannot prove
+            # that a pull moved anything: upstream's "(YYYY.M.D)" suffix is a
+            # frozen constant (`__release_date__` in hermes_cli/__init__.py), and a
+            # depth-1 clone carries no tags, so the banner reports "vgit.<sha>"
+            # instead of a release version. Without this line an update that
+            # advanced the tree looks identical to one that did nothing.
+            if [ -n "$_hermes_head_now" ]; then
+                if [ -n "$_hermes_head_before" ] && \
+                   [ "${_hermes_head_now%% *}" != "$_hermes_head_before" ]; then
+                    echo -e "  ${BLUE}HEAD $_hermes_head_before -> $_hermes_head_now${NC}"
+                else
+                    echo -e "  ${BLUE}HEAD $_hermes_head_now (already current)${NC}"
+                fi
+            fi
         else
             warn_msg "git pull failed (exit $_pull_rc) — continuing with the current source tree"
         fi
@@ -4871,20 +4891,56 @@ remove_n8n_service_files() {
     execute "rm -rf '$N8N_SERVICE_DIR'" "Removing n8n service configuration"
 }
 
-# Resolve a command path, handling pnpm shim redirection.
-# If the command is a pnpm shim, finds the actual JS binary.
+# Resolve a command path for `pm2 start`.
+#
+# The pnpm shim IS the right target: it is an executable shell script that exports
+# NODE_PATH for the isolated .pnpm store and then execs the package entry, so it
+# behaves exactly like the command in a shell.
+#
+# What must never be returned is `pnpm root -g` — that is the node_modules
+# DIRECTORY, not a program. `pm2 start <directory> --interpreter none` cannot spawn
+# anything, yet PM2 still reports the app as `online` with pid N/A, 0 b of memory
+# and two empty log files. Measured on 8x (2026-11-17): the OpenClaw gateway was
+# never started and nothing in `pm2 list` said so — the update had reported success.
 _pm2_resolve_bin() {
     local cmd_name="$1"
-    local bin_path=""
-    bin_path=$(type -P "$cmd_name" 2>/dev/null || true)
-    if [[ "$bin_path" == *".local/share/pnpm"* ]]; then
-        local pnpm_root
-        pnpm_root=$(pnpm_root_g 2>/dev/null)
-        [[ -z "$pnpm_root" ]] && pnpm_root="$PREFIX/lib/node_modules"
-        echo "$pnpm_root"
-    else
-        echo "$bin_path"
+    type -P "$cmd_name" 2>/dev/null || true
+}
+
+# _openclaw_clear_stale_gateway_locks -- drop Gateway lock files whose owner is gone.
+#
+# Where they live matters: 2026.9.8+ writes them under TMPDIR
+# ($PREFIX/tmp/openclaw-<uid>/), NOT in ~/.openclaw/tmp — so the update preamble's
+# `rm -f ~/.openclaw/tmp/openclaw.lock` removes nothing that matters.
+#
+# Why it matters: upstream does not treat a dead owner as "no owner". A lock whose
+# PID died months ago still fails BOTH the gateway bootstrap and `doctor --fix`:
+#
+#   Legacy Gateway lock .../gateway.b4424d84.lock still has a live or
+#   unverified owner (PID 14479)
+#
+# On 8x (2026-11-17) a lock written 2026-05-05 blocked the 2026.11.5 update: the
+# schema migration never ran, and the gateway could not boot until the file was
+# removed by hand. The SQLite `gateway-owner` lease is a different lock and is NOT
+# handled here — it needs `openclaw gateway recover-lock`, which the caller runs
+# when the CLI is available.
+_openclaw_clear_stale_gateway_locks() {
+    local f pid removed=0
+    for f in "$HOME/.openclaw/tmp"/*/*.lock "$PREFIX"/tmp/openclaw-*/*.lock; do
+        [ -f "$f" ] || continue
+        pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$f" 2>/dev/null | head -1)
+        # A live owner keeps its lock. Anything else (dead PID, or a lock with no
+        # parsable owner) cannot be honoured by anyone and would only block the
+        # next boot, so it is removed.
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            continue
+        fi
+        rm -f "$f" && removed=$((removed + 1))
+    done
+    if [ "$removed" -gt 0 ]; then
+        echo -e "   ${BLUE}Cleared $removed stale OpenClaw lock file(s)${NC}"
     fi
+    return 0
 }
 
 # Start an app in PM2 with consistent cleanup.
@@ -5023,6 +5079,7 @@ manage_pm2() {
                     pm2 stop openclaw 2>/dev/null || true
                     pm2 delete openclaw 2>/dev/null || true
                     rm -f "$HOME/.openclaw/tmp/openclaw.lock"
+                    _openclaw_clear_stale_gateway_locks
                     success_msg
                     local PNPM_NODE_PATH; PNPM_NODE_PATH=$(pnpm_root_g || true)
                     local SAFE_LIMIT; SAFE_LIMIT=$(get_mem_limit)

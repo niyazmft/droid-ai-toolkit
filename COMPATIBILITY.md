@@ -97,6 +97,17 @@ it again — but say so if a newer version fixed it.
   2026.9.8+ migrate `~/.openclaw/state` to schema 19, and OpenClaw refuses to
   open newer data. Moving back needs a pre-update backup (`openclaw backup`) —
   without one the only path is resetting state. Take a backup before upgrading.
+- **2026.11.x installs but cannot migrate here.** Its recovery capture requires a
+  native `fs-safe` addon that has no Android build (`@openclaw/fs-safe-<target>`
+  comes from a baked platform list), and `doctor --fix` is the only route from
+  agent schema 24 to 38. The gateway boots with sessions unavailable. Stay on the
+  version your data belongs to (2026.9.8 for state 19 / agent 24) until upstream
+  ships a non-native capture. Details: AGENTS.md.
+- **PM2 could not start OpenClaw on pnpm installs (fixed in v1.17.8).** The PM2
+  entry was created with the `node_modules` directory as its script, and PM2
+  reported it `online` with pid `N/A` while nothing ran. Stale Gateway locks under
+  `$PREFIX/tmp/openclaw-<uid>/` (honoured even when their owning PID is long dead)
+  are now cleared as well.
 
 #### `openclaw doctor --fix` cannot run here — what to use instead
 
