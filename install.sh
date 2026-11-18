@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.8"
+VERSION="1.17.9"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -2660,6 +2660,25 @@ PYOCBT
     else
         patch_missing "patch_openclaw_sqlite_identity" \
             "birthtime patch step (python failed) — identity checks will break on filesystems without btime"
+    fi
+
+    # --- 2b) prove the identity pass actually covered every copy of the guard ---
+    # A partial pass is worse than none: this identity check exists in MANY
+    # bundles (14 files on 2026.9.8), and this step legitimately takes minutes
+    # over ~181 MB. A run that is killed mid-way leaves some copies still
+    # comparing birthtime — which on Android is ctime, so EVERY CLI write dies
+    # with "Existing shared-state database generation changed". Measured on 8x
+    # (2026-11-18): two truncated runs left 13 files unpatched; `openclaw config`
+    # and `openclaw models refresh` failed while the gateway ran fine.
+    local BT_LEFT
+    BT_LEFT=$(grep -rl --include='*.js' --include='*.mjs' \
+        -E '[A-Za-z0-9_$?.]+\.birthtimeNs *[!=]== *[A-Za-z0-9_$?.]+\.birthtimeNs' \
+        "$OPENCLAW_ROOT/dist" 2>/dev/null | grep -v '\.bak' || true)
+    if [ -n "$BT_LEFT" ]; then
+        warn_msg "birthtime identity check still present in the bundles below"
+        echo -e "   ${BLUE}The patch pass was interrupted before it finished. Re-run AGENTS → OpenClaw → [R] Repair.${NC}"
+        echo -e "   ${BLUE}Until it is clean, CLI writes fail with 'Existing shared-state database generation changed'.${NC}"
+        printf '%s\n' "$BT_LEFT" | sed "s|^$OPENCLAW_ROOT/dist/|   - |" | head -8
     fi
 
     # --- 3) reclaim phantom agent leases left by Android PID recycling ---

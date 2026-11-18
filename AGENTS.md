@@ -384,6 +384,27 @@ Two operational lessons from the same incident:
 
 Related (y6, same day): a config stamped by a *newer* build refuses to start on an older one — `meta.lastTouchedVersion: 2026.9.8` while running 2026.9.3, message "config was last written by a newer OpenClaw". Correct the stamp to the installed version or install the version the data belongs to; never "upgrade" to satisfy a downgrade.
 
+### The birthtime identity guard lives in ~14 bundles (v1.17.9+)
+
+Android reports `ctime` as `birthtime`, so *any* write to a file changes it. OpenClaw's shared-state identity guard compares `birthtimeNs` and is duplicated across many bundles, and `patch_openclaw_sqlite_identity`'s birthtime pass is deliberately slow (~181 MB of bundled JS, minutes on a phone). A pass killed by a timeout leaves some copies unpatched — and then **every CLI write** fails while the gateway itself is healthy:
+
+```text
+[openclaw] The CLI command failed.
+[openclaw] Reason: Existing shared-state database generation changed: .../state/openclaw.sqlite
+```
+
+Measured on 8x (2026-11-18): two interrupted passes left 13 of 14 files unpatched. `openclaw config` (provider selection) and `openclaw models refresh` both died; `openclaw config get` (read-only) worked, the gateway booted and served Telegram normally, and the failure looked like database corruption rather than a half-applied patch. The pass now reports leftover comparisons and points at **[R] Repair**.
+
+Verify after any patch run — empty output means fully neutralised:
+
+```bash
+grep -rl --include='*.js' --include='*.mjs' \
+  -E '[A-Za-z0-9_$?.]+\.birthtimeNs *[!=]== *[A-Za-z0-9_$?.]+\.birthtimeNs' \
+  ~/.local/share/pnpm/global/5/node_modules/openclaw/dist | grep -v '\.bak'
+```
+
+Do not shorten that step's timeout; re-run [R] Repair instead. Re-apply the birthtime pass to the remaining files with the same transformation if you need it in a hurry (`.birthtimeNs !==` → `false`, `.birthtimeNs ===` → `true`), writing `*.bak-android-bt` first.
+
 ## Zulip Plugin Management (v1.15.3+)
 
 A dedicated sub-menu **[Z] Zulip Plugin** under AGENTS → OpenClaw provides:
