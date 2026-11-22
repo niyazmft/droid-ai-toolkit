@@ -549,7 +549,12 @@ correctly returned false. The compile itself has **not** been run on-device — 
 The toolchain is already a toolkit dependency (`python3`, `make`, `clang`, `pkg-config`), so no new
 packages are required.
 
-### LAN access is blocked by `N8N_SECURE_COOKIE` (v1.17.12+)
+### LAN access: nginx TLS proxy (supersedes the `N8N_SECURE_COOKIE` workaround, v1.17.13+)
+
+**In plain English:** n8n is no longer exposed on the LAN. It listens only on
+`127.0.0.1:5678`; nginx is the single LAN entry point, at
+`https://<phone-ip>:8443`. First-run owner setup is protected by a one-time
+password that is removed automatically once the owner account exists.
 
 Opening the advertised LAN address on 8x — `http://192.168.1.50:5678/` — returns:
 
@@ -580,11 +585,20 @@ environment at process creation, editing `n8n.env` needs delete+start — `pm2 r
 
 Separately, the access information itself was undocumented: `install_n8n` finished with
 "configure background services" and no URL, so a first-time user had no way to know n8n
-serves a web editor on 5678. `_n8n_access_hint` now prints the four routes (phone,
-SSH tunnel, LAN, GCP bridge) at the end of an install and after **SERVICES → PM2 → n8n**
-starts it; the WORKFLOWS menu label and the `[?] Help` screen carry the address too, so it
-is visible without doing anything. The hint deliberately **does not** launch a browser —
-the toolkit tells the user where to go, it does not drive their device.
+serves a web editor on 5678. `_n8n_access_hint` now prints the LAN HTTPS URL (and the one-time setup
+password when the owner is missing) at the end of an install and after
+**SERVICES → PM2 → n8n** starts it. The hint deliberately **does not** launch a
+browser — the toolkit tells the user where to go, it does not drive their device.
+
+**v1.17.13 replaces the plain-HTTP workaround entirely.** n8n now listens on
+`127.0.0.1:5678` only; nginx terminates TLS on `0.0.0.0:8443` and proxies to it.
+`N8N_SECURE_COOKIE=true`, `N8N_PROTOCOL=https`, `N8N_HOST`, `N8N_EDITOR_BASE_URL`,
+`N8N_WEBHOOK_URL`, and `N8N_PROXY_HOPS=1` are generated automatically. During
+first-run owner setup, nginx requires a one-time Basic Auth password; the gate is
+removed automatically once `/rest/settings` reports
+`showSetupOnFirstLoad=false`. The old `N8N_SECURE_COOKIE=false` and
+`N8N_NODES_INCLUDE=[executeCommand,manualTrigger]` lines are removed. PM2 env
+handling still requires delete+start, not `pm2 restart`.
 
 ## License Note
 

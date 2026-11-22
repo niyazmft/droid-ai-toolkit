@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # DROID AI TOOLKIT (Termux)
-# Version: 1.15.3
+# Version: 1.17.13
 # Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
 #          Hermes, Paperclip) on Android via Termux with kernel patches and path fixes.
 # ==============================================================================
@@ -14,8 +14,15 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.12"
+VERSION="1.17.13"
 ARCH_TYPE=$(uname -m)
+
+# Non-interactive n8n migration path. Used by the installer itself and for
+# on-device verification: `bash install.sh --n8n-migrate`.
+N8N_CLI_MIGRATE=0
+case "${1:-}" in
+    --n8n-migrate|--n8n-lan-https) N8N_CLI_MIGRATE=1 ;;
+esac
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
 YELLOW=$(printf '\033[1;33m')
@@ -3478,32 +3485,515 @@ n8n_ensure_native_modules() {
     return 0
 }
 
-# _n8n_access_hint -- tell the user where the editor actually is.
+# --- n8n LAN HTTPS (automatic) ------------------------------------------------
+# The toolkit used to ship n8n on 0.0.0.0:5678 with N8N_SECURE_COOKIE=false, which
+# is the only way plain HTTP works from another device. That is also an
+# unauthenticated command-execution surface until the owner account exists.
 #
-# Nothing used to say this: the install finished with "configure background
-# services" and no URL, so a first-time user had no way to know n8n serves a web
-# editor on 5678 (8x, 2026-11-21).
+# The default is now:
+#   n8n  -> 127.0.0.1:5678 (never on the LAN)
+#   nginx -> 0.0.0.0:8443 TLS -> 127.0.0.1:5678
+#   during owner setup, nginx requires a one-time Basic Auth password
+#   after the owner exists, the password gate is removed automatically
 #
-# n8n binds every interface, so http://<phone-ip>:5678 does answer from another
-# machine — but N8N_HOST is `localhost`, and that is what n8n uses to build its
-# OWN urls (webhook callbacks, editor base). A browser on another device gets a
-# UI whose links point back at the phone's loopback, so the honest defaults are
-# "this phone" and an SSH tunnel; the LAN route needs N8N_HOST changed (there is
-# a commented template in n8n.env), and the public route is the GCP bridge.
-_n8n_access_hint() {
+# Everything is generated: LAN IP, CA, server cert, n8n.env, nginx.conf, PM2
+# entries. The user only creates the owner account from any device on the Wi-Fi.
+#
+# In plain English:
+#   1. n8n stays private on the phone (127.0.0.1:5678).
+#   2. The toolkit puts a small HTTPS front door on the Wi-Fi at :8443.
+#   3. On first use, open that address from any device, accept the certificate,
+#      type the one-time setup password, and create the owner login.
+#   4. After that the setup password disappears; the owner login is the only way in.
+
+_n8n_lan_ip() {
     local ip
-    ip=$(ip -4 addr show 2>/dev/null | grep -oE 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | grep -v '127\.0\.0\.1' | awk '{print $2}' | head -1)
-    echo -e "\n${YELLOW}  OPEN THE n8n EDITOR:${NC}"
-    echo -e "  - this phone:     ${BLUE}http://localhost:5678${NC}"
-    echo -e "                    ${BLUE}termux-open-url http://localhost:5678${NC}"
-    echo -e "  - your computer:  ${BLUE}ssh -L 5678:localhost:5678 <user>@${ip:-<phone-ip>}${NC}"
-    echo -e "                    then open ${BLUE}http://localhost:5678${NC}  (safest route)"
-    if [ -n "$ip" ]; then
-        echo -e "  - same Wi-Fi:     ${BLUE}http://$ip:5678${NC}"
-        echo -e "                    ${YELLOW}set N8N_HOST too; Safari always refuses plain-http logins${NC}"
+    ip=$(ip -4 addr show wlan0 2>/dev/null \
+        | awk '/inet /{sub(/\/.*/,"",$2); print $2; exit}')
+    [ -n "$ip" ] || ip=$(ip -4 route get 1.1.1.1 2>/dev/null \
+        | awk '{for(i=1;i<=NF;i++) if ($i=="src"){print $(i+1); exit}}')
+    printf '%s' "$ip"
+}
+
+_n8n_http_code() {
+    curl -k -s -o /dev/null -w '%{http_code}' -m 3 "$1" 2>/dev/null || true
+}
+
+_n8n_wait_http() {
+    local url="$1" want="$2" deadline=$((SECONDS + 240)) code
+    while [ $SECONDS -lt $deadline ]; do
+        code=$(_n8n_http_code "$url")
+        [ "$code" = "$want" ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+_n8n_settings_ready() {
+    # During migrations n8n answers 200 with the plain text
+    # "n8n is starting up. Please wait", so HTTP status alone is not readiness.
+    curl -fsS http://127.0.0.1:5678/rest/settings 2>/dev/null \
+        | jq -e '.data.userManagement.showSetupOnFirstLoad != null' >/dev/null 2>&1
+}
+
+_n8n_wait_settings() {
+    local deadline=$((SECONDS + 900))
+    while [ $SECONDS -lt $deadline ]; do
+        _n8n_settings_ready && return 0
+        sleep 2
+    done
+    return 1
+}
+
+_n8n_owner_exists() {
+    _n8n_settings_ready || return 1
+    curl -fsS http://127.0.0.1:5678/rest/settings 2>/dev/null \
+        | jq -e '.data.userManagement.showSetupOnFirstLoad == false' >/dev/null 2>&1
+}
+
+_n8n_wait_for_owner() {
+    local deadline=$((SECONDS + ${1:-3600}))
+    while [ $SECONDS -lt $deadline ]; do
+        _n8n_owner_exists && return 0
+        sleep 3
+    done
+    return 1
+}
+
+_n8n_ensure_ca() {
+    local dir="$1"
+    mkdir -p "$dir"; chmod 700 "$dir"
+    [ -f "$dir/ca.crt" ] && [ -f "$dir/ca.key" ] && return 0
+    openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 \
+        -keyout "$dir/ca.key" -out "$dir/ca.crt" \
+        -subj "/CN=droid-ai-toolkit n8n CA" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1 || return 1
+    chmod 600 "$dir/ca.key"
+    chmod 644 "$dir/ca.crt"
+}
+
+# Reuses the cert only while it is valid and still covers the current Wi-Fi IP.
+# A network change therefore self-heals on the next install/repair.
+_n8n_ensure_cert() {
+    local ip="$1" dir="$HOME/n8n_server/certs"
+    local cert="$dir/n8n.crt" key="$dir/n8n.key"
+    mkdir -p "$dir"; chmod 700 "$dir"
+
+    if [ ! -f "$dir/ca.crt" ] || [ ! -f "$dir/ca.key" ]; then
+        rm -f "$cert" "$key"
+        _n8n_ensure_ca "$dir" || return 1
     fi
-    echo -e "  - public:         ${BLUE}UTILITIES${NC} -> ${BLUE}GCP Bridge${NC} (reverse SSH tunnel)"
-    echo -e "  The first visit asks you to create the owner account — do that before exposing it."
+
+    if [ -f "$cert" ] && [ -f "$key" ] \
+       && openssl x509 -in "$cert" -noout -checkend 86400 >/dev/null 2>&1 \
+       && openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null \
+          | grep -q "IP Address:$ip"; then
+        return 0
+    fi
+
+    openssl req -newkey rsa:2048 -sha256 -nodes \
+        -keyout "$key" -out "$dir/n8n.csr" -subj "/CN=$ip" >/dev/null 2>&1 || return 1
+
+    cat > "$dir/san.cnf" <<EOF
+subjectAltName=IP:$ip,IP:127.0.0.1,DNS:n8n.local,DNS:localhost
+extendedKeyUsage=serverAuth
+EOF
+
+    openssl x509 -req -in "$dir/n8n.csr" -CA "$dir/ca.crt" -CAkey "$dir/ca.key" \
+        -CAcreateserial -out "$cert" -days 825 -sha256 \
+        -extfile "$dir/san.cnf" >/dev/null 2>&1 || return 1
+
+    rm -f "$dir/n8n.csr" "$dir/san.cnf"
+    chmod 600 "$key"; chmod 644 "$cert"
+}
+
+_n8n_token() {
+    local env="$1" token=""
+    [ -f "$env" ] && token=$(sed -n \
+        's/^N8N_RUNNERS_AUTH_TOKEN="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$env" 2>/dev/null | head -1)
+    if [ -z "$token" ]; then
+        if command -v openssl >/dev/null 2>&1; then
+            token=$(openssl rand -hex 32 2>/dev/null || true)
+        fi
+        [ -n "$token" ] || token=$(od -An -tx1 -N32 /dev/urandom 2>/dev/null | tr -d ' \n')
+    fi
+    case "$token" in
+        ""|*[!0-9a-f]*) return 1 ;;
+    esac
+    [ ${#token} -ge 32 ] || return 1
+    printf '%s' "$token"
+}
+
+# One config for both phases. n8n listens HTTP on loopback; nginx terminates TLS.
+# N8N_PROTOCOL=https only changes generated URLs and the Secure cookie flag;
+# n8n starts a TLS listener only when N8N_SSL_CERT/N8N_SSL_KEY are also set.
+_n8n_write_env() {
+    local ip="$1" token="$2" env="$HOME/n8n_server/config/n8n.env"
+    local limit="${SAFE_LIMIT:-$(get_mem_limit)}"
+    mkdir -p "$HOME/n8n_server/config"
+
+    umask 077
+    cat > "$env" <<EOF
+N8N_RUNNERS_MODE=internal
+N8N_RUNNERS_AUTH_TOKEN="$token"
+N8N_RUNNERS_BROKER_LISTEN_ADDRESS=127.0.0.1
+N8N_PYTHON_BINARY=$PREFIX/bin/python3
+N8N_NATIVE_PYTHON_RUNNER=false
+NODE_OPTIONS="--max-old-space-size=$limit"
+N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+N8N_DIAGNOSTICS_ENABLED=false
+N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES=true
+
+N8N_LISTEN_ADDRESS=127.0.0.1
+N8N_PORT=5678
+N8N_PROTOCOL=https
+N8N_HOST=$ip
+N8N_EDITOR_BASE_URL=https://$ip:8443
+N8N_WEBHOOK_URL=https://$ip:8443
+N8N_SECURE_COOKIE=true
+N8N_PROXY_HOPS=1
+EOF
+    chmod 600 "$env"
+    umask 022
+}
+
+_n8n_nginx_conf() {
+    local ip="$1" auth="$2" base="$HOME/n8n_server"
+    local conf="$base/config/nginx.conf" certs="$base/certs"
+    local auth_block="" auth_header=""
+
+    mkdir -p "$base/config" "$base/nginx-tmp/client" "$base/nginx-tmp/proxy" \
+             "$base/nginx-tmp/fastcgi" "$base/nginx-tmp/uwsgi" "$base/nginx-tmp/scgi"
+
+    if [ "$auth" -eq 1 ]; then
+        auth_block=$(cat <<EOF
+        auth_basic "n8n setup";
+        auth_basic_user_file $base/config/setup.htpasswd;
+EOF
+)
+        auth_header='            proxy_set_header Authorization "";'
+    fi
+
+    cat > "$conf" <<EOF
+worker_processes 1;
+pid $base/nginx.pid;
+error_log $base/nginx-error.log;
+events { worker_connections 256; }
+http {
+    client_body_temp_path $base/nginx-tmp/client;
+    proxy_temp_path $base/nginx-tmp/proxy;
+    fastcgi_temp_path $base/nginx-tmp/fastcgi;
+    uwsgi_temp_path $base/nginx-tmp/uwsgi;
+    scgi_temp_path $base/nginx-tmp/scgi;
+    access_log off;
+    server {
+        listen 8443 ssl;
+        server_name _;
+        ssl_certificate $certs/n8n.crt;
+        ssl_certificate_key $certs/n8n.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_session_cache shared:SSL:10m;
+$auth_block
+        location / {
+            proxy_pass http://127.0.0.1:5678;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host \$host;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+$auth_header
+            proxy_read_timeout 3600s;
+            client_max_body_size 100m;
+        }
+    }
+}
+EOF
+    chmod 600 "$conf"
+}
+
+_n8n_setup_password() {
+    local dir="$HOME/n8n_server/config" pass hash
+    command -v openssl >/dev/null 2>&1 || return 1
+    pass=$(openssl rand -hex 12 2>/dev/null) || return 1
+    hash=$(openssl passwd -apr1 "$pass" 2>/dev/null) || return 1
+    printf 'setup:%s\n' "$hash" > "$dir/setup.htpasswd" || return 1
+    printf '%s\n' "$pass" > "$dir/setup-password.txt" || return 1
+    chmod 600 "$dir/setup.htpasswd" "$dir/setup-password.txt"
+    printf '%s' "$pass"
+}
+
+# PM2 snapshots the shell environment at create time. Source only the new env:
+# a previous failed attempt (or an old n8n.env) must not leak N8N_* values into
+# the new process, or PM2 ends up with a mix such as PROTOCOL=http plus
+# EDITOR_BASE_URL=https.
+_n8n_clear_env() {
+    local v
+    for v in $(compgen -v 2>/dev/null | grep '^N8N_' || true); do
+        # Toolkit globals share the prefix; never unset them.
+        case "$v" in
+            N8N_SERVICE_DIR|N8N_CLI_MIGRATE) continue ;;
+        esac
+        unset "$v"
+    done
+}
+
+# The Termux nginx package installs its own runit service. This toolkit manages
+# nginx through PM2 on 8443; the package service must not race it.
+_n8n_disable_pkg_nginx() {
+    [ -d "$PREFIX/var/service/nginx" ] || return 0
+    command -v sv >/dev/null 2>&1 && sv down "$PREFIX/var/service/nginx" >/dev/null 2>&1 || true
+    touch "$PREFIX/var/service/nginx/down" 2>/dev/null || true
+}
+
+# Keep the legacy watchdog in sync with the proxy layout. It is only useful for
+# users running n8n without PM2, but it must not restart a bare 0.0.0.0 listener.
+_n8n_write_monitor() {
+    local script="$HOME/n8n_server/scripts/n8n-monitor.sh"
+    mkdir -p "$HOME/n8n_server/scripts"
+    cat <<'EOF' > "$script"
+#!/bin/bash
+N8N_SESSION="n8n_server"
+TUNNEL_SESSION="n8n_tunnel"
+PROXY_SESSION="n8n_proxy"
+ENV_FILE=~/n8n_server/config/n8n.env
+NGINX_CONF=~/n8n_server/config/nginx.conf
+LOG_FILE=~/n8n_monitor.log
+
+N8N_START="set -a; source $ENV_FILE; set +a; n8n start"
+
+if [ -f "$NGINX_CONF" ] && ! pgrep -f "nginx.*n8n_server/config/nginx.conf" >/dev/null; then
+    echo "[$(date)] [PROXY] nginx not found. Restarting..." >> "$LOG_FILE"
+    tmux kill-session -t "$PROXY_SESSION" 2>/dev/null
+    tmux new-session -d -s "$PROXY_SESSION" "nginx -c $NGINX_CONF -g 'daemon off;'"
+fi
+
+if ! pgrep -f "n8n start" > /dev/null; then
+    echo "[$(date)]  n8n not found. Restarting..." >> "$LOG_FILE"
+    tmux kill-session -t "$N8N_SESSION" 2>/dev/null
+    tmux new-session -d -s "$N8N_SESSION" "$N8N_START"
+fi
+
+if [ -f ~/n8n_server/config/tunnel.conf ]; then
+    source ~/n8n_server/config/tunnel.conf
+    if ! pgrep -f "autossh.*-R 5678:localhost:5678" > /dev/null; then
+        echo "[$(date)] [TUNNEL] Tunnel not found. Re-establishing..." >> "$LOG_FILE"
+        tmux kill-session -t "$TUNNEL_SESSION" 2>/dev/null
+        tmux new-session -d -s "$TUNNEL_SESSION" "$TUNNEL_CMD"
+    fi
+fi
+EOF
+    chmod +x "$script"
+}
+
+_n8n_pm2_start() {
+    local bin
+    bin=$(_pm2_resolve_bin n8n 2>/dev/null || true)
+    [ -n "$bin" ] || bin=$(command -v n8n 2>/dev/null || true)
+    [ -n "$bin" ] || { error_msg "n8n binary not found"; return 1; }
+
+    pm2 delete n8n >/dev/null 2>&1 || true
+    _n8n_clear_env
+    set -a
+    # shellcheck disable=SC1090
+    . "$HOME/n8n_server/config/n8n.env"
+    set +a
+
+    status_msg "Starting n8n on 127.0.0.1:5678"
+    if pm2 start "$bin" --name n8n --interpreter none --update-env >>"$LOG_FILE" 2>&1; then
+        success_msg
+        pm2 save >>"$LOG_FILE" 2>&1 || true
+        return 0
+    fi
+    error_msg "pm2 could not start n8n"
+    tail -n 15 "$LOG_FILE" 2>/dev/null || true
+    return 1
+}
+
+_n8n_pm2_start_proxy() {
+    local bin conf
+    bin=$(command -v nginx 2>/dev/null || true)
+    conf="$HOME/n8n_server/config/nginx.conf"
+    [ -n "$bin" ] && [ -f "$conf" ] || return 1
+
+    pm2 delete n8n-proxy >/dev/null 2>&1 || true
+    pkill -f "nginx.*n8n_server/config/nginx.conf" 2>/dev/null || true
+    # nginx does not need the n8n runner token; keep it out of the proxy's PM2 env.
+    _n8n_clear_env
+
+    status_msg "Starting n8n TLS proxy on 0.0.0.0:8443"
+    if pm2 start "$bin" --name n8n-proxy --interpreter none -- \
+            -c "$conf" -g "daemon off;" >>"$LOG_FILE" 2>&1; then
+        success_msg
+        pm2 save >>"$LOG_FILE" 2>&1 || true
+        return 0
+    fi
+    error_msg "pm2 could not start nginx"
+    tail -n 20 "$LOG_FILE" 2>/dev/null || true
+    return 1
+}
+
+_n8n_rollback() {
+    local env="$HOME/n8n_server/config/n8n.env" backup="$1" bin
+    pm2 delete n8n-proxy >/dev/null 2>&1 || true
+    pm2 delete n8n >/dev/null 2>&1 || true
+    if [ -n "$backup" ] && [ -f "$backup" ]; then
+        cp -p "$backup" "$env"
+        _n8n_clear_env
+        set -a
+        # shellcheck disable=SC1090
+        . "$env"
+        set +a
+        bin=$(_pm2_resolve_bin n8n 2>/dev/null || true)
+        [ -n "$bin" ] && pm2 start "$bin" --name n8n --interpreter none --update-env \
+            >/dev/null 2>&1 || true
+        pm2 save >/dev/null 2>&1 || true
+    fi
+}
+
+# Apply the LAN HTTPS layout. wait_owner=1 blocks until the owner account exists
+# (install flow); wait_owner=0 is for repair/migration, where the password gate
+# is left in place if the owner has not been created yet.
+_n8n_apply_lan_https() {
+    local wait_owner="${1:-0}" ip env token backup pass
+    env="$HOME/n8n_server/config/n8n.env"
+
+    if ! command -v nginx >/dev/null 2>&1 || ! command -v openssl >/dev/null 2>&1; then
+        status_msg "Installing n8n TLS proxy dependencies"
+        smart_pkg_install nginx openssl-tool || {
+            error_msg "Could not install nginx/openssl-tool"
+            return 1
+        }
+    fi
+    command -v nginx >/dev/null 2>&1 || { error_msg "nginx is not installed"; return 1; }
+    command -v openssl >/dev/null 2>&1 || { error_msg "openssl is not installed"; return 1; }
+    _n8n_disable_pkg_nginx
+
+    ip=$(_n8n_lan_ip)
+    if [ -z "$ip" ]; then
+        error_msg "No Wi-Fi IP detected — connect to Wi-Fi and re-run"
+        return 1
+    fi
+
+    echo -e "\n${YELLOW} How n8n access will work:${NC}"
+    echo -e "  1. n8n stays private on this phone (127.0.0.1:5678)."
+    echo -e "  2. The toolkit adds an HTTPS front door for your Wi-Fi at ${BLUE}https://$ip:8443${NC}."
+    echo -e "  3. If no owner account exists yet, it prints a one-time setup password."
+    echo -e "     Open that address from any device, accept the certificate, and create the owner."
+
+    mkdir -p "$HOME/n8n_server/config" "$HOME/n8n_server/scripts"
+    backup=""
+    if [ -f "$env" ]; then
+        backup="$env.pre-lan-https.$(date +%Y%m%d-%H%M%S)"
+        cp -p "$env" "$backup" 2>/dev/null || backup=""
+    fi
+
+    token=$(_n8n_token "$env") || {
+        error_msg "Could not read or generate N8N_RUNNERS_AUTH_TOKEN"
+        return 1
+    }
+
+    _n8n_ensure_cert "$ip" || { error_msg "Could not generate the TLS certificate"; return 1; }
+
+    pm2 delete n8n-proxy >/dev/null 2>&1 || true
+    pm2 delete n8n >/dev/null 2>&1 || true
+
+    if ! _n8n_write_env "$ip" "$token"; then
+        error_msg "Could not write n8n.env"
+        _n8n_rollback "$backup"
+        return 1
+    fi
+    _n8n_write_monitor
+
+    if ! _n8n_pm2_start; then
+        _n8n_rollback "$backup"
+        return 1
+    fi
+    if ! _n8n_wait_settings; then
+        error_msg "n8n did not finish starting on 127.0.0.1:5678"
+        _n8n_rollback "$backup"
+        return 1
+    fi
+
+    if _n8n_owner_exists; then
+        _n8n_nginx_conf "$ip" 0
+        if ! _n8n_pm2_start_proxy \
+           || ! _n8n_wait_http "https://127.0.0.1:8443/rest/settings" 200; then
+            error_msg "The TLS proxy did not answer on 8443"
+            _n8n_rollback "$backup"
+            return 1
+        fi
+        rm -f "$HOME/n8n_server/config/setup.htpasswd" \
+              "$HOME/n8n_server/config/setup-password.txt"
+        _n8n_access_hint "$ip"
+        return 0
+    fi
+
+    # No owner yet: expose only the password-gated setup page.
+    pass=$(_n8n_setup_password) || {
+        error_msg "Could not generate the setup password"
+        _n8n_rollback "$backup"
+        return 1
+    }
+    _n8n_nginx_conf "$ip" 1
+    if ! _n8n_pm2_start_proxy \
+       || ! _n8n_wait_http "https://127.0.0.1:8443/rest/settings" 401; then
+        error_msg "The setup proxy did not answer on 8443"
+        _n8n_rollback "$backup"
+        return 1
+    fi
+
+    echo -e "\n${GREEN}n8n setup is ready from any device on the same Wi-Fi:${NC} https://$ip:8443"
+    echo -e "${YELLOW}Setup password:${NC} $pass"
+    echo -e "Accept the self-signed certificate once, then create the owner account."
+
+    if [ "$wait_owner" -eq 1 ]; then
+        status_msg "Waiting for the owner account (create it at https://$ip:8443)"
+        if _n8n_wait_for_owner; then
+            _n8n_nginx_conf "$ip" 0
+            if ! _n8n_pm2_start_proxy \
+               || ! _n8n_wait_http "https://127.0.0.1:8443/rest/settings" 200; then
+                warn_msg "Owner created, but the proxy did not reload cleanly"
+                return 1
+            fi
+            rm -f "$HOME/n8n_server/config/setup.htpasswd" \
+                  "$HOME/n8n_server/config/setup-password.txt"
+            success_msg "Owner created — setup password removed"
+            _n8n_access_hint "$ip"
+            return 0
+        fi
+        warn_msg "Owner not created yet — the setup password gate remains active"
+        _n8n_access_hint "$ip"
+        return 1
+    fi
+
+    _n8n_access_hint "$ip"
+    return 0
+}
+
+# _n8n_access_hint -- tell the user where the editor actually is.
+_n8n_access_hint() {
+    local ip="${1:-$(_n8n_lan_ip)}"
+    echo -e "\n${YELLOW}  OPEN THE n8n EDITOR:${NC}"
+    if [ -n "$ip" ]; then
+        echo -e "  - same Wi-Fi:     ${BLUE}https://$ip:8443${NC}"
+        echo -e "  Open this from any device on the same Wi-Fi (laptop, tablet, phone)."
+        if [ -f "$HOME/n8n_server/config/setup-password.txt" ]; then
+            echo -e "  First visit: accept the certificate, enter the setup password below,"
+            echo -e "  then create the owner account. The password is removed automatically."
+        else
+            echo -e "  First visit: accept the certificate warning, then log in with the owner account."
+        fi
+        echo -e "  Remove the warning by installing ${BLUE}$HOME/n8n_server/certs/ca.crt${NC} on the client."
+        echo -e "  If the phone's Wi-Fi address changes, re-run WORKFLOWS -> n8n -> Repair."
+    else
+        echo -e "  No Wi-Fi IP detected. n8n is loopback-only (127.0.0.1:5678)."
+    fi
+    if [ -f "$HOME/n8n_server/config/setup-password.txt" ]; then
+        echo -e "  ${YELLOW}Setup password:${NC} $(cat "$HOME/n8n_server/config/setup-password.txt")"
+    fi
+    echo -e "  The GCP bridge still tunnels 5678; put TLS and auth on the VM side."
 }
 
 # --- 7. N8N INSTALLATION ---
@@ -3532,7 +4022,7 @@ install_n8n() {
     prepare_for_install "n8n" "openclaw"
 
     if [[ "$mode" == "full" ]]; then
-        smart_pkg_install nodejs-lts python autossh tmux cronie
+        smart_pkg_install nodejs-lts python autossh tmux cronie nginx openssl-tool
 
     ensure_nodejs_links
     fi
@@ -3588,45 +4078,24 @@ install_n8n() {
     mkdir -p "$HOME/n8n_server/config" "$HOME/n8n_server/scripts" "$HOME/n8n_server/python" "$HOME/.termux/boot"
     success_msg
 
-    if [[ "$mode" == "full" ]] || [ ! -f "$HOME/n8n_server/config/n8n.env" ]; then
-        status_msg "Creating n8n configuration"
-        cat <<EOF > "$HOME/n8n_server/config/n8n.env"
-N8N_RUNNERS_MODE=internal
-N8N_RUNNERS_AUTH_TOKEN="$(openssl rand -hex 32)"
-N8N_RUNNERS_BROKER_LISTEN_ADDRESS=127.0.0.1
-N8N_PYTHON_BINARY=$PREFIX/bin/python3
-N8N_NATIVE_PYTHON_RUNNER=false
-N8N_BLOCK_COMMAND_EXECUTION=false
-N8N_NODES_INCLUDE='["n8n-nodes-base.executeCommand","n8n-nodes-base.manualTrigger"]'
-NODE_OPTIONS="--max-old-space-size=$SAFE_LIMIT"
-N8N_PROTOCOL=http
-N8N_HOST=localhost
-# Plain-HTTP access from another device needs this false, otherwise n8n refuses
-# the login with "configured to use a secure cookie ... insecure URL". Safari
-# rejects the cookie even on localhost. Set it back to true (or delete the line)
-# once n8n is fronted by TLS — e.g. the GCP bridge + nginx walkthrough.
-N8N_SECURE_COOKIE=false
-# n8n builds its own editor/webhook urls from N8N_HOST, so "localhost" is what
-# keeps the phone's browser and an SSH tunnel working. To use the editor from
-# another machine on the same Wi-Fi, set all three to this device's IP instead
-# (find it: ip -4 addr show | grep -oE 'inet [0-9.]+'):
-# N8N_HOST=192.168.1.50
-# N8N_EDITOR_BASE_URL=http://192.168.1.50:5678
-# N8N_WEBHOOK_URL=http://192.168.1.50:5678
-EOF
-        success_msg
-    fi
-
     if [[ "$mode" == "full" ]] || [ ! -f "$HOME/n8n_server/scripts/n8n-monitor.sh" ]; then
         status_msg "Creating monitoring script"
         cat <<'EOF' > "$HOME/n8n_server/scripts/n8n-monitor.sh"
 #!/bin/bash
 N8N_SESSION="n8n_server"
 TUNNEL_SESSION="n8n_tunnel"
+PROXY_SESSION="n8n_proxy"
 ENV_FILE=~/n8n_server/config/n8n.env
+NGINX_CONF=~/n8n_server/config/nginx.conf
 LOG_FILE=~/n8n_monitor.log
 
 N8N_START="set -a; source $ENV_FILE; set +a; n8n start"
+
+if [ -f "$NGINX_CONF" ] && ! pgrep -f "nginx.*n8n_server/config/nginx.conf" >/dev/null; then
+    echo "[$(date)] [PROXY] nginx not found. Restarting..." >> "$LOG_FILE"
+    tmux kill-session -t "$PROXY_SESSION" 2>/dev/null
+    tmux new-session -d -s "$PROXY_SESSION" "nginx -c $NGINX_CONF -g 'daemon off;'"
+fi
 
 if ! pgrep -f "n8n start" > /dev/null; then
     echo "[$(date)]  n8n not found. Restarting..." >> "$LOG_FILE"
@@ -3647,11 +4116,21 @@ EOF
         success_msg
     fi
 
+    status_msg "Configuring n8n LAN HTTPS"
+    if ! _n8n_apply_lan_https 1; then
+        error_msg "n8n LAN HTTPS setup did not complete"
+        echo -e "   n8n may still be loopback-only. Check ${BLUE}$LOG_FILE${NC}, then re-run Repair."
+        wait_to_continue
+        return 1
+    fi
+    success_msg
+
     # Two independent proofs, because either one alone has lied on this device:
     # `command -v n8n` passes while the package is deleted (the pnpm shim
     # survives), and `n8n --version` passes while the database driver is missing
     # (the launcher exits before it opens the DB — the v1.17.10 state on 8x).
-    if health_check "n8n" "n8n --version" && n8n_module_loads sqlite3; then
+    if health_check "n8n" "n8n --version" && n8n_module_loads sqlite3 \
+       && [ "$(_n8n_http_code "https://127.0.0.1:8443/rest/settings")" = "200" ]; then
         echo -e "\n${GREEN} n8n successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
     else
         error_msg "n8n did not run after installing — the package is incomplete."
@@ -3660,9 +4139,9 @@ EOF
         return 1
     fi
     echo -e "\n${YELLOW}  NEXT STEPS:${NC}"
-    echo -e "1. Start it and keep it across reboots: ${BLUE}SERVICES${NC} -> ${BLUE}PM2${NC} -> n8n, then ${BLUE}pm2 save${NC}"
-    echo -e "   (PM2 passes ~/n8n_server/config/n8n.env, so the memory cap comes with it)"
-    _n8n_access_hint
+    echo -e "1. n8n is running in PM2 as ${BLUE}n8n${NC} and ${BLUE}n8n-proxy${NC}; pm2 save is already done."
+    echo -e "2. Open the HTTPS URL above from any device on the same Wi-Fi."
+    echo -e "   Accept the self-signed certificate once, or install ca.crt to remove the warning."
     wait_to_continue
 }
 
@@ -5194,8 +5673,26 @@ export PATH="\$TERMUX_BIN:\$PATH"
 export HOME='$HOME'
 [ -f "\$HOME/n8n_server/config/n8n.env" ] && set -a && source "\$HOME/n8n_server/config/n8n.env" && set +a
 pkill -9 -f "n8n start" 2>/dev/null || true
-sleep 5
-exec n8n start 2>&1
+sleep 2
+
+# The n8n listener is loopback-only; nginx is the LAN TLS terminator.
+NGINX_CONF="\$HOME/n8n_server/config/nginx.conf"
+NGINX_PID=""
+if [ -f "\$NGINX_CONF" ] && command -v nginx >/dev/null 2>&1 \
+   && ! pgrep -f "nginx.*n8n_server/config/nginx.conf" >/dev/null; then
+    nginx -c "\$NGINX_CONF" -g 'daemon off;' &
+    NGINX_PID=\$!
+    sleep 1
+fi
+
+n8n start &
+N8N_PID=\$!
+cleanup() {
+    [ -n "\$N8N_PID" ] && kill "\$N8N_PID" 2>/dev/null
+    [ -n "\$NGINX_PID" ] && kill "\$NGINX_PID" 2>/dev/null
+}
+trap cleanup TERM INT EXIT
+wait "\$N8N_PID"
 EOF
     echo -e "#!/bin/bash\nexec svlogd -tt \$HOME/.n8n/logs" > "$N8N_SERVICE_DIR/log/run"
     chmod +x "$N8N_SERVICE_DIR/run" "$N8N_SERVICE_DIR/log/run"
@@ -5417,19 +5914,7 @@ manage_pm2() {
             N8N)
                 local n8n_path; n8n_path=$(_pm2_resolve_bin "n8n")
                 if [ -n "$n8n_path" ]; then
-                    pm2 stop n8n 2>/dev/null || true
-                    pm2 delete n8n 2>/dev/null || true
-                    # PM2 snapshots the environment when the process is CREATED, and
-                    # its `--env` flag selects a NAMED block from an ecosystem file —
-                    # it is not a dotenv loader. Passing `--env <path>` looked
-                    # plausible but applied nothing: the running process had no N8N_*
-                    # variables at all, so N8N_SECURE_COOKIE / N8N_HOST / NODE_OPTIONS
-                    # from n8n.env were inert, and a LAN login still hit the
-                    # secure-cookie wall (8x, v1.17.12). Source the file into this
-                    # shell instead, exactly like the native `sv` run script does —
-                    # the child inherits it and PM2 stores it in the dump.
-                    execute "set -a; [ -f '$HOME/n8n_server/config/n8n.env' ] && . '$HOME/n8n_server/config/n8n.env'; set +a; pm2 start '$n8n_path' --name n8n --interpreter none --update-env && pm2 save" "Starting n8n in PM2"
-                    _n8n_access_hint
+                    _n8n_apply_lan_https 0
                 else
                     error_msg "n8n is not installed."
                 fi
@@ -5589,8 +6074,10 @@ uninstall_n8n() {
 
     # Stop processes (Surgically target n8n tunnel only)
     remove_n8n_service_files
+    pkill -9 -f "nginx.*n8n_server/config/nginx.conf" 2>/dev/null || true
     pkill -9 -f "n8n" 2>/dev/null || true
     pkill -9 -f "autossh.*-R 5678:localhost:5678" 2>/dev/null || true
+    command -v pm2 >/dev/null 2>&1 && pm2 delete n8n-proxy >> "$LOG_FILE" 2>&1 || true
     command -v pm2 >/dev/null 2>&1 && pm2 delete n8n >> "$LOG_FILE" 2>&1 || true
     
     local pm=$(detect_package_manager "n8n")
@@ -5788,7 +6275,7 @@ menu_workflows() {
     while true; do
         local choice
         choice=$(show_whi_menu "Workflows & Automation  |  Use ↑/↓ to navigate, Enter to select" \
-            "N8N"       "$n8_bull  n8n         — Automation Server (localhost:5678)" \
+            "N8N"       "$n8_bull  n8n         — Automation Server (LAN HTTPS 8443)" \
             "PAPERCLIP" "$pc_bull  Paperclip   — Multi-Agent Virtual Company ([!] 2GB+ RAM)" \
             ""          "" \
             "BACK"      "<--  BACK TO MAIN MENU") || :
@@ -5896,7 +6383,7 @@ ${GREEN}AGENTS${NC}     — AI gateways and coding agents
   Nanobot     Lightweight Python agent with Claude
 
 ${GREEN}WORKFLOWS${NC}  — Automation servers
-  n8n         Professional workflow automation — editor on localhost:5678
+  n8n         Professional workflow automation — editor on https://<phone-ip>:8443
   Paperclip   Multi-agent virtual company (EXPERIMENTAL)
 
 ${GREEN}UTILITIES${NC}  — Developer tools
@@ -5917,6 +6404,13 @@ ${YELLOW}TIP:${NC} Use [R] Repair to fix patches without re-downloading.
 Use [U] Update to get the latest version + re-apply patches.
 Never run native update commands (e.g. openclaw update)."
 }
+
+if [ "$N8N_CLI_MIGRATE" -eq 1 ]; then
+    check_termux
+    ensure_deps
+    _n8n_apply_lan_https 0
+    exit $?
+fi
 
 check_termux
 ensure_deps
