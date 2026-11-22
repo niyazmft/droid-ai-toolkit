@@ -141,8 +141,6 @@ private fun Setup(
     }
 }
 
-private enum class Mode { STATUS, ACTIONS, RUN }
-
 @Composable
 private fun Section(title: String) {
     Text(
@@ -170,29 +168,45 @@ private fun Home() {
     var snapshot by remember { mutableStateOf<Protocol.Snapshot?>(null) }
     var actions by remember { mutableStateOf<List<Protocol.Action>>(emptyList()) }
     var failure by remember { mutableStateOf<String?>(null) }
-    var mode by remember { mutableStateOf<Mode?>(null) }
+    var askedForActions by remember { mutableStateOf(false) }
     var showRaw by remember { mutableStateOf(false) }
     var raw by remember { mutableStateOf("") }
     var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
 
-    // Show status immediately instead of an empty screen.
     LaunchedEffect(Unit) {
-        mode = Mode.STATUS
         Runner.send(context, listOf("--api", "status"))
     }
 
     LaunchedEffect(result) {
         val r = result ?: return@LaunchedEffect
         raw = r.stdout
-        if (r.exitCode == 0 && r.errmsg.isBlank()) {
-            failure = null
-            when (mode) {
-                Mode.ACTIONS -> actions = Protocol.actions(r.stdout)
-                Mode.STATUS, Mode.RUN, null -> Protocol.snapshot(r.stdout)?.let { snapshot = it }
-            }
-        } else {
+
+        if (r.exitCode != 0 || r.errmsg.isNotBlank()) {
             failure = Protocol.error(r.stdout, r.stderr, r.errmsg)
                 ?: "Command failed (exit ${r.exitCode})"
+            return@LaunchedEffect
+        }
+        failure = null
+
+        // Route on the payload, not on which button was pressed. Commands overlap
+        // (a probe result is still in the StateFlow when Home first composes), and
+        // the old `mode` flag let a late status response clear a catalog that had
+        // already arrived — which is why Actions sometimes rendered nothing.
+        val catalog = Protocol.actions(r.stdout)
+        if (catalog.isNotEmpty()) {
+            actions = catalog
+            return@LaunchedEffect
+        }
+
+        Protocol.snapshot(r.stdout)?.let { snapshot = it }
+    }
+
+    // Fetch the catalog once the device is idle. Keyed on `running` so the retry
+    // happens after the previous command finishes, and the flag is only set when
+    // the send really dispatched (a dropped request must be retried, not assumed).
+    LaunchedEffect(running, snapshot) {
+        if (!running && snapshot != null && actions.isEmpty() && !askedForActions) {
+            if (Runner.send(context, listOf("--api", "list"))) askedForActions = true
         }
     }
 
@@ -215,7 +229,6 @@ private fun Home() {
         ) {
             Button(
                 onClick = {
-                    mode = Mode.STATUS
                     failure = null
                     Runner.send(context, listOf("--api", "status"))
                 },
@@ -224,8 +237,8 @@ private fun Home() {
 
             OutlinedButton(
                 onClick = {
-                    mode = Mode.ACTIONS
                     failure = null
+                    askedForActions = true
                     Runner.send(context, listOf("--api", "list"))
                 },
                 enabled = !running
@@ -253,6 +266,7 @@ private fun Home() {
             Fact("Boot restore", if (s.termux.bootInstalled) "installed" else "missing")
             Fact("Node", s.tools.node)
             Fact("Python", s.tools.python)
+            Fact("PM2", if (s.tools.pm2Installed) "installed" else "missing")
             if (s.tools.openclaw.isNotBlank()) Fact("OpenClaw", s.tools.openclaw)
             if (s.tools.hermes.isNotBlank()) Fact("Hermes", s.tools.hermes)
             if (s.tools.n8n.isNotBlank()) Fact("n8n", s.tools.n8n)
@@ -274,7 +288,6 @@ private fun Home() {
                 Text(a.summary, style = MaterialTheme.typography.bodySmall)
                 TextButton(
                     onClick = {
-                        mode = Mode.RUN
                         failure = null
                         Runner.send(context, listOf("--api", "run", a.id))
                     },

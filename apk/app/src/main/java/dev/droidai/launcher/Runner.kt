@@ -39,7 +39,14 @@ object Runner {
 
     private var isProbe = false
 
-    fun send(context: Context, args: List<String>, isProbe: Boolean = false) {
+    /**
+     * Returns true when the command was actually dispatched. Callers that chain
+     * requests must check this: a call while another command is in flight is
+     * dropped, and silently assuming success is how the catalog request went
+     * missing.
+     */
+    fun send(context: Context, args: List<String>, isProbe: Boolean = false): Boolean {
+        if (_running.value) return false
         this.isProbe = isProbe
         _running.value = true
         _result.value = null
@@ -56,7 +63,9 @@ object Runner {
         if (!started) {
             _running.value = false
             _result.value = RunResult("", "", -1, -1, "Could not start the Termux service")
+            return false
         }
+        return true
     }
 
     fun deliver(intent: Intent) {
