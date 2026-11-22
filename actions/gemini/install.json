@@ -60,7 +60,8 @@
         "cmd": [
           "gemini",
           "--version"
-        ]
+        ],
+        "timeout_s": 120
       }
     }
   ]

@@ -67,7 +67,8 @@
         "cmd": [
           "openclaw",
           "--version"
-        ]
+        ],
+        "timeout_s": 120
       }
     },
     {

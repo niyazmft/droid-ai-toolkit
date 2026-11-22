@@ -21,8 +21,14 @@ step_verify_cmd() {
         return 1
     fi
 
+    # A CLI's first start on a loaded phone can take far longer than 25 s: Gemini's
+    # `--version` was killed at exactly 25 s on 8x (exit 124 = timeout), which the
+    # action reported as a failed install. Callers can raise it per step.
+    local secs
+    secs=$(printf '%s' "$step" | jq -r '.args.timeout_s // 25')
+
     if command -v timeout >/dev/null 2>&1; then
-        out=$(timeout 25 "${argv[@]}" 2>&1); rc=$?
+        out=$(timeout "$secs" "${argv[@]}" 2>&1); rc=$?
     else
         out=$("${argv[@]}" 2>&1); rc=$?
     fi
