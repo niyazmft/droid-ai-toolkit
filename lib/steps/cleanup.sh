@@ -24,9 +24,16 @@ step_cleanup_global_project() {
         return 0
     fi
 
+    # Never touch a shim the toolkit itself depends on. `pm2` is the load-bearing
+    # example: the supervisor restarts services through it, and a cleanup that removed
+    # it would take the recovery path down with the thing it was cleaning up after.
+    local protected=" pm2 pm2-runtime node npm pnpm npx corepack bash sh sshd ssh git jq curl wget python3 pip3 termux-wake-lock "
+    local base
     for bin in "$TERMUX_BIN"/*; do
         [ -f "$bin" ] || continue
-        head -c 300 "$bin" 2>/dev/null | grep -q "pnpm/global/" || continue
+        base=$(basename "$bin")
+        case "$protected" in *" $base "*) continue ;; esac
+        head -c 400 "$bin" 2>/dev/null | grep -q "$HOME/.local/share/pnpm/global/" || continue
         rm -f "$bin" && removed=$((removed + 1))
     done
     echo "removed $removed legacy shim(s)"
