@@ -20,12 +20,24 @@ state_file() {
 }
 
 # state_begin <action-id> <run-id> [params-json]
+# Preserves completed steps. It used to write a fresh file with `steps:{}`, which
+# silently defeated the whole point of the checkpoint: a re-run redid every step,
+# including OpenClaw's ~48-minute patch pass (observed on 8x, 2026-11-22).
 state_begin() {
     local action="$1" run_id="$2" params="${3:-}"
     [ -n "$params" ] || params='{}'
     local f tmp
     f=$(state_file "$action")
     tmp=$(mktemp)
+
+    if [ -f "$f" ] && [ "${API_FRESH:-0}" -ne 1 ]; then
+        jq --arg r "$run_id" --arg ts "$(date -u +%FT%TZ)" \
+           '.run_id = $r | .started = $ts | .finished = null' "$f" > "$tmp" 2>/dev/null \
+            && { mv "$tmp" "$f"; return 0; }
+        rm -f "$tmp"
+        return 1
+    fi
+
     if jq -n --arg a "$action" --arg r "$run_id" --argjson p "$params" \
              --arg ts "$(date -u +%FT%TZ)" \
              '{schema:1, action:$a, run_id:$r, started:$ts, finished:null, params:$p, steps:{}}' \
