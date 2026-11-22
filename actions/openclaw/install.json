@@ -25,7 +25,8 @@
       "args": {
         "name": "openclaw"
       },
-      "optional": true
+      "optional": true,
+      "idempotent": true
     },
     {
       "id": "install",
@@ -36,18 +37,21 @@
         "name": "openclaw",
         "spec": "2026.9.8"
       },
-      "retry_on_sigkill": 2
+      "retry_on_sigkill": 2,
+      "idempotent": true
     },
     {
       "id": "patches",
       "title": "Apply Android patches",
-      "run": "step_openclaw_patches"
+      "run": "step_openclaw_patches",
+      "idempotent": true
     },
     {
       "id": "config",
       "title": "Configure for Termux",
       "run": "step_openclaw_config",
-      "optional": true
+      "optional": true,
+      "idempotent": true
     },
     {
       "id": "verify",

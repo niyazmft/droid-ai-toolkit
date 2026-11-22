@@ -79,6 +79,16 @@ class MainActivity : ComponentActivity() {
             if (termux && permission && probe == null) Termux.probe(this@MainActivity)
         }
 
+        // A lost result must not wedge the app: after 30 s the in-flight command is
+        // abandoned so Retry can dispatch again.
+        val busy by Runner.running.collectAsState()
+        LaunchedEffect(busy) {
+            if (busy) {
+                kotlinx.coroutines.delay(30_000)
+                if (Runner.running.value) Runner.timeout(30)
+            }
+        }
+
         when {
             !termux -> Setup(
                 title = "Termux is required",
@@ -171,6 +181,7 @@ private fun Home() {
     var askedForActions by remember { mutableStateOf(false) }
     var showRaw by remember { mutableStateOf(false) }
     var raw by remember { mutableStateOf("") }
+    var steps by remember { mutableStateOf<List<Protocol.Step>>(emptyList()) }
     var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
 
     LaunchedEffect(Unit) {
@@ -180,6 +191,7 @@ private fun Home() {
     LaunchedEffect(result) {
         val r = result ?: return@LaunchedEffect
         raw = r.stdout
+        steps = Protocol.steps(r.stdout)
 
         if (r.exitCode != 0 || r.errmsg.isNotBlank()) {
             failure = Protocol.error(r.stdout, r.stderr, r.errmsg)
@@ -252,6 +264,24 @@ private fun Home() {
 
         failure?.let {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+        }
+
+        if (steps.isNotEmpty()) {
+            Section("Last run")
+            steps.forEach { s ->
+                val mark = when (s.state) {
+                    "ok" -> "\u2714"
+                    "failed" -> "\u2716"
+                    "skipped" -> "\u2013"
+                    else -> "\u2026"
+                }
+                val took = if (s.ms >= 1000) "  (${s.ms / 1000}s)" else ""
+                Text(
+                    "$mark ${s.title}$took",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (s.state == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
 
         snapshot?.let { s ->

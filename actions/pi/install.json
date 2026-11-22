@@ -37,12 +37,14 @@
         "name": "@earendil-works/pi-coding-agent",
         "spec": "latest"
       },
-      "retry_on_sigkill": 2
+      "retry_on_sigkill": 2,
+      "idempotent": true
     },
     {
       "id": "context",
       "title": "Write Termux context",
-      "run": "step_pi_agents_md"
+      "run": "step_pi_agents_md",
+      "idempotent": true
     },
     {
       "id": "verify",

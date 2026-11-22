@@ -30,7 +30,8 @@
           "pkg-config"
         ]
       },
-      "optional": true
+      "optional": true,
+      "idempotent": true
     },
     {
       "id": "install",
@@ -41,13 +42,15 @@
         "name": "@google/gemini-cli",
         "spec": "latest"
       },
-      "retry_on_sigkill": 2
+      "retry_on_sigkill": 2,
+      "idempotent": true
     },
     {
       "id": "patch",
       "title": "Apply Android patch",
       "run": "step_gemini_patch",
-      "optional": true
+      "optional": true,
+      "idempotent": true
     },
     {
       "id": "verify",

@@ -68,6 +68,24 @@ object Runner {
         return true
     }
 
+    /**
+     * Give up on the in-flight command.
+     *
+     * Without this, a result that never arrives leaves `_running` true forever —
+     * and because send() refuses to dispatch while running, every later attempt
+     * (including Retry) is silently dropped. The UI then sits on a gate that
+     * cannot be cleared and looks broken.
+     */
+    fun timeout(seconds: Int) {
+        if (!_running.value) return
+        _running.value = false
+        _result.value = RunResult("", "", -1, -1, "Termux did not respond within $seconds s")
+        if (isProbe) {
+            Gate.probeOk.value = false
+            Gate.probeMessage.value = "Termux did not respond within $seconds s"
+        }
+    }
+
     fun deliver(intent: Intent) {
         val bundle = intent.getBundleExtra(Termux.RESULT_BUNDLE)
         val result = RunResult(
@@ -88,7 +106,12 @@ object Runner {
             Gate.probeMessage.value = if (Gate.probeOk.value == true) {
                 ""
             } else {
-                result.errmsg.ifBlank { result.stderr.ifBlank { "Termux did not run the command" } }.trim()
+                // Never just "it did not work": exit code, err code and whichever
+                // stream has text are what make the gate diagnosable.
+                val detail = result.errmsg.ifBlank { result.stderr }.ifBlank { result.stdout }.trim()
+                val head = detail.lineSequence().take(3).joinToString(" / ").take(300)
+                "exit=${result.exitCode} err=${result.err} " +
+                    if (head.isBlank()) "(no output and no error text)" else head
             }
         }
     }

@@ -130,6 +130,20 @@ object Protocol {
         }
     }
 
+    data class Step(val title: String, val state: String, val ms: Long)
+
+    /**
+     * Every `step` event, in order. A background RUN_COMMAND only returns at the end,
+     * so this is the post-run record rather than a live feed — but "which step
+     * failed" is the question a user actually asks, and prose logs do not answer it.
+     */
+    fun steps(stdout: String): List<Step> =
+        events(stdout).filter { it.optString("t") == "step" }.mapNotNull { e ->
+            val title = e.optString("title").ifBlank { e.optString("id") }
+            if (title.isBlank()) null
+            else Step(title = title, state = e.optString("state"), ms = e.optLong("ms"))
+        }
+
     /** The last `step` event's title, for a progress line. */
     fun currentStep(stdout: String): String? =
         events(stdout).lastOrNull { it.optString("t") == "step" }

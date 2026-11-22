@@ -110,7 +110,7 @@ runner_run() {
     RUNNER_RESULT=$(mktemp 2>/dev/null) || RUNNER_RESULT=""
     export RUNNER_RESULT
 
-    local step s_id s_title s_run s_when s_optional s_retry t0 t1 ms attempt max
+    local step s_id s_title s_run s_when s_optional s_idem s_retry t0 t1 ms attempt max
     while IFS= read -r step; do
         [ -n "$step" ] || continue
         s_id=$(printf '%s' "$step" | jq -r '.id // empty')
@@ -118,6 +118,7 @@ runner_run() {
         s_run=$(printf '%s' "$step" | jq -r '.run // empty')
         s_when=$(printf '%s' "$step" | jq -r '.when // empty')
         s_optional=$(printf '%s' "$step" | jq -r '.optional // false')
+        s_idem=$(printf '%s' "$step" | jq -r '.idempotent // false')
         s_retry=$(printf '%s' "$step" | jq -r '.retry_on_sigkill // 0')
 
         if ! runner_when "$s_when"; then
@@ -126,7 +127,12 @@ runner_run() {
             continue
         fi
 
-        if [ "${API_FRESH:-0}" -ne 1 ] && state_step_ok "$id" "$s_id"; then
+        # Skip only steps the spec marks idempotent. A query-like step (status
+        # snapshot) must run every time: skipping it produced a stream with no
+        # `data` event, and every consumer — including the app's readiness probe —
+        # read that as failure. Observed on 8x, 2026-11-22.
+        if [ "${s_idem:-false}" = "true" ] && [ "${API_FRESH:-0}" -ne 1 ] \
+           && state_step_ok "$id" "$s_id"; then
             ev_step "$s_id" "skipped" "$s_title (already done)" 0
             skipped="$skipped $s_id"
             continue

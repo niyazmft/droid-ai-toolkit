@@ -30,7 +30,8 @@
           "pkg-config"
         ]
       },
-      "optional": true
+      "optional": true,
+      "idempotent": true
     },
     {
       "id": "install",
@@ -41,7 +42,8 @@
         "name": "n8n",
         "spec": "latest"
       },
-      "retry_on_sigkill": 2
+      "retry_on_sigkill": 2,
+      "idempotent": true
     },
     {
       "id": "native",
@@ -49,12 +51,14 @@
       "run": "step_n8n_native",
       "args": {
         "jobs": 1
-      }
+      },
+      "idempotent": true
     },
     {
       "id": "env",
       "title": "Write environment file",
-      "run": "step_n8n_env"
+      "run": "step_n8n_env",
+      "idempotent": true
     },
     {
       "id": "verify",
