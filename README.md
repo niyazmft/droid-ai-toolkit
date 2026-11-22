@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.17.9-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.17.12-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -67,6 +67,11 @@ A high-performance, automated toolkit for running AI tools — [OpenClaw](https:
 - 🧹 **No Python 3.14 Hijack (v1.17.7+)**: A half-built PM store left by a failed `hermes pm install` used to prepend a bundled Python **3.14** to `PATH` for every Hermes process (cron jobs and tools included) and warn on every command. It is now detected and discarded.
 - 📂 **Path Awareness**: Aggressively redirects `/bin/npm`, `/bin/node`, and `/tmp` to Termux-compatible directories using `$PREFIX`.
 - 🚀 **PM2 Integration**: Native support for starting, stopping, and monitoring OpenClaw, n8n, Ollama, Paperclip, Pi, and Gemini CLI via PM2 with optimized memory flags.
+- 🗄 **n8n Actually Starts (v1.17.11+)**: global installs skip package scripts, which also skipped `sqlite3`'s own build — so n8n installed, answered `--version`, and then retried
+  `SQLite package has not been found installed` forever without ever binding port 5678. The toolkit now compiles the missing native addons (`sqlite3`, and `isolated-vm` for expressions) with
+  the Termux toolchain, and the install check requires the database driver to load rather than trusting `--version`.
+- 🔧 **Global pnpm Installs Keep Working (v1.17.10+)**: `pnpm add -g` and a plain `pnpm install` disagree about where the global project's virtual store lives, and after the OpenClaw two-phase install every later global install died with `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE` — which is what broke n8n on the 8x device. The installer now pins the local install to the `-g` location and repairs an already-mismatched store by relinking (no re-download). n8n also stops on a failed install instead of printing "successfully installed" and then failing the health check.
+- ✅ **The `[Y/n]` Prompt Answers Correctly (v1.17.10+)**: the confirmation prompt read a single character after a 0.1s type-ahead flush, so typing `y` could be swallowed and treated as "no" while pressing Enter alone went ahead. It now reads a whole line, accepts yes/no explicitly, and re-asks on anything else.
 - 📦 **pnpm Support**: Integrated support for pnpm to speed up installations and save storage space.
 - 🧠 **Memory Guard**: Automatically clears memory (PM2 kill) and increases Node.js heap limits (1.5GB+) to prevent crashes on low-RAM devices during updates.
 - 🛡 **Surgical Cleanup**: The uninstaller offers **Soft/Deep** options and a **Wipe Stack (Reset)** function that preserves your system packages while cleaning the apps.
@@ -376,6 +381,28 @@ n8n start             # Start manually
 
 Access locally at `http://localhost:5678`.
 
+### Opening the n8n editor
+
+n8n serves its web UI on port **5678**. Four ways in, in order of safety:
+
+| From | How | Notes |
+|:---|:---|:---|
+| **This phone** | `http://localhost:5678` in any browser, or `termux-open-url http://localhost:5678` | Simplest. Works as soon as the service is up. |
+| **Your computer** | `ssh -L 5678:localhost:5678 <user>@<phone-ip>` then open `http://localhost:5678` | Recommended for real work — the traffic never leaves the tunnel. |
+| **Same Wi-Fi** | `http://<phone-ip>:5678` | Answers, and the installer already sets `N8N_SECURE_COOKIE=false` so the login renders over plain HTTP. Set `N8N_HOST` + `N8N_EDITOR_BASE_URL` + `N8N_WEBHOOK_URL` in `~/n8n_server/config/n8n.env` (template included) so n8n's own webhook URLs point at the phone instead of `localhost`. |
+| **Public internet** | **UTILITIES → GCP Bridge** | Reverse SSH tunnel to a VM you control — see [the walkthrough](#gcp-bridge-walkthrough-optional). |
+
+The installer prints these addresses when it finishes, and again each time **SERVICES → PM2 → n8n** starts the service.
+
+If a browser shows **"Your n8n server is configured to use a secure cookie…"** when you open the LAN address, that is n8n refusing to set its session cookie over plain HTTP. Two things to know:
+
+- The installer now writes `N8N_SECURE_COOKIE=false` to `~/n8n_server/config/n8n.env`, which is what makes `http://<phone-ip>:5678` usable at all. Flip it back to `true` (or delete the line) once n8n sits behind TLS.
+- **Safari rejects the cookie even on `localhost`** over HTTP. Use Chrome/Firefox there, or the SSH tunnel plus a TLS-fronted deployment.
+
+**Editing `n8n.env` takes effect only on a fresh start.** PM2 captures the environment when it creates the process, so a plain `pm2 restart` keeps the old values. Use **SERVICES → PM2 → n8n** (it deletes and re-creates the process), or `pm2 delete n8n && pm2 start …` — then confirm with `pm2 env n8n | grep -E 'N8N_|NODE_OPTIONS'`.
+
+> ⚠️ The editor listens on every interface, so anyone on your Wi-Fi can reach the login page while it runs. n8n asks you to create an owner account on the first visit — do that before putting it on a shared or public network.
+>
 > ⚠️ **Warning:** The installer forcibly kills running OpenClaw, n8n, and PM2 processes during setup to free memory. If you have active workflows or conversations, save your work before installing or updating n8n.
 >
 > 📄 **License note:** n8n is under the *Sustainable Use License*. See `ATTRIBUTIONS.md` for redistribution terms.

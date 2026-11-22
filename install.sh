@@ -14,7 +14,7 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.9"
+VERSION="1.17.12"
 ARCH_TYPE=$(uname -m)
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
@@ -412,6 +412,88 @@ pnpm_global_project_dir() {
     dirname "$root"
 }
 
+# --- pnpm GLOBAL VIRTUAL-STORE LAYOUT ---------------------------------------
+# `pnpm add -g` and a plain `pnpm install` disagree about where the virtual
+# store belongs for the SAME global project directory:
+#
+#   pnpm add -g  <pkg>          -> <global>/5/.pnpm        (virtualStoreDir: ../.pnpm)
+#   cd <global>/5 && pnpm install -> <global>/5/node_modules/.pnpm  (virtualStoreDir: .pnpm)
+#
+# Only one of those is acceptable at a time. Once the second exists, every
+# later `pnpm add -g` aborts with:
+#
+#   ERR_PNPM_UNEXPECTED_VIRTUAL_STORE  Unexpected virtual store location
+#   The dependencies at .../global/5/node_modules are currently symlinked from
+#   .../global/5/node_modules/.pnpm, but pnpm now wants .../global/5/.pnpm
+#
+# That is what killed the n8n install on 8x (v1.17.9): the OpenClaw update path
+# (pnpm_install_frozen, added in v1.17.8) runs `pnpm install` inside the global
+# project dir, so it created the wrong layout and every subsequent global
+# install — n8n, Gemini, Pi — failed with the message above. Neither command
+# recovers on its own.
+
+# pnpm_repair_global_store -- convert the nested layout back to the `-g` one.
+#
+# Pure relinking: package contents are moved, never re-downloaded, so this is
+# cheap on a phone and safe to run on every pnpm invocation. A tree already in
+# the `-g` layout is a no-op (one grep).
+pnpm_repair_global_store() {
+    command -v pnpm >/dev/null 2>&1 || return 0
+    local dir nested flat entry base link target
+    dir=$(pnpm_global_project_dir) || return 0
+    nested="$dir/node_modules/.pnpm"
+    flat="$dir/.pnpm"
+    [ -d "$nested" ] || return 0   # healthy (`-g`) layout, or nothing installed yet
+
+    status_msg "Repairing the pnpm global store layout"
+    mkdir -p "$flat"
+    for entry in "$nested"/*; do
+        [ -e "$entry" ] || continue
+        base=$(basename "$entry")
+        rm -rf "${flat:?}/$base"
+        mv "$entry" "$flat/$base" || { warn_msg "Could not move $base"; return 1; }
+    done
+    rmdir "$nested" 2>/dev/null || rm -rf "$nested"
+
+    # Top-level symlinks point INTO the store, and the store just moved up one
+    # directory level while the links stayed put — so every relative target needs
+    # exactly one more `../`. The depth differs by link kind and BOTH shapes must
+    # be handled:
+    #   node_modules/<pkg>            ->  .pnpm/<pkg>...   (must become ../.pnpm/...)
+    #   node_modules/@scope/<pkg>     -> ../.pnpm/<pkg>...  (must become ../../.pnpm/...)
+    # Rewriting only the first shape leaves every scoped package dangling, which
+    # is silent until that package is imported.
+    for link in "$dir"/node_modules/* "$dir"/node_modules/@*/*; do
+        [ -L "$link" ] || continue
+        target=$(readlink "$link") || continue
+        case "$target" in
+            /*) continue ;;            # absolute target: the move does not affect it
+            *.pnpm/*) ln -sfn "../$target" "$link" ;;
+        esac
+    done
+
+    # pnpm validates the on-disk layout against what .modules.yaml recorded, so
+    # the record has to move with the store or the next command still refuses.
+    local modules="$dir/node_modules/.modules.yaml"
+    if [ -f "$modules" ] && grep -qx 'virtualStoreDir: \.pnpm' "$modules"; then
+        local tmp; tmp=$(mktemp)
+        if sed 's|^virtualStoreDir: \.pnpm$|virtualStoreDir: ../.pnpm|' "$modules" > "$tmp"; then
+            mv "$tmp" "$modules" || rm -f "$tmp"
+        else
+            rm -f "$tmp"
+        fi
+    fi
+    success_msg
+}
+
+# pnpm_g <args...> -- run a GLOBAL pnpm command, repairing the store layout first.
+# Every `pnpm add -g` / `pnpm remove -g` goes through this; a mismatched layout
+# makes all of them fail identically.
+pnpm_g() {
+    pnpm_repair_global_store || true
+    pnpm "$@"
+}
+
 # _fs_supports_hardlink <dir> -- can pnpm hardlink store entries into the project?
 _fs_supports_hardlink() {
     local dir="$1" a b
@@ -491,7 +573,7 @@ _survive_low_memory_kill() {
         if [ "$rc" -lt 128 ]; then
             return "$rc"
         fi
-        warn_msg "Android killed the package manager (signal $((rc - 128))) — the memory killer, not a package-manager error"
+        warn_msg "Android killed the running step (signal $((rc - 128))) — the memory killer, not a build/install error"
         if [ "$attempt" -lt "$max" ]; then
             echo -e "   The virtual store is now warm, so this attempt has less left to do."
             echo -e "   Waiting 15s for memory to settle, then retrying."
@@ -521,16 +603,23 @@ pnpm_install_frozen() {
 
     pnpm_set_global_dep "$name" "$spec" || return 1
 
+    # Pin the virtual store to the location `pnpm add -g` uses. Without this the
+    # local install creates <global>/5/node_modules/.pnpm, after which every
+    # `pnpm add -g` on the device dies with ERR_PNPM_UNEXPECTED_VIRTUAL_STORE
+    # (that is what broke the n8n install on 8x in v1.17.9).
+    pnpm_repair_global_store || true
+    local store_flag="--config.virtual-store-dir=$dir/.pnpm"
+
     local heap_mb node_env
     heap_mb=$(pnpm_heap_limit)
     node_env="NODE_OPTIONS='--dns-result-order=ipv4first --max-old-space-size=$heap_mb'"
 
-    _survive_low_memory_kill "cd '$dir' && $node_env pnpm install --lockfile-only --ignore-scripts" \
+    _survive_low_memory_kill "cd '$dir' && $node_env pnpm install --lockfile-only --ignore-scripts $store_flag" \
         "Resolving the dependency graph (phase 1/2 — cheap, no download or linking)" || return 1
 
     # confirmModulesPurge is answered non-interactively: without it pnpm blocks on
     # a prompt, and a detached/background run hits EOF and aborts.
-    _survive_low_memory_kill "cd '$dir' && printf 'y\ny\n' | $node_env pnpm install --frozen-lockfile --ignore-scripts --child-concurrency=1 --network-concurrency=1 $import_flag --config.confirmModulesPurge=false" \
+    _survive_low_memory_kill "cd '$dir' && printf 'y\ny\n' | $node_env pnpm install --frozen-lockfile --ignore-scripts --child-concurrency=1 --network-concurrency=1 $import_flag $store_flag --config.confirmModulesPurge=false" \
         "Installing from the resolved lockfile (phase 2/2 — no resolution needed)"
 }
 
@@ -665,7 +754,7 @@ ensure_peer_deps() {
     
     status_msg "Checking peer dependencies"
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm add -g ${deps[*]} --prefer-offline --ignore-scripts || pnpm add -g ${deps[*]} --ignore-scripts" "Installing missing channel and UI dependencies"
+        execute "pnpm_g add -g ${deps[*]} --prefer-offline --ignore-scripts || pnpm_g add -g ${deps[*]} --ignore-scripts" "Installing missing channel and UI dependencies"
     else
         execute "npm install -g ${deps[*]} --silent" "Installing missing channel and UI dependencies"
     fi
@@ -725,7 +814,15 @@ smart_pkg_install() {
     done
 
     if [ ${#to_install[@]} -gt 0 ]; then
-        execute "pkg install -y ${to_install[*]}" "Installing missing system packages (${to_install[*]})"
+        if ! execute "pkg install -y ${to_install[*]}" "Installing missing system packages (${to_install[*]})"; then
+            # A Termux mirror caught mid-sync serves an index whose size/hash no
+            # longer matches the Release file, which aborts the whole transaction
+            # ("File has unexpected size ... Mirror sync in progress?"). It clears
+            # on its own, so refresh the index and try once more before giving up.
+            warn_msg "Package install failed — refreshing the index and retrying once (mirror sync)"
+            execute "pkg update -y" "Refreshing the package database" || true
+            execute "pkg install -y ${to_install[*]}" "Installing missing system packages (${to_install[*]})" || return 1
+        fi
     else
         status_msg "System packages already up to date"
         success_msg
@@ -772,29 +869,54 @@ get_openclaw_root() {
     fi
 }
 
+# confirm_action <question> -- Yes/No confirmation, defaulting to Yes ([Y/n]).
+#
+# This used to read a SINGLE character (`read -n1`) after a 0.1s "buffer flush"
+# read that silently swallowed type-ahead. On a phone that combination misfires:
+# a "y" typed a moment early was eaten by the flush, and anything that was not
+# literally y/Y — a stray CR from the soft keyboard, a repeated Enter — fell
+# through to the catch-all and CANCELLED. The result was the worst possible
+# behaviour: typing `y` sent the user back to the menu while pressing Enter
+# alone went ahead (8x, 2026-11-18). It now reads a whole line, accepts an
+# explicit yes or no, and re-asks on anything else rather than guessing.
+#
+# Input is read from the controlling terminal when there is one: the documented
+# launch is `curl -sSL .../install.sh | bash`, where stdin is the script itself.
 confirm_action() {
-    read -t 0.1 -n 10000 junk 2>/dev/null || true # Flush buffer
-    echo -ne "\n${BLUE}>>${NC} $1? [Y/n]: "
-    
-    read -r -n1 key
-    echo "" # Print newline
-    
-    # Handle Enter (empty string)
-    if [[ -z "$key" ]]; then
-        echo -e "${GREEN}Proceeding...${NC}"
-        return 0
+    local prompt="$1" answer tty_ok=0
+    if { exec 3</dev/tty; } 2>/dev/null; then
+        tty_ok=1
     fi
-    
-    # Strictly handle 'y' or 'Y'
-    if [[ "$key" == "y" || "$key" == "Y" ]]; then
-        echo -e "${GREEN}Proceeding...${NC}"
-        return 0
-    fi
-    
-    # Anything else is 'No'
-    echo -e "${RED}Returning to menu...${NC}"
-    sleep 0.5
-    return 1
+
+    while true; do
+        echo -ne "\n${BLUE}>>${NC} ${prompt}? [Y/n]: "
+        if [ "$tty_ok" -eq 1 ]; then
+            read -r answer <&3 || answer=""
+        else
+            read -r answer || answer=""
+        fi
+        # Soft keyboards can deliver CR instead of LF; strip either.
+        answer="${answer%$'\r'}"
+
+        # Spelled out rather than ${answer,,}: that expansion is bash 4+, and this
+        # script is also run under bash 3.2 (macOS) for testing.
+        case "$answer" in
+            ""|y|Y|yes|YES|Yes)
+                [ "$tty_ok" -eq 1 ] && exec 3<&-
+                echo -e "${GREEN}Proceeding...${NC}"
+                return 0
+                ;;
+            n|N|no|NO|No)
+                [ "$tty_ok" -eq 1 ] && exec 3<&-
+                echo -e "${RED}Cancelled.${NC}"
+                sleep 0.5
+                return 1
+                ;;
+            *)
+                echo -e "${YELLOW}Please answer ${GREEN}y${NC} or ${YELLOW}n${NC} — or press Enter to accept the default.${NC}"
+                ;;
+        esac
+    done
 }
 
 # --- 2.5. TUI HELPERS ---
@@ -1076,7 +1198,7 @@ install_openclaw() {
 
     if [[ "$mode" == "full" ]]; then
         # Batched package installation for performance
-        smart_pkg_install tur-repo build-essential libvips openssh git python3 pkg-config cmake tmux binutils termux-services ffmpeg golang nodejs-lts psmisc
+        smart_pkg_install tur-repo build-essential libvips openssh git python pkg-config cmake tmux binutils termux-services ffmpeg golang nodejs-lts psmisc
     fi
 
     ensure_nodejs_links
@@ -3153,7 +3275,7 @@ install_pi() {
         if [ "$PKG_MANAGER" == "npm" ]; then
             execute "npm uninstall -g @mariozechner/pi-coding-agent 2>/dev/null || true; npm install -g @earendil-works/pi-coding-agent@latest" "Installing Pi Coding Agent via npm"
         else
-            execute "pnpm remove -g @mariozechner/pi-coding-agent 2>/dev/null || true; pnpm add -g @earendil-works/pi-coding-agent@latest --force --ignore-scripts" "Installing Pi Coding Agent via pnpm"
+            execute "pnpm_g remove -g @mariozechner/pi-coding-agent 2>/dev/null || true; pnpm_g add -g @earendil-works/pi-coding-agent@latest --force --ignore-scripts" "Installing Pi Coding Agent via pnpm"
         fi
     fi
 
@@ -3217,7 +3339,7 @@ install_gemini_cli() {
         if [ "$PKG_MANAGER" == "npm" ]; then
             execute "npm install -g @google/gemini-cli@latest" "Installing Gemini CLI via npm"
         else
-            execute "pnpm add -g @google/gemini-cli@latest --force --ignore-scripts" "Installing Gemini CLI via pnpm"
+            execute "pnpm_g add -g @google/gemini-cli@latest --force --ignore-scripts" "Installing Gemini CLI via pnpm"
         fi
     fi
 
@@ -3240,6 +3362,148 @@ install_gemini_cli() {
         error_msg "Installation finished but 'gemini' command not found in PATH."
     fi
     wait_to_continue
+}
+
+# --- n8n NATIVE MODULES -------------------------------------------------------
+# Every global install here passes --ignore-scripts (an install hook can fetch
+# binaries or compile mid-install — slow, and a prime memory-killer target).
+# For n8n that skips sqlite3's own step, `prebuild-install -r napi ||
+# node-gyp rebuild`, so the package lands with NO native binding:
+#
+#   Initial database connection attempt 1 failed: SQLite package has not been
+#   found installed. Try to install it: npm install sqlite3 --save
+#
+# n8n retries that forever and never binds 5678 — while `n8n --version` still
+# exits 0, because the launcher short-circuits before it touches the database.
+# That is exactly the state v1.17.10 left 8x in with n8n 2.48.7.
+#
+# isolated-vm is the same story, except n8n 2.x loads it lazily for expressions,
+# so a missing binding breaks workflows rather than startup. Both are C/C++
+# addons (sqlite3 vendors the amalgamated source) and the toolchain they need —
+# python3, make, clang — is already a toolkit dependency.
+
+# n8n_install_root -- where the installed n8n package lives (pnpm or npm layout)
+n8n_install_root() {
+    local root
+    root=$(pnpm_root_g 2>/dev/null || true)
+    if [ -n "$root" ] && [ -e "$root/n8n" ]; then
+        echo "$root/n8n"
+        return 0
+    fi
+    root=$(npm root -g 2>/dev/null || true)
+    if [ -n "$root" ] && [ -e "$root/n8n" ]; then
+        echo "$root/n8n"
+        return 0
+    fi
+    return 1
+}
+
+# n8n_resolve_module <module> -- the directory n8n actually loads <module> from.
+# Resolution starts INSIDE the package: pnpm's isolated layout keeps a package's
+# dependencies beside it (.pnpm/<pkg>@<ver>_<hash>/node_modules), never in the
+# package's own node_modules — resolving from the symlink's parent misses them.
+n8n_resolve_module() {
+    local mod="$1" root real
+    root=$(n8n_install_root) || return 1
+    real=$(readlink -f "$root") || return 1
+    ( cd "$real" && node -e 'try{console.log(require.resolve(process.argv[1]+"/package.json").replace(/\/package\.json$/,""))}catch(e){process.exit(1)}' "$mod" ) 2>/dev/null
+}
+
+# n8n_module_loads <module> -- can it be require()d exactly as n8n would?
+n8n_module_loads() {
+    local mod="$1" root real
+    root=$(n8n_install_root) || return 1
+    real=$(readlink -f "$root") || return 1
+    ( cd "$real" && node -e 'require(process.argv[1])' "$mod" ) >/dev/null 2>&1
+}
+
+# _n8n_build_native <module> [jobs] -- compile a missing addon in place.
+# Two attempts: node-gyp's default (it fetches the matching headers once into
+# ~/.cache/node-gyp), then Termux's own header tree. One of the two is what works
+# on-device; the second only runs after the first has already failed.
+_n8n_build_native() {
+    local mod="$1" jobs="${2:-1}" dir
+    dir=$(n8n_resolve_module "$mod") || return 1
+    if [ ! -d "$dir" ] || [ ! -f "$dir/binding.gyp" ]; then
+        warn_msg "$mod has no buildable source at ${dir:-<unresolved>}"
+        return 1
+    fi
+    _survive_low_memory_kill "cd '$dir' && node-gyp rebuild -j $jobs" \
+        "Building $mod from source (native addon — takes a few minutes)" && return 0
+    _survive_low_memory_kill "cd '$dir' && node-gyp rebuild -j $jobs --nodedir='$PREFIX'" \
+        "Rebuilding $mod against the Termux headers" && return 0
+    return 1
+}
+
+# n8n_ensure_native_modules -- make sure n8n can open its database at all.
+# sqlite3 is fatal (nothing starts without it). isolated-vm only disables
+# expressions, so its failure is reported and the user keeps a usable n8n.
+n8n_ensure_native_modules() {
+    n8n_install_root >/dev/null || return 0     # not installed (e.g. bare repair)
+
+    if ! command -v node-gyp >/dev/null 2>&1; then
+        error_msg "node-gyp is missing — n8n's native modules cannot be built"
+        echo -e "   ${BLUE}pkg install nodejs-lts python make clang${NC} then re-run this option."
+        return 1
+    fi
+
+    if n8n_module_loads sqlite3; then
+        status_msg "n8n SQLite binding"
+        success_msg
+    else
+        echo -e "${YELLOW}n8n's SQLite binding is missing:${NC} install scripts are skipped"
+        echo -e "  globally, so its database driver was never compiled. Building it now."
+        if ! _n8n_build_native sqlite3 || ! n8n_module_loads sqlite3; then
+            error_msg "Could not build n8n's SQLite binding — n8n cannot start without it."
+            echo -e "   Build it by hand, then re-run this option:"
+            echo -e "   ${BLUE}cd $(n8n_resolve_module sqlite3 2>/dev/null) && node-gyp rebuild${NC}"
+            return 1
+        fi
+        success_msg "SQLite binding built"
+    fi
+
+    if n8n_module_loads isolated-vm; then
+        status_msg "n8n expression sandbox (isolated-vm)"
+        success_msg
+    else
+        echo -e "${YELLOW}n8n's expression sandbox (isolated-vm) is unbuilt too.${NC}"
+        echo -e "  It is C++ and can take several minutes on a phone."
+        if _n8n_build_native isolated-vm && n8n_module_loads isolated-vm; then
+            success_msg "isolated-vm built"
+        else
+            warn_msg "isolated-vm did not build — n8n will start, but expressions/code nodes may fail"
+            echo -e "   Retry later with: ${BLUE}cd $(n8n_resolve_module isolated-vm 2>/dev/null) && node-gyp rebuild --release${NC}"
+        fi
+    fi
+    return 0
+}
+
+# _n8n_access_hint -- tell the user where the editor actually is.
+#
+# Nothing used to say this: the install finished with "configure background
+# services" and no URL, so a first-time user had no way to know n8n serves a web
+# editor on 5678 (8x, 2026-11-21).
+#
+# n8n binds every interface, so http://<phone-ip>:5678 does answer from another
+# machine — but N8N_HOST is `localhost`, and that is what n8n uses to build its
+# OWN urls (webhook callbacks, editor base). A browser on another device gets a
+# UI whose links point back at the phone's loopback, so the honest defaults are
+# "this phone" and an SSH tunnel; the LAN route needs N8N_HOST changed (there is
+# a commented template in n8n.env), and the public route is the GCP bridge.
+_n8n_access_hint() {
+    local ip
+    ip=$(ip -4 addr show 2>/dev/null | grep -oE 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | grep -v '127\.0\.0\.1' | awk '{print $2}' | head -1)
+    echo -e "\n${YELLOW}  OPEN THE n8n EDITOR:${NC}"
+    echo -e "  - this phone:     ${BLUE}http://localhost:5678${NC}"
+    echo -e "                    ${BLUE}termux-open-url http://localhost:5678${NC}"
+    echo -e "  - your computer:  ${BLUE}ssh -L 5678:localhost:5678 <user>@${ip:-<phone-ip>}${NC}"
+    echo -e "                    then open ${BLUE}http://localhost:5678${NC}  (safest route)"
+    if [ -n "$ip" ]; then
+        echo -e "  - same Wi-Fi:     ${BLUE}http://$ip:5678${NC}"
+        echo -e "                    ${YELLOW}set N8N_HOST too; Safari always refuses plain-http logins${NC}"
+    fi
+    echo -e "  - public:         ${BLUE}UTILITIES${NC} -> ${BLUE}GCP Bridge${NC} (reverse SSH tunnel)"
+    echo -e "  The first visit asks you to create the owner account — do that before exposing it."
 }
 
 # --- 7. N8N INSTALLATION ---
@@ -3268,8 +3532,8 @@ install_n8n() {
     prepare_for_install "n8n" "openclaw"
 
     if [[ "$mode" == "full" ]]; then
-        smart_pkg_install nodejs-lts python3 autossh tmux cronie
-        
+        smart_pkg_install nodejs-lts python autossh tmux cronie
+
     ensure_nodejs_links
     fi
 
@@ -3292,11 +3556,26 @@ install_n8n() {
         success_msg
 
         if [ "$PKG_MANAGER" == "npm" ]; then
-            execute "npm install -g n8n@latest" "Installing n8n globally via npm"
+            execute "npm install -g n8n@latest" "Installing n8n globally via npm" || {
+                error_msg "n8n was NOT installed — the download failed (see above)."
+                echo -e "   Your workflows and credentials in ${BLUE}~/.n8n${NC} are untouched. Re-run the install."
+                wait_to_continue
+                return 1
+            }
         else
-            execute "pnpm add -g n8n@latest --force --ignore-scripts" "Installing n8n globally via pnpm"
+            execute "pnpm_g add -g n8n@latest --force --ignore-scripts" "Installing n8n globally via pnpm" || {
+                error_msg "n8n was NOT installed — the pnpm step failed (see above)."
+                echo -e "   Your workflows and credentials in ${BLUE}~/.n8n${NC} are untouched. Re-run the install."
+                wait_to_continue
+                return 1
+            }
         fi
     fi
+
+    # `--ignore-scripts` above means the database driver was never built (see the
+    # header note). Both modes run this: a repair on a half-installed n8n is
+    # exactly the case that needs it.
+    n8n_ensure_native_modules || { wait_to_continue; return 1; }
 
     TOTAL_RAM=$(free -m | awk '/^Mem:/{print $2}')
     SAFE_LIMIT=$(get_mem_limit)
@@ -3322,6 +3601,18 @@ N8N_NODES_INCLUDE='["n8n-nodes-base.executeCommand","n8n-nodes-base.manualTrigge
 NODE_OPTIONS="--max-old-space-size=$SAFE_LIMIT"
 N8N_PROTOCOL=http
 N8N_HOST=localhost
+# Plain-HTTP access from another device needs this false, otherwise n8n refuses
+# the login with "configured to use a secure cookie ... insecure URL". Safari
+# rejects the cookie even on localhost. Set it back to true (or delete the line)
+# once n8n is fronted by TLS — e.g. the GCP bridge + nginx walkthrough.
+N8N_SECURE_COOKIE=false
+# n8n builds its own editor/webhook urls from N8N_HOST, so "localhost" is what
+# keeps the phone's browser and an SSH tunnel working. To use the editor from
+# another machine on the same Wi-Fi, set all three to this device's IP instead
+# (find it: ip -4 addr show | grep -oE 'inet [0-9.]+'):
+# N8N_HOST=192.168.1.50
+# N8N_EDITOR_BASE_URL=http://192.168.1.50:5678
+# N8N_WEBHOOK_URL=http://192.168.1.50:5678
 EOF
         success_msg
     fi
@@ -3356,10 +3647,22 @@ EOF
         success_msg
     fi
 
-    echo -e "\n${GREEN} n8n successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
-    health_check "n8n" "command -v n8n" || true
+    # Two independent proofs, because either one alone has lied on this device:
+    # `command -v n8n` passes while the package is deleted (the pnpm shim
+    # survives), and `n8n --version` passes while the database driver is missing
+    # (the launcher exits before it opens the DB — the v1.17.10 state on 8x).
+    if health_check "n8n" "n8n --version" && n8n_module_loads sqlite3; then
+        echo -e "\n${GREEN} n8n successfully $([[ "$mode" == "repair" ]] && echo "repaired" || echo "installed")!${NC}"
+    else
+        error_msg "n8n did not run after installing — the package is incomplete."
+        echo -e "   Re-run this option, or check ${BLUE}$LOG_FILE${NC} for the failing step."
+        wait_to_continue
+        return 1
+    fi
     echo -e "\n${YELLOW}  NEXT STEPS:${NC}"
-    echo -e "1. Select ${BLUE}SERVICES${NC} -> ${BLUE}PM2${NC} (Recommended) or ${BLUE}Native Services${NC} to configure background services."
+    echo -e "1. Start it and keep it across reboots: ${BLUE}SERVICES${NC} -> ${BLUE}PM2${NC} -> n8n, then ${BLUE}pm2 save${NC}"
+    echo -e "   (PM2 passes ~/n8n_server/config/n8n.env, so the memory cap comes with it)"
+    _n8n_access_hint
     wait_to_continue
 }
 
@@ -5114,11 +5417,19 @@ manage_pm2() {
             N8N)
                 local n8n_path; n8n_path=$(_pm2_resolve_bin "n8n")
                 if [ -n "$n8n_path" ]; then
-                    local n8n_env=""
-                    [ -f "$HOME/n8n_server/config/n8n.env" ] && n8n_env="--env '$HOME/n8n_server/config/n8n.env'"
                     pm2 stop n8n 2>/dev/null || true
                     pm2 delete n8n 2>/dev/null || true
-                    execute "pm2 start '$n8n_path' --name n8n --interpreter none $n8n_env && pm2 save" "Starting n8n in PM2"
+                    # PM2 snapshots the environment when the process is CREATED, and
+                    # its `--env` flag selects a NAMED block from an ecosystem file —
+                    # it is not a dotenv loader. Passing `--env <path>` looked
+                    # plausible but applied nothing: the running process had no N8N_*
+                    # variables at all, so N8N_SECURE_COOKIE / N8N_HOST / NODE_OPTIONS
+                    # from n8n.env were inert, and a LAN login still hit the
+                    # secure-cookie wall (8x, v1.17.12). Source the file into this
+                    # shell instead, exactly like the native `sv` run script does —
+                    # the child inherits it and PM2 stores it in the dump.
+                    execute "set -a; [ -f '$HOME/n8n_server/config/n8n.env' ] && . '$HOME/n8n_server/config/n8n.env'; set +a; pm2 start '$n8n_path' --name n8n --interpreter none --update-env && pm2 save" "Starting n8n in PM2"
+                    _n8n_access_hint
                 else
                     error_msg "n8n is not installed."
                 fi
@@ -5232,7 +5543,7 @@ uninstall_openclaw() {
     
     local pm=$(detect_package_manager "openclaw")
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm remove -g openclaw 2>/dev/null || true" "Uninstalling OpenClaw via pnpm"
+        execute "pnpm_g remove -g openclaw 2>/dev/null || true" "Uninstalling OpenClaw via pnpm"
     else
         execute "npm uninstall -g openclaw 2>/dev/null || true" "Uninstalling OpenClaw via npm"
     fi
@@ -5266,7 +5577,7 @@ uninstall_gemini() {
     echo -e "${YELLOW}Cleaning up Gemini CLI...${NC}"
     local pm=$(detect_package_manager "gemini-cli")
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm remove -g @google/gemini-cli 2>/dev/null || true" "Uninstalling Gemini CLI via pnpm"
+        execute "pnpm_g remove -g @google/gemini-cli 2>/dev/null || true" "Uninstalling Gemini CLI via pnpm"
     else
         execute "npm uninstall -g @google/gemini-cli 2>/dev/null || true" "Uninstalling Gemini CLI via npm"
     fi
@@ -5284,7 +5595,7 @@ uninstall_n8n() {
     
     local pm=$(detect_package_manager "n8n")
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm remove -g n8n 2>/dev/null || true" "Uninstalling n8n via pnpm"
+        execute "pnpm_g remove -g n8n 2>/dev/null || true" "Uninstalling n8n via pnpm"
     else
         execute "npm uninstall -g n8n 2>/dev/null || true" "Uninstalling n8n via npm"
     fi
@@ -5350,7 +5661,7 @@ uninstall_pi() {
     local pm=$(detect_package_manager "@earendil-works/pi-coding-agent")
     [ "$pm" == "none" ] && pm=$(detect_package_manager "@mariozechner/pi-coding-agent")
     if [ "$pm" == "pnpm" ]; then
-        execute "pnpm remove -g @earendil-works/pi-coding-agent @mariozechner/pi-coding-agent 2>/dev/null || true" "Uninstalling Pi via pnpm"
+        execute "pnpm_g remove -g @earendil-works/pi-coding-agent @mariozechner/pi-coding-agent 2>/dev/null || true" "Uninstalling Pi via pnpm"
     else
         execute "npm uninstall -g @earendil-works/pi-coding-agent @mariozechner/pi-coding-agent 2>/dev/null || true" "Uninstalling Pi via npm"
     fi
@@ -5477,7 +5788,7 @@ menu_workflows() {
     while true; do
         local choice
         choice=$(show_whi_menu "Workflows & Automation  |  Use ↑/↓ to navigate, Enter to select" \
-            "N8N"       "$n8_bull  n8n         — Automation & Integration Server" \
+            "N8N"       "$n8_bull  n8n         — Automation Server (localhost:5678)" \
             "PAPERCLIP" "$pc_bull  Paperclip   — Multi-Agent Virtual Company ([!] 2GB+ RAM)" \
             ""          "" \
             "BACK"      "<--  BACK TO MAIN MENU") || :
@@ -5585,7 +5896,7 @@ ${GREEN}AGENTS${NC}     — AI gateways and coding agents
   Nanobot     Lightweight Python agent with Claude
 
 ${GREEN}WORKFLOWS${NC}  — Automation servers
-  n8n         Professional workflow automation
+  n8n         Professional workflow automation — editor on localhost:5678
   Paperclip   Multi-agent virtual company (EXPERIMENTAL)
 
 ${GREEN}UTILITIES${NC}  — Developer tools

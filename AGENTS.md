@@ -438,6 +438,154 @@ A dedicated sub-menu **[Z] Zulip Plugin** under AGENTS → OpenClaw provides:
 
   **Known gotchas with pnpm in Termux**: For Paperclip installation, `pnpm v10` can fail to correctly link workspace dependencies, leading to build failures. It is **strongly recommended to use pnpm v9.x** (`npm i -g pnpm@9.15.4`) before attempting the Paperclip install. The installer manually repairs `.bin` symlinks for `tsc`, `tsx`, and `esbuild`, and ensures `node_modules/.bin` is prepended to `$PATH`. The `sync; sleep 5; node -e "global.gc()"` pattern that was previously used between build steps is **removed entirely** — it was causing LMK kills on loaded systems. The `safe_execute()` helper uses `eval` (no `bash -c` fork) and appends directly to the main log.
 
+## pnpm's global virtual store has TWO layouts — mixing them breaks every install (v1.17.10+)
+
+Device 8x (2026-11-18) could not install n8n at all:
+
+```text
+ERR_PNPM_UNEXPECTED_VIRTUAL_STORE  Unexpected virtual store location
+The dependencies at ~/.local/share/pnpm/global/5/node_modules are currently symlinked
+from ~/.local/share/pnpm/global/5/node_modules/.pnpm, but pnpm now wants
+~/.local/share/pnpm/global/5/.pnpm
+```
+
+Two pnpm commands disagree about where the virtual store of the **same** global
+project (`~/.local/share/pnpm/global/5`) belongs:
+
+| command | virtual store | `.modules.yaml` |
+| --- | --- | --- |
+| `pnpm add -g <pkg>` | `<global>/5/.pnpm` | `virtualStoreDir: ../.pnpm` |
+| `cd <global>/5 && pnpm install` | `<global>/5/node_modules/.pnpm` | `virtualStoreDir: .pnpm` |
+
+Only one can exist at a time, and **neither command repairs the other's layout**. The
+second form is what `pnpm_install_frozen` (v1.17.8, the low-RAM two-phase path for
+OpenClaw) runs — so after an OpenClaw install that had to recreate `node_modules`,
+every later `pnpm add -g` died: n8n, Gemini CLI and Pi, with a message that blames
+the store location rather than saying "a previous install used a different command".
+`pnpm remove -g` fails the same way, so uninstalls silently did nothing (`|| true`).
+
+Two changes, both needed:
+
+- **Prevention** — `pnpm_install_frozen` passes `--config.virtual-store-dir="$dir/.pnpm"`,
+  so a local install writes the `-g` layout from the start. Verified: a fresh global
+  dir + the flag produces `virtualStoreDir: ../.pnpm`, and `pnpm add -g` works after it.
+- **Repair** — `pnpm_repair_global_store()` converts an already-nested tree: moves
+  `node_modules/.pnpm/*` into `<global>/5/.pnpm` (overwriting same-named entries from
+  the older store), rewrites the top-level symlinks, and fixes `virtualStoreDir` in
+  `node_modules/.modules.yaml`. No package is re-downloaded and nothing is relinked
+  from the content store, so it is cheap on a phone. It runs before every global pnpm
+  command via the `pnpm_g` wrapper (all `add -g` / `remove -g` go through it) and at the
+  top of `pnpm_install_frozen`; a healthy tree is a one-`grep` no-op.
+
+Two details that are easy to get wrong:
+
+- **Both symlink shapes need the extra `../`.** `node_modules/<pkg>` targets `.pnpm/...`
+  while `node_modules/@scope/<pkg>` targets `../.pnpm/...`. Handling only the first
+  leaves every scoped package dangling, which stays invisible until that package is
+  imported (it looks like "the repair worked").
+- **`.modules.yaml` must be rewritten with the store.** pnpm validates the on-disk
+  layout against the recorded `virtualStoreDir`, so moving the directory alone still
+  fails the next command.
+
+On 8x both stores existed simultaneously (`.pnpm` from the Oct 7 `-g` era, `node_modules/.pnpm`
+from Nov 17), which is why the repair merges instead of moving: entries are
+content-addressed by pnpm (`pkg@ver_<peer-hash>`), so same-named means same content.
+
+## The `[Y/n]` confirmation answered backwards (v1.17.10+)
+
+On 8x, typing `y` at `>> Install n8n Server? [Y/n]:` returned to the previous menu as if
+declining, while pressing Enter alone proceeded — the exact opposite of the prompt.
+`confirm_action` read a **single character** (`read -n1`) after a 0.1s "flush" read
+(`read -t 0.1 -n 10000 junk`) that silently swallowed type-ahead, and any byte that was
+not literally `y`/`Y` — a stray `CR` from a soft keyboard, a repeated Enter — fell through
+to "anything else is No".
+
+It now reads a whole line (from `/dev/tty` when present, because the documented launch is
+`curl … | bash` where stdin is the script), accepts empty/`y`/`Y`/`yes` as yes and
+`n`/`N`/`no` as no, strips a trailing `CR`, and **re-asks** on anything else instead of
+guessing. The `case` lists the spellings explicitly rather than using `${answer,,}`,
+which is bash 4+ and breaks under bash 3.2 (used for local testing).
+
+## n8n "installs" but cannot start: `--ignore-scripts` skips its database driver (v1.17.11+)
+
+8x (2026-11-21) finally got past the pnpm store bug and installed n8n 2.48.7 cleanly — shim present,
+`n8n --version` → `2.48.7`, `~/n8n_server/{config,scripts}` written. It still could not run:
+
+```text
+Initial database connection attempt 1 failed: SQLite package has not been found installed.
+Try to install it: npm install sqlite3 --save. Retrying in 1000ms
+```
+
+…forever: no bind on 5678, nothing on the port, `pm2` empty. `require("sqlite3")` from n8n's own module
+dir threw, and `sqlite3@5.1.7` in the store had **no `.node` file at all**.
+
+**Cause.** Every global install here passes `--ignore-scripts` (an install hook can fetch binaries or
+compile mid-install — slow, and a prime memory-killer target). That also skipped sqlite3's own step,
+`prebuild-install -r napi || node-gyp rebuild`, so the package landed with no native binding.
+`isolated-vm` (`install: node-gyp-build … || node-gyp rebuild --release -j max`) is skipped the same way;
+n8n 2.x loads it lazily for expressions, so that one breaks workflows rather than startup.
+
+**This is invisible to every cheap install check.** `command -v n8n` passes (pnpm shim survives),
+`n8n --version` passes (the launcher short-circuits before it opens the database), and even a full
+`pnpm add -g` exit 0. The install check now requires `require("sqlite3")` to load *as n8n resolves it*.
+
+**Fix.** Keep `--ignore-scripts` (deliberate), then compile what n8n actually needs:
+
+- `n8n_resolve_module <mod>` resolves from **inside** the n8n package (`readlink -f` the symlink first).
+pnpm's isolated layout keeps a package's dependencies *beside* it in `.pnpm/<pkg>@<ver>_<hash>/node_modules`,
+never in the package's own `node_modules` — resolving from the symlink's parent just misses them.
+- `_n8n_build_native` tries `node-gyp rebuild -j 1` (node-gyp fetches matching headers once into
+`~/.cache/node-gyp`), then retries with `--nodedir="$PREFIX"` (Termux's own header tree). One of the two
+is what works on-device. `-j 1` deliberately: `isolated-vm`'s own script uses `-j max`, which is how you
+get OOM-killed on a phone.
+- sqlite3 failure is **fatal** (nothing starts without it); `isolated-vm` failure only warns, because n8n
+boots without it and the user keeps a usable install.
+
+Verified on 8x with the real pnpm layout (read-only probe of the shipped functions):
+`n8n_install_root` → `…/global/5/node_modules/n8n`, `n8n_resolve_module sqlite3` →
+`…/.pnpm/sqlite3@5.1.7/node_modules/sqlite3`, same for `isolated-vm@7.0.2`, and both `n8n_module_loads`
+correctly returned false. The compile itself has **not** been run on-device — that needs a real install.
+
+The toolchain is already a toolkit dependency (`python3`, `make`, `clang`, `pkg-config`), so no new
+packages are required.
+
+### LAN access is blocked by `N8N_SECURE_COOKIE` (v1.17.12+)
+
+Opening the advertised LAN address on 8x — `http://192.168.1.50:5678/` — returns:
+
+```text
+Your n8n server is configured to use a secure cookie, however you are either visiting this
+via an insecure URL, or using Safari.
+```
+
+n8n defaults `N8N_SECURE_COOKIE=true`, so it only sets its session cookie over HTTPS and
+refuses the login on any plain-HTTP origin. `localhost` happens to work because browsers
+treat it as a secure context — **Safari does not, even for localhost**. Since the toolkit
+writes `N8N_PROTOCOL=http`, every non-localhost route (LAN address, and the GCP bridge
+before TLS) hits this wall.
+
+`install_n8n` now writes `N8N_SECURE_COOKIE=false` into `~/n8n_server/config/n8n.env`,
+with a comment saying to flip it back to `true` once n8n is fronted by TLS. That is the
+n8n-documented answer for HTTP deployments, and it is the difference between the editor
+rendering and the error above.
+
+**And the env file was not being applied at all.** The PM2 start path passed `--env '<path>'`, but PM2's
+`--env` selects a NAMED block from an ecosystem file — it is not a dotenv loader. Observed on 8x:
+`/proc/<pid>/environ` had no `N8N_*` variables, while `pm2 jlist` showed stale ones, so
+`N8N_SECURE_COOKIE`, `N8N_HOST`, `NODE_OPTIONS` and the runner token were all inert and the LAN login
+still hit the secure-cookie wall. The native `sv` run script had always done it correctly
+(`set -a && source …`); the PM2 path now does the same, sourcing the file into the shell before
+`pm2 start` so the child inherits it and PM2 stores it in the dump. Because PM2 snapshots the
+environment at process creation, editing `n8n.env` needs delete+start — `pm2 restart` is not enough.
+
+Separately, the access information itself was undocumented: `install_n8n` finished with
+"configure background services" and no URL, so a first-time user had no way to know n8n
+serves a web editor on 5678. `_n8n_access_hint` now prints the four routes (phone,
+SSH tunnel, LAN, GCP bridge) at the end of an install and after **SERVICES → PM2 → n8n**
+starts it; the WORKFLOWS menu label and the `[?] Help` screen carry the address too, so it
+is visible without doing anything. The hint deliberately **does not** launch a browser —
+the toolkit tells the user where to go, it does not drive their device.
+
 ## License Note
 
 `ATTRIBUTIONS.md` governs third-party redistribution rules. **n8n** is under the *Sustainable Use License*; commercial resale or embedding as a paid service requires an Enterprise license. Do not remove or alter `ATTRIBUTIONS.md` without legal review.
