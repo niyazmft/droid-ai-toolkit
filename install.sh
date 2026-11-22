@@ -17,6 +17,11 @@
 VERSION="1.17.13"
 ARCH_TYPE=$(uname -m)
 
+# Kept before the argument parser consumes $@ with shift. The API path re-execs
+# itself (see the LD_PRELOAD note below), and without this the re-exec started the
+# script with no arguments at all — which silently fell through to the TUI.
+ORIGINAL_ARGS=("$@")
+
 # Non-interactive n8n migration path. Used by the installer itself and for
 # on-device verification: `bash install.sh --n8n-migrate`.
 N8N_CLI_MIGRATE=0
@@ -6540,6 +6545,33 @@ if [ "$API_MODE" -eq 1 ]; then
     . "$TOOLKIT_DIR/lib/state.sh"
     # shellcheck source=lib/preflight.sh
     . "$TOOLKIT_DIR/lib/preflight.sh"
+    # Termux rewrites "#!<anything>" shebangs through libtermux-exec, which the
+    # interactive shell injects via LD_PRELOAD. RUN_COMMAND does not always carry
+    # it, and then every shebang script dies with
+    #   pm2: /usr/bin/env: bad interpreter: No such file or directory
+    # because Android has no /usr/bin/env. node itself keeps working (real binary),
+    # so the failure looks like "pm2 is broken" rather than "the environment is".
+    # Observed on 8x: the supervisor's restart action failed exactly this way while
+    # the same command worked over SSH.
+    # It has to be set BEFORE the shell starts: exporting it from inside bash is too
+    # late, because ld.so only reads LD_PRELOAD at process start. Measured on 8x:
+    #   export inside bash          -> pm2: /usr/bin/env: bad interpreter
+    #   LD_PRELOAD=... before bash  -> 6.0.14
+    # So re-exec ourselves once with the preload in place. Without this, every
+    # action that shells out to pm2/n8n/openclaw fails under RUN_COMMAND while the
+    # same command works over SSH — which is exactly how it presented.
+    if [ -f "$PREFIX/lib/libtermux-exec.so" ]; then
+        case " ${LD_PRELOAD:-} " in
+            *libtermux-exec.so*) ;;
+            *)
+                _env_bin="$PREFIX/bin/env"
+                [ -x "$_env_bin" ] || _env_bin=env
+                exec "$_env_bin" LD_PRELOAD="$PREFIX/lib/libtermux-exec.so${LD_PRELOAD:+ $LD_PRELOAD}" \
+                    "${BASH:-$PREFIX/bin/bash}" "$0" "${ORIGINAL_ARGS[@]}"
+                ;;
+        esac
+    fi
+
     # Every step primitive. Globbed so adding a tool does not require editing
     # this list (and does not fail silently when someone forgets to).
     for _lib in "$TOOLKIT_DIR"/lib/steps/*.sh; do
