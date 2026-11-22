@@ -6565,7 +6565,7 @@ if [ "$API_MODE" -eq 1 ]; then
             *libtermux-exec.so*) ;;
             *)
                 _env_bin="$PREFIX/bin/env"
-                [ -x "$_env_bin" ] || _env_bin=env
+                [ -x "$_env_bin" ] || _env_bin="env"
                 exec "$_env_bin" LD_PRELOAD="$PREFIX/lib/libtermux-exec.so${LD_PRELOAD:+ $LD_PRELOAD}" \
                     "${BASH:-$PREFIX/bin/bash}" "$0" "${ORIGINAL_ARGS[@]}"
                 ;;

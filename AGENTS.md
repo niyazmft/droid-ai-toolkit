@@ -2,13 +2,18 @@
 
 ## Project Type
 
-Bash scripting toolkit. Main deliverable is `install.sh`. No app runtime here — `package.json` is lint-only infrastructure.
+Bash scripting toolkit **and a native Android app**. `install.sh` is the executor and
+single source of truth for logic; `apk/` is a Kotlin/Compose client that drives it over
+`install.sh --api` (see `docs/CONTRACT.md`). `package.json` remains lint-only
+infrastructure.
 
 ## Toolchain & Commands
 
 ```bash
 pnpm install               # Install linter deps (pnpm@10.32.1 enforced via packageManager field)
-pnpm run lint:all          # Full lint gate: ESLint → Stylelint → Markdownlint → shellcheck (read-only, does NOT --fix)
+pnpm run lint:all          # Full gate: ESLint → Stylelint → Markdownlint → compat → action specs → shellcheck (read-only)
+pnpm run lint:actions      # Validate actions/*.json: schema, ids, step primitives
+(cd apk && ./gradlew :app:assembleDebug)  # Build the APK (JDK 17 + Android SDK 34)
 python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS only
 ```
 
@@ -35,7 +40,15 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.17.7). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version. Also the `--api`
+  entry point: a headless spec runner used by the app (no TUI, no TTY).
+- `actions/`: declarative action specs (JSON). This is the catalog the app renders, so a
+  new tool needs no APK release. `pnpm run lint:actions` validates them.
+- `lib/`: the runner plus step primitives (`lib/steps/*.sh`). Sourced only by `--api`;
+  the TUI still uses the legacy functions in `install.sh` until the phase-7 cutover.
+- `docs/CONTRACT.md`: the app ⇄ engine contract (events, exit codes, safety semantics).
+- `apk/`: Kotlin/Compose client. Termux stays the executor; the app never runs Linux
+  commands itself.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
 
