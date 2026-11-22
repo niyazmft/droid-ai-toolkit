@@ -25,6 +25,15 @@ object Gate {
     val probeOk = MutableStateFlow<Boolean?>(null)
     val probeMessage = MutableStateFlow("")
 
+    /**
+     * True when Termux never answered at all (as opposed to answering "no").
+     * Those two failures look identical from outside, and blaming
+     * allow-external-apps for an LMK-killed Termux sends the user to the wrong
+     * fix. Observed on 8x: Termux was dead while the package and its permission
+     * were both still fine.
+     */
+    val termuxUnresponsive = MutableStateFlow(false)
+
     fun refresh(context: Context) {
         termuxInstalled.value = runCatching {
             context.packageManager.getPackageInfo(Termux.PKG, 0)

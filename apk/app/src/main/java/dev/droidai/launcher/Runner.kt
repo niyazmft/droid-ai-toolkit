@@ -81,8 +81,10 @@ object Runner {
         _running.value = false
         _result.value = RunResult("", "", -1, -1, "Termux did not respond within $seconds s")
         if (isProbe) {
+            Gate.termuxUnresponsive.value = false
             Gate.probeOk.value = false
             Gate.probeMessage.value = "Termux did not respond within $seconds s"
+            Gate.termuxUnresponsive.value = true
         }
     }
 

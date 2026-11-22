@@ -74,6 +74,7 @@ class MainActivity : ComponentActivity() {
         val permission by Gate.permissionGranted.collectAsState()
         val probe by Gate.probeOk.collectAsState()
         val message by Gate.probeMessage.collectAsState()
+        val down by Gate.termuxUnresponsive.collectAsState()
 
         LaunchedEffect(termux, permission) {
             if (termux && permission && probe == null) Termux.probe(this@MainActivity)
@@ -109,13 +110,19 @@ class MainActivity : ComponentActivity() {
             )
 
             probe != true -> Setup(
-                title = "Enable external commands",
-                body = "Termux only accepts commands from other apps when allow-external-apps " +
-                    "is true. In Termux, run:\n\n" +
-                    "echo \"allow-external-apps = true\" >> ~/.termux/termux.properties\n" +
-                    "termux-reload-settings\n\n" +
-                    "Then come back and retry." +
-                    if (message.isNotBlank()) "\n\nReported: $message" else "",
+                title = if (down) "Termux isn't running" else "Enable external commands",
+                body = if (down) {
+                    "Android killed Termux's process (low memory), so it cannot run commands " +
+                        "right now. Open Termux, then come back and retry.\n\n" +
+                        "This is not the allow-external-apps setting — that one is already on."
+                } else {
+                    "Termux only accepts commands from other apps when allow-external-apps " +
+                        "is true. In Termux, run:\n\n" +
+                        "echo \"allow-external-apps = true\" >> ~/.termux/termux.properties\n" +
+                        "termux-reload-settings\n\n" +
+                        "Then come back and retry." +
+                        if (message.isNotBlank()) "\n\nReported: $message" else ""
+                },
                 primary = "Open Termux" to { Termux.openTermux(this@MainActivity) },
                 secondary = "Retry" to {
                     Gate.probeOk.value = null
