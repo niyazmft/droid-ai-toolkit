@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "service.cleanup-legacy",
+  "title": "Remove legacy pnpm project",
+  "summary": "Delete the old shared global/5 tree and the shims that point into it, once every tool is migrated to tools/",
+  "category": "services",
+  "destructive": true,
+  "idempotent": false,
+  "requires": {},
+  "steps": [
+    { "id": "cleanup", "title": "Remove legacy project and shims", "run": "step_cleanup_global_project" }
+  ]
+}
