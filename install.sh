@@ -20,9 +20,35 @@ ARCH_TYPE=$(uname -m)
 # Non-interactive n8n migration path. Used by the installer itself and for
 # on-device verification: `bash install.sh --n8n-migrate`.
 N8N_CLI_MIGRATE=0
-case "${1:-}" in
-    --n8n-migrate|--n8n-lan-https) N8N_CLI_MIGRATE=1 ;;
-esac
+
+# --- NON-INTERACTIVE SURFACE ---
+# The APK drives this script through Termux's RUN_COMMAND intent, which has no
+# TTY. `--api` selects the machine interface: NDJSON events on stdout, questions
+# emitted as events and answered through a file (see docs/CONTRACT.md).
+#
+# `--yes` is the ONLY way to pre-approve a destructive action headlessly. A
+# confirmation prompt with no terminal answers NO (see confirm_action).
+API_MODE=0
+API_CMD=""
+API_ACTION=""
+API_ANSWERS=""
+API_RUN_ID=""
+API_FRESH=0
+ASSUME_YES=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --n8n-migrate|--n8n-lan-https) N8N_CLI_MIGRATE=1 ;;
+        --api)          API_MODE=1 ;;
+        --yes|-y)       ASSUME_YES=1 ;;
+        --fresh)        API_FRESH=1 ;;
+        --answers)      shift; API_ANSWERS="${1:-}" ;;
+        --run-id)       shift; API_RUN_ID="${1:-}" ;;
+        list|status|run) API_CMD="$1" ;;
+        -*)             : ;;  # unknown flag: ignore, as before
+        *)              [ -z "$API_ACTION" ] && API_ACTION="$1" ;;
+    esac
+    shift
+done
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
 YELLOW=$(printf '\033[1;33m')
@@ -889,18 +915,40 @@ get_openclaw_root() {
 #
 # Input is read from the controlling terminal when there is one: the documented
 # launch is `curl -sSL .../install.sh | bash`, where stdin is the script itself.
+# has_tty -- is there a controlling terminal to draw on and read from?
+# Absent under cron, a background Termux RUN_COMMAND, or any piped invocation.
+has_tty() {
+    if { exec 3</dev/tty; } 2>/dev/null; then
+        exec 3<&-
+        return 0
+    fi
+    return 1
+}
+
 confirm_action() {
     local prompt="$1" answer tty_ok=0
-    if { exec 3</dev/tty; } 2>/dev/null; then
+    if has_tty; then
+        exec 3</dev/tty
         tty_ok=1
     fi
 
     while true; do
         echo -ne "\n${BLUE}>>${NC} ${prompt}? [Y/n]: "
         if [ "$tty_ok" -eq 1 ]; then
-            read -r answer <&3 || answer=""
+            # EOF on the tty is not an answer — the terminal went away.
+            if ! read -r answer <&3; then
+                exec 3<&-
+                echo -e "\n${YELLOW}No answer received — treating as No.${NC}"
+                return 1
+            fi
         else
-            read -r answer || answer=""
+            # No terminal at all: a failed read means nobody can answer. This
+            # used to fall through as `answer=""`, which matched the YES branch
+            # and auto-confirmed destructive prompts (WIPE ALL) headlessly.
+            if ! read -r answer; then
+                echo -e "\n${YELLOW}No terminal and no answer on stdin — treating as No.${NC}"
+                return 1
+            fi
         fi
         # Soft keyboards can deliver CR instead of LF; strip either.
         answer="${answer%$'\r'}"
@@ -954,6 +1002,12 @@ WHI_COLS=$(echo "$WHI_SIZES" | awk '{print $2}')
 # items are passed as tag desc pairs, without dynamic status prefixing.
 show_whi_menu() {
     local title="$1"; shift
+    # Exit code 2 is deliberately distinct from "user cancelled" (1). The main
+    # loop used to treat both as a clean exit, so a headless run printed the
+    # banner, could open no menu, and reported success having done nothing.
+    if ! has_tty; then
+        return 2
+    fi
     local -a items=() tags=() descs=()
     while [ $# -gt 0 ]; do
         items+=("$1" "$2")
@@ -989,6 +1043,9 @@ show_whi_menu() {
 # Returns 0 if user confirms (Yes), 1 if user cancels (No)
 whiptail_confirm() {
     local text="$1"
+    if ! has_tty; then
+        return 1
+    fi
     if command -v gum >/dev/null 2>&1; then
         gum confirm "$text"
         return $?
@@ -998,6 +1055,22 @@ whiptail_confirm() {
         fi
         return 0
     fi
+}
+
+# confirm_destructive <text> -- confirmation for an action that removes data.
+# Headless this refuses unless --yes was passed: pre-approving a wipe must be an
+# explicit flag, never the absence of a person at the keyboard.
+confirm_destructive() {
+    local text="$1"
+    if [ "${ASSUME_YES:-0}" -eq 1 ]; then
+        echo -e "${YELLOW}--yes given: proceeding without confirmation.${NC}"
+        return 0
+    fi
+    if ! has_tty; then
+        error_msg "Refusing a destructive action with no terminal. Re-run with --yes to pre-approve it."
+        return 1
+    fi
+    whiptail_confirm "$text"
 }
 
 # msgbox <text>
@@ -5345,7 +5418,7 @@ restore_hermes_backup() {
     [ "$mode" = "CANCEL" ] || [ -z "$mode" ] && return 0
 
     if [ "$mode" = "FULL" ]; then
-        whiptail_confirm "This will REPLACE your current ~/.hermes with the backup. Continue?" || return 0
+        confirm_destructive "This will REPLACE your current ~/.hermes with the backup. Continue?" || return 0
         status_msg "Restoring full backup"
         if [ -d "$HOME/.hermes" ]; then
             local safety="$HOME/.hermes.fresh.$(date +%Y%m%d%H%M%S)"
@@ -6352,23 +6425,23 @@ menu_uninstall() {
         case "$choice" in
             "") continue ;;
             OPENCLAW)
-                whiptail_confirm "This will remove the OpenClaw global package and background services." && { uninstall_openclaw; whiptail_msg "OpenClaw removed."; } ;;
+                confirm_destructive "This will remove the OpenClaw global package and background services." && { uninstall_openclaw; whiptail_msg "OpenClaw removed."; } ;;
             N8N)
-                whiptail_confirm "This will remove n8n and its watchdog." && { uninstall_n8n; whiptail_msg "n8n removed."; } ;;
+                confirm_destructive "This will remove n8n and its watchdog." && { uninstall_n8n; whiptail_msg "n8n removed."; } ;;
             GEMINI)
-                whiptail_confirm "This will remove the Gemini CLI global package." && { uninstall_gemini; whiptail_msg "Gemini CLI removed."; } ;;
+                confirm_destructive "This will remove the Gemini CLI global package." && { uninstall_gemini; whiptail_msg "Gemini CLI removed."; } ;;
             HERMES)
-                whiptail_confirm "This will remove the Hermes agent installation." && { uninstall_hermes; whiptail_msg "Hermes removed."; } ;;
+                confirm_destructive "This will remove the Hermes agent installation." && { uninstall_hermes; whiptail_msg "Hermes removed."; } ;;
             OLLAMA)
-                whiptail_confirm "This will remove Ollama and downloaded models." && { uninstall_ollama; whiptail_msg "Ollama removed."; } ;;
+                confirm_destructive "This will remove Ollama and downloaded models." && { uninstall_ollama; whiptail_msg "Ollama removed."; } ;;
             PI)
-                whiptail_confirm "This will remove the Pi Coding Agent." && { uninstall_pi; whiptail_msg "Pi removed."; } ;;
+                confirm_destructive "This will remove the Pi Coding Agent." && { uninstall_pi; whiptail_msg "Pi removed."; } ;;
             PAPERCLIP)
-                whiptail_confirm "Paperclip soft-uninstall preserves source code and database. For deep uninstall (wipe everything), use UNINSTALL -> Wipe Software Stack." && { uninstall_paperclip; whiptail_msg "Paperclip removed (soft)."; } ;;
+                confirm_destructive "Paperclip soft-uninstall preserves source code and database. For deep uninstall (wipe everything), use UNINSTALL -> Wipe Software Stack." && { uninstall_paperclip; whiptail_msg "Paperclip removed (soft)."; } ;;
             NANOBOT)
-                whiptail_confirm "This will remove Nanobot AI." && { uninstall_nanobot; whiptail_msg "Nanobot AI removed."; } ;;
+                confirm_destructive "This will remove Nanobot AI." && { uninstall_nanobot; whiptail_msg "Nanobot AI removed."; } ;;
             WIPE)
-                whiptail_confirm "This will WIPE ALL applications and data. Core system packages are NOT removed." && { full_cleanup; whiptail_msg "All toolkit software removed."; } ;;
+                confirm_destructive "This will WIPE ALL applications and data. Core system packages are NOT removed." && { full_cleanup; whiptail_msg "All toolkit software removed."; } ;;
             BACK|*) return ;;
         esac
     done
@@ -6412,6 +6485,37 @@ if [ "$N8N_CLI_MIGRATE" -eq 1 ]; then
     exit $?
 fi
 
+# --- MACHINE INTERFACE (--api) ---
+# Resolved from BASH_SOURCE so `bash /path/install.sh --api …` works. The
+# `curl | bash` entry point has no directory and simply skips this path.
+TOOLKIT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    TOOLKIT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || TOOLKIT_DIR=""
+fi
+
+if [ "$API_MODE" -eq 1 ]; then
+    if [ -z "$TOOLKIT_DIR" ] || [ ! -d "$TOOLKIT_DIR/lib" ]; then
+        printf '%s\n' '{"t":"error","code":2,"msg":"lib/ not found: --api must run from the toolkit checkout, not curl|bash"}'
+        exit 2
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        printf '%s\n' '{"t":"error","code":3,"msg":"jq is required for the --api interface"}'
+        exit 3
+    fi
+    # shellcheck source=lib/json.sh
+    . "$TOOLKIT_DIR/lib/json.sh"
+    # shellcheck source=lib/state.sh
+    . "$TOOLKIT_DIR/lib/state.sh"
+    # shellcheck source=lib/preflight.sh
+    . "$TOOLKIT_DIR/lib/preflight.sh"
+    # shellcheck source=lib/steps/probe.sh
+    . "$TOOLKIT_DIR/lib/steps/probe.sh"
+    # shellcheck source=lib/runner.sh
+    . "$TOOLKIT_DIR/lib/runner.sh"
+    api_dispatch
+    exit $?
+fi
+
 check_termux
 ensure_deps
 
@@ -6426,7 +6530,16 @@ while true; do
         "UNINSTALL"  "Uninstall    — Remove Tools & Reset" \
         "HELP"       "[?]  Help      — What each tool does" \
         ""           "" \
-        "EXIT"       "[X]  EXIT TOOLKIT") || exit 0
+        "EXIT"       "[X]  EXIT TOOLKIT") || {
+        # 2 = no terminal to draw the menu on. That is NOT a user cancellation:
+        # exiting 0 there reported success for a run that did nothing at all.
+        _menu_rc=$?
+        if [ "$_menu_rc" -eq 2 ]; then
+            error_msg "No interactive terminal available. Use --api list|status|run for the machine interface."
+            exit 2
+        fi
+        exit 0
+    }
     case "$choice" in
         "") continue ;;
         AGENTS)     menu_agents ;;

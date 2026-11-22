@@ -15,6 +15,9 @@ npm-debug.log*
 # Temp files
 *.tmp
 *.swp
+
+# Working plan / progress log (local only)
+/PLAN.md
 firebase-debug.log
 
 # Paperclip prebuilt UI tarballs (downloaded from GitHub releases)
