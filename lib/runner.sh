@@ -119,7 +119,7 @@ runner_run() {
     RUNNER_RESULT=$(mktemp 2>/dev/null) || RUNNER_RESULT=""
     export RUNNER_RESULT
 
-    local step s_id s_title s_run s_when s_optional s_idem s_retry t0 t1 ms attempt max
+    local step s_id s_title s_run s_when s_optional s_idem s_fp s_retry t0 t1 ms attempt max
     while IFS= read -r step; do
         [ -n "$step" ] || continue
         s_id=$(printf '%s' "$step" | jq -r '.id // empty')
@@ -128,6 +128,7 @@ runner_run() {
         s_when=$(printf '%s' "$step" | jq -r '.when // empty')
         s_optional=$(printf '%s' "$step" | jq -r '.optional // false')
         s_idem=$(printf '%s' "$step" | jq -r '.idempotent // false')
+        s_fp=$(state_step_fingerprint "$step")
         s_retry=$(printf '%s' "$step" | jq -r '.retry_on_sigkill // 0')
 
         if ! runner_when "$s_when"; then
@@ -141,7 +142,7 @@ runner_run() {
         # `data` event, and every consumer — including the app's readiness probe —
         # read that as failure. Observed on 8x, 2026-11-22.
         if [ "${s_idem:-false}" = "true" ] && [ "${API_FRESH:-0}" -ne 1 ] \
-           && state_step_ok "$id" "$s_id"; then
+           && state_step_ok "$id" "$s_id" "$s_fp"; then
             ev_step "$s_id" "skipped" "$s_title (already done)" 0
             skipped="$skipped $s_id"
             continue
@@ -165,7 +166,7 @@ runner_run() {
             ms=$(( (t1 - t0) * 1000 ))
 
             if [ "$rc" -eq 0 ]; then
-                state_mark "$id" "$s_id" ok "$ms" >/dev/null 2>&1 || true
+                state_mark "$id" "$s_id" ok "$ms" "$s_fp" >/dev/null 2>&1 || true
                 ev_step "$s_id" "ok" "$s_title" "$ms"
                 if [ -n "$RUNNER_RESULT" ] && [ -s "$RUNNER_RESULT" ] \
                    && jq -e . "$RUNNER_RESULT" >/dev/null 2>&1; then
@@ -182,7 +183,7 @@ runner_run() {
                 continue
             fi
 
-            state_mark "$id" "$s_id" failed "$ms" >/dev/null 2>&1 || true
+            state_mark "$id" "$s_id" failed "$ms" "$s_fp" >/dev/null 2>&1 || true
             ev_step "$s_id" "failed" "$s_title" "$ms"
             if [ "$s_optional" = "true" ]; then
                 ev_log "$s_id" "optional step failed (code $rc) — continuing"
