@@ -44,8 +44,14 @@
       "run": "step_openclaw_patches"
     },
     {
+      "id": "config",
+      "title": "Configure for Termux",
+      "run": "step_openclaw_config",
+      "optional": true
+    },
+    {
       "id": "verify",
-      "title": "Verify",
+      "title": "Verify CLI",
       "run": "step_verify_cmd",
       "args": {
         "cmd": [
@@ -53,6 +59,12 @@
           "--version"
         ]
       }
+    },
+    {
+      "id": "pm2",
+      "title": "Start gateway under PM2",
+      "run": "step_openclaw_pm2",
+      "optional": true
     }
   ]
 }
