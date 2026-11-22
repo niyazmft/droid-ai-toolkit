@@ -129,3 +129,44 @@ step_pm2_stop() {
     pm2 stop "$name" 2>/dev/null || true
     echo "stopped $name (if it was running)"
 }
+
+# step_uninstall_tool <step-json> -- remove one tool's project and its shims.
+#
+# Scoped to <pnpm-home>/tools/<tool> on purpose: the old global uninstall had to
+# guess which packages belonged to the removed tool. Removing a per-tool project is
+# the whole operation, and refusing paths outside tools/ means a bad spec cannot
+# turn this into a general rm -rf.
+step_uninstall_tool() {
+    local step="$1" tool dir bin removed=0
+    tool=$(printf '%s' "$step" | jq -r '.args.tool // empty')
+    if [ -z "$tool" ]; then
+        echo "step_uninstall_tool: missing args.tool"
+        return 1
+    fi
+
+    dir=$(tool_dir "$tool")
+    case "$dir" in
+        "$HOME"/.local/share/pnpm/tools/*) ;;
+        *) echo "refusing to remove outside the tools directory: $dir"; return 1 ;;
+    esac
+
+    if command -v pm2 >/dev/null 2>&1 && [ -f "$HOME/.pm2/pm2.pid" ]; then
+        pm2 delete "$tool" >/dev/null 2>&1 || true
+        pm2 save >/dev/null 2>&1 || true
+    fi
+
+    if [ -d "$dir" ]; then
+        rm -rf "$dir" && echo "removed $dir"
+    else
+        echo "already absent: $dir"
+    fi
+
+    # Shims written by _pnpm_link_bins exec a path inside the removed project.
+    for bin in "$TERMUX_BIN"/*; do
+        [ -f "$bin" ] || continue
+        head -c 400 "$bin" 2>/dev/null | grep -q "$dir/" || continue
+        rm -f "$bin" && removed=$((removed + 1))
+    done
+    echo "removed $removed shim(s)"
+    return 0
+}

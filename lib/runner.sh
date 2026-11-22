@@ -100,6 +100,15 @@ runner_run() {
 
     runner_preflight "$spec" || { ev_done 3 "[]"; return 3; }
 
+    # A destructive spec must be confirmed explicitly. The TUI asks a human; the API
+    # has no human, so --yes is the only acceptable proof of intent.
+    if [ "$(printf '%s' "$spec" | jq -r '.destructive // false')" = "true" ] \
+       && [ "${ASSUME_YES:-0}" -ne 1 ]; then
+        ev_error 4 "action '$id' is destructive: re-run with --yes to confirm"
+        ev_done 4 "[]"
+        return 4
+    fi
+
     state_begin "$id" "$run_id" '{}' >/dev/null 2>&1 || true
     log=$(log_path "$id")
     : >> "$log" 2>/dev/null || true

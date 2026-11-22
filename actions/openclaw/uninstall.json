@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "openclaw.uninstall",
+  "title": "Remove OpenClaw",
+  "summary": "Stop the gateway, delete its pnpm project and its $PREFIX/bin shims",
+  "category": "agents",
+  "destructive": true,
+  "requires": {},
+  "steps": [
+    { "id": "uninstall", "title": "Remove the tool project", "run": "step_uninstall_tool",
+      "args": { "tool": "openclaw" } }
+  ]
+}

@@ -47,6 +47,12 @@
       "idempotent": true
     },
     {
+      "id": "migrate",
+      "title": "Migrate legacy state",
+      "run": "step_openclaw_migrate",
+      "idempotent": true
+    },
+    {
       "id": "config",
       "title": "Configure for Termux",
       "run": "step_openclaw_config",
@@ -69,6 +75,12 @@
       "title": "Start gateway under PM2",
       "run": "step_openclaw_pm2",
       "optional": true
+    },
+    {
+      "id": "boot",
+      "title": "Install boot hook",
+      "run": "step_openclaw_boot_hook",
+      "idempotent": true
     }
   ]
 }

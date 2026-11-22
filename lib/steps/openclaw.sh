@@ -101,3 +101,28 @@ step_openclaw_pm2() {
     echo "openclaw running: pid=$pid NODE_OPTIONS=$opts"
     return 0
 }
+
+# step_openclaw_migrate -- 2026.9.x gates gateway startup behind legacy-state
+# migrations that upstream normally applies via `doctor --fix`. That command cannot
+# finish on Android (it needs a service owner for gateway verification), so the
+# toolkit runs the migrations directly. No-op when there is no legacy state.
+step_openclaw_migrate() {
+    if command -v migrate_openclaw_legacy_state >/dev/null 2>&1; then
+        migrate_openclaw_legacy_state
+        return $?
+    fi
+    echo "no legacy-state migrator in this toolkit build; skipping"
+    return 0
+}
+
+# step_openclaw_boot_hook -- write ~/.termux/boot/start-pm2.sh, which runs
+# `sshd` and `pm2 resurrect` on boot. Without it every service stays down after a
+# reboot, because Android has no systemd/launchd for `pm2 startup` to hook into.
+step_openclaw_boot_hook() {
+    if command -v setup_pm2_boot >/dev/null 2>&1; then
+        setup_pm2_boot
+        return $?
+    fi
+    echo "no boot-hook writer in this toolkit build; skipping"
+    return 0
+}
