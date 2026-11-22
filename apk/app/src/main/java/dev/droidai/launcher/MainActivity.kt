@@ -21,6 +21,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,7 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 class MainActivity : ComponentActivity() {
 
@@ -69,10 +69,10 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun Root() {
-        val termux by Gate.termuxInstalled.collectAsStateWithLifecycle()
-        val permission by Gate.permissionGranted.collectAsStateWithLifecycle()
-        val probe by Gate.probeOk.collectAsStateWithLifecycle()
-        val message by Gate.probeMessage.collectAsStateWithLifecycle()
+        val termux by Gate.termuxInstalled.collectAsState()
+        val permission by Gate.permissionGranted.collectAsState()
+        val probe by Gate.probeOk.collectAsState()
+        val message by Gate.probeMessage.collectAsState()
 
         LaunchedEffect(termux, permission) {
             if (termux && permission && probe == null) Termux.probe(this@MainActivity)
@@ -145,8 +145,8 @@ private fun Setup(
 @Composable
 private fun Home() {
     val context = LocalContext.current
-    val result by Runner.result.collectAsStateWithLifecycle()
-    val running by Runner.running.collectAsStateWithLifecycle()
+    val result by Runner.result.collectAsState()
+    val running by Runner.running.collectAsState()
     var log by remember { mutableStateOf("") }
 
     LaunchedEffect(result) {
