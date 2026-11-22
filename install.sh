@@ -6508,10 +6508,13 @@ if [ "$API_MODE" -eq 1 ]; then
     . "$TOOLKIT_DIR/lib/state.sh"
     # shellcheck source=lib/preflight.sh
     . "$TOOLKIT_DIR/lib/preflight.sh"
-    # shellcheck source=lib/steps/probe.sh
-    . "$TOOLKIT_DIR/lib/steps/probe.sh"
-    # shellcheck source=lib/steps/status.sh
-    . "$TOOLKIT_DIR/lib/steps/status.sh"
+    # Every step primitive. Globbed so adding a tool does not require editing
+    # this list (and does not fail silently when someone forgets to).
+    for _lib in "$TOOLKIT_DIR"/lib/steps/*.sh; do
+        [ -f "$_lib" ] || continue
+        # shellcheck source=/dev/null
+        . "$_lib"
+    done
     # shellcheck source=lib/runner.sh
     . "$TOOLKIT_DIR/lib/runner.sh"
     api_dispatch
