@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.17.12-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.17.13-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -372,36 +372,60 @@ Professional-grade workflow automation with an optional GCP bridge for secure pu
 | **Install method** | npm/pnpm global (`n8n@latest`) |
 | **Architecture** | ✅ All architectures supported |
 | **Memory** | Auto-capped to `min(2048, max(512, RAM * 0.75))` |
-| **Extras** | Watchdog cron, autossh GCP tunnel, tmux session manager |
+| **Extras** | nginx TLS proxy (8443), watchdog cron, autossh GCP tunnel, tmux session manager |
 
 ```bash
-n8n start             # Start manually
+n8n start             # n8n itself listens on 127.0.0.1:5678 only
 ~/n8n_server/scripts/n8n-monitor.sh   # Watchdog restart
 ```
 
-Access locally at `http://localhost:5678`.
+Open **`https://<phone-ip>:8443`** from any device on the same Wi-Fi. n8n is
+loopback-only; nginx is the LAN TLS terminator (PM2: `n8n` + `n8n-proxy`).
 
 ### Opening the n8n editor
 
-n8n serves its web UI on port **5678**. Four ways in, in order of safety:
+The installer detects the Wi-Fi IP, generates a local CA + server certificate,
+writes `n8n.env` and `nginx.conf`, and starts both PM2 services. There is no
+mode to choose and no env file to edit.
+
+#### What happens automatically
+
+1. Finds the phone’s Wi-Fi address.
+2. Creates a local certificate for that address.
+3. Starts n8n privately on `127.0.0.1:5678` and nginx on `0.0.0.0:8443`.
+4. If no owner account exists, prints a one-time setup password and protects
+   the setup page with it.
+5. Removes the setup password automatically after the owner account is created.
+
+#### What you do
+
+1. Open `https://<phone-ip>:8443` from any device on the same Wi-Fi.
+2. Accept the self-signed certificate once.
+3. Enter the setup password (first run only) and create the owner account.
+4. Log in with that owner account from then on.
 
 | From | How | Notes |
 |:---|:---|:---|
-| **This phone** | `http://localhost:5678` in any browser, or `termux-open-url http://localhost:5678` | Simplest. Works as soon as the service is up. |
-| **Your computer** | `ssh -L 5678:localhost:5678 <user>@<phone-ip>` then open `http://localhost:5678` | Recommended for real work — the traffic never leaves the tunnel. |
-| **Same Wi-Fi** | `http://<phone-ip>:5678` | Answers, and the installer already sets `N8N_SECURE_COOKIE=false` so the login renders over plain HTTP. Set `N8N_HOST` + `N8N_EDITOR_BASE_URL` + `N8N_WEBHOOK_URL` in `~/n8n_server/config/n8n.env` (template included) so n8n's own webhook URLs point at the phone instead of `localhost`. |
-| **Public internet** | **UTILITIES → GCP Bridge** | Reverse SSH tunnel to a VM you control — see [the walkthrough](#gcp-bridge-walkthrough-optional). |
+| **Same Wi-Fi** | `https://<phone-ip>:8443` | Default. Works from the phone, laptop, or tablet. |
+| **First run** | The installer prints a one-time **setup password** | Open the URL from any device, accept the certificate, enter the password, create the owner. The password gate is removed automatically once the owner exists. |
+| **Public internet** | **UTILITIES → GCP Bridge** | The tunnel still targets loopback `5678`; put TLS and authentication on the VM side. See [the walkthrough](#gcp-bridge-walkthrough-optional). |
 
-The installer prints these addresses when it finishes, and again each time **SERVICES → PM2 → n8n** starts the service.
+The browser shows a **self-signed certificate warning once**. That is expected
+for a private LAN IP. Accept it, or install `~/n8n_server/certs/ca.crt` on the
+client to remove the warning. The connection is still encrypted either way.
 
-If a browser shows **"Your n8n server is configured to use a secure cookie…"** when you open the LAN address, that is n8n refusing to set its session cookie over plain HTTP. Two things to know:
+`N8N_SECURE_COOKIE=true`, `N8N_PROTOCOL=https`, `N8N_HOST`, and both public URL
+variables are generated automatically. Do not set `N8N_SECURE_COOKIE=false` on
+the LAN — that is the plain-HTTP workaround the old installer needed.
 
-- The installer now writes `N8N_SECURE_COOKIE=false` to `~/n8n_server/config/n8n.env`, which is what makes `http://<phone-ip>:5678` usable at all. Flip it back to `true` (or delete the line) once n8n sits behind TLS.
-- **Safari rejects the cookie even on `localhost`** over HTTP. Use Chrome/Firefox there, or the SSH tunnel plus a TLS-fronted deployment.
+**Editing `n8n.env` takes effect only on a fresh start.** PM2 captures the
+environment when it creates the process, so use **SERVICES → PM2 → n8n** (it
+deletes and re-creates both services), or `pm2 delete n8n n8n-proxy` followed by
+the menu start. Confirm with `pm2 env <id> | grep -E 'N8N_|NODE_OPTIONS'`.
 
-**Editing `n8n.env` takes effect only on a fresh start.** PM2 captures the environment when it creates the process, so a plain `pm2 restart` keeps the old values. Use **SERVICES → PM2 → n8n** (it deletes and re-creates the process), or `pm2 delete n8n && pm2 start …` — then confirm with `pm2 env n8n | grep -E 'N8N_|NODE_OPTIONS'`.
-
-> ⚠️ The editor listens on every interface, so anyone on your Wi-Fi can reach the login page while it runs. n8n asks you to create an owner account on the first visit — do that before putting it on a shared or public network.
+> ⚠️ n8n is not directly reachable from the LAN: only nginx on 8443 is. During
+> first-run setup, nginx requires the printed one-time password, so another
+> device on the Wi-Fi cannot claim the owner account.
 >
 > ⚠️ **Warning:** The installer forcibly kills running OpenClaw, n8n, and PM2 processes during setup to free memory. If you have active workflows or conversations, save your work before installing or updating n8n.
 >
@@ -607,7 +631,7 @@ termux-wake-lock
 Run the toolkit and select **UNINSTALL** to access the modular uninstallation menu. The order mirrors the on-device menu. Each option provides a detailed summary of the impact before you confirm:
 
 - **Remove OpenClaw**: Choice of **Soft Uninstall** (keeps memories/skills) or **Deep Uninstall** (full wipe). Automatically cleans up PM2 and background services.
-- **Remove n8n**: Surgically kills the GCP tunnel (port 5678) and removes the watchdog cron.
+- **Remove n8n**: Stops `n8n` + `n8n-proxy`, kills the GCP tunnel, and removes the watchdog cron.
 - **Remove Gemini CLI**: Full removal of application binaries and configurations.
 - **Remove Hermes**: Runs the official uninstaller if available, otherwise removes directories manually.
 - **Remove Ollama**: Removes the package. Downloaded models in `~/.ollama` are preserved.
