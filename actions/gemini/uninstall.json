@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "id": "gemini.uninstall",
+  "title": "Remove Gemini CLI",
+  "summary": "Delete tools/gemini and the gemini shim",
+  "category": "utilities",
+  "destructive": true,
+  "requires": {},
+  "steps": [
+    {
+      "id": "uninstall",
+      "title": "Remove the tool project",
+      "run": "step_uninstall_tool",
+      "args": {
+        "tool": "gemini"
+      }
+    }
+  ]
+}
