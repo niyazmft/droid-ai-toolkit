@@ -22,8 +22,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -134,12 +134,30 @@ private fun Setup(
     ) {
         Text(title, style = MaterialTheme.typography.headlineSmall)
         Text(body, style = MaterialTheme.typography.bodyMedium)
-        Button(onClick = primary.second, modifier = Modifier.fillMaxWidth()) {
-            Text(primary.first)
-        }
+        Button(onClick = primary.second, modifier = Modifier.fillMaxWidth()) { Text(primary.first) }
         OutlinedButton(onClick = secondary.second, modifier = Modifier.fillMaxWidth()) {
             Text(secondary.first)
         }
+    }
+}
+
+private enum class Mode { STATUS, ACTIONS, RUN }
+
+@Composable
+private fun Section(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.padding(top = 12.dp)
+    )
+}
+
+@Composable
+private fun Fact(label: String, value: String) {
+    if (value.isBlank()) return
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        Text(value, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -148,11 +166,33 @@ private fun Home() {
     val context = LocalContext.current
     val result by Runner.result.collectAsState()
     val running by Runner.running.collectAsState()
-    var log by remember { mutableStateOf("") }
+
+    var snapshot by remember { mutableStateOf<Protocol.Snapshot?>(null) }
+    var actions by remember { mutableStateOf<List<Protocol.Action>>(emptyList()) }
+    var failure by remember { mutableStateOf<String?>(null) }
+    var mode by remember { mutableStateOf<Mode?>(null) }
+    var showRaw by remember { mutableStateOf(false) }
+    var raw by remember { mutableStateOf("") }
+    var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
+
+    // Show status immediately instead of an empty screen.
+    LaunchedEffect(Unit) {
+        mode = Mode.STATUS
+        Runner.send(context, listOf("--api", "status"))
+    }
 
     LaunchedEffect(result) {
-        result?.let {
-            log = it.stdout.ifBlank { it.stderr.ifBlank { it.errmsg } }
+        val r = result ?: return@LaunchedEffect
+        raw = r.stdout
+        if (r.exitCode == 0 && r.errmsg.isBlank()) {
+            failure = null
+            when (mode) {
+                Mode.ACTIONS -> actions = Protocol.actions(r.stdout)
+                Mode.STATUS, Mode.RUN, null -> Protocol.snapshot(r.stdout)?.let { snapshot = it }
+            }
+        } else {
+            failure = Protocol.error(r.stdout, r.stderr, r.errmsg)
+                ?: "Command failed (exit ${r.exitCode})"
         }
     }
 
@@ -161,41 +201,91 @@ private fun Home() {
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text("Droid AI", style = MaterialTheme.typography.headlineMedium)
-        Text("Termux is ready.", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            snapshot?.let { "${it.device.model} · ${it.device.arch}" } ?: "Termux is ready.",
+            style = MaterialTheme.typography.bodyMedium
+        )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            Modifier.padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Button(
-                onClick = { Runner.send(context, listOf("--api", "status")) },
+                onClick = {
+                    mode = Mode.STATUS
+                    failure = null
+                    Runner.send(context, listOf("--api", "status"))
+                },
                 enabled = !running
-            ) { Text("Status") }
+            ) { Text("Refresh") }
 
             OutlinedButton(
-                onClick = { Runner.send(context, listOf("--api", "list")) },
+                onClick = {
+                    mode = Mode.ACTIONS
+                    failure = null
+                    Runner.send(context, listOf("--api", "list"))
+                },
                 enabled = !running
             ) { Text("Actions") }
         }
 
         if (running) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text("Running…", style = MaterialTheme.typography.bodySmall)
+            Text("Working…", style = MaterialTheme.typography.bodySmall)
         }
 
-        result?.let { r ->
-            Text(
-                "exit ${r.exitCode}" + if (r.errmsg.isNotBlank()) " · ${r.errmsg}" else "",
-                style = MaterialTheme.typography.labelLarge
-            )
+        failure?.let {
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
         }
 
-        // allow-external-apps is one global boolean in Termux — there is no
-        // per-app allowlist. The permission grant is the only real boundary, so
-        // surface every other holder instead of assuming ours is the only one.
-        var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
+        snapshot?.let { s ->
+            Section("Device")
+            Fact("Model", s.device.model)
+            Fact("Android", "${s.device.android} · API ${s.device.api}")
+            Fact("Arch", s.device.arch)
+            Fact("Memory", "${s.device.memAvailableMb} MB free of ${s.device.memTotalMb} MB")
+            Fact("Swap free", "${s.device.swapFreeMb} MB")
+            Fact("Disk free", "${s.device.diskFreeMb / 1024} GB")
+            Fact("Termux", s.termux.version)
+            Fact("Boot restore", if (s.termux.bootInstalled) "installed" else "missing")
+            Fact("Node", s.tools.node)
+            Fact("Python", s.tools.python)
+            if (s.tools.openclaw.isNotBlank()) Fact("OpenClaw", s.tools.openclaw)
+            if (s.tools.hermes.isNotBlank()) Fact("Hermes", s.tools.hermes)
+            if (s.tools.n8n.isNotBlank()) Fact("n8n", s.tools.n8n)
 
-        Text("Security", style = MaterialTheme.typography.titleMedium)
+            Section("Services")
+            if (s.services.isEmpty()) {
+                Text("No PM2 services running.", style = MaterialTheme.typography.bodySmall)
+            } else {
+                s.services.forEach { sv ->
+                    Fact(sv.name, "${sv.status} · ${sv.memMb} MB · ${sv.restarts} restarts")
+                }
+            }
+        }
+
+        if (actions.isNotEmpty()) {
+            Section("Actions")
+            actions.forEach { a ->
+                Text(a.title, style = MaterialTheme.typography.titleSmall)
+                Text(a.summary, style = MaterialTheme.typography.bodySmall)
+                TextButton(
+                    onClick = {
+                        mode = Mode.RUN
+                        failure = null
+                        Runner.send(context, listOf("--api", "run", a.id))
+                    },
+                    enabled = !running
+                ) { Text("Run") }
+            }
+        }
+
+        // allow-external-apps is one global boolean; the permission grant is the
+        // only real boundary, so name every other holder rather than assume none.
+        Section("Security")
         if (foreign.isEmpty()) {
             Text(
                 "Only this app holds the Termux command permission.",
@@ -204,8 +294,8 @@ private fun Home() {
         } else {
             Text(
                 "${foreign.size} other app(s) can also run commands in Termux:",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall
             )
             foreign.forEach { pkg ->
                 Text(pkg, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
@@ -216,14 +306,17 @@ private fun Home() {
                 style = MaterialTheme.typography.bodySmall
             )
         }
-        TextButton(onClick = { foreign = Security.foreignHolders(context) }) {
-            Text("Re-check")
-        }
+        TextButton(onClick = { foreign = Security.foreignHolders(context) }) { Text("Re-check") }
 
-        Text(
-            log.take(8000),
-            fontFamily = FontFamily.Monospace,
-            style = MaterialTheme.typography.bodySmall
-        )
+        TextButton(onClick = { showRaw = !showRaw }) {
+            Text(if (showRaw) "Hide raw output" else "Show raw output")
+        }
+        if (showRaw) {
+            Text(
+                raw.take(20000),
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
     }
 }
