@@ -21,7 +21,11 @@ pf_mem_total_mb() {
 
 # pf_disk_free_mb [path]
 pf_disk_free_mb() {
-    df -Pm "${1:-$HOME}" 2>/dev/null | awk 'NR==2 {printf "%d", $4; found=1} END {if (!found) printf "0"}'
+    # `df -Pk` on purpose: Termux's df rejects -m, and the POSIX -k form is the
+    # one form both Termux and macOS (BSD df) understand. Converting here keeps
+    # the callers working in MB.
+    df -Pk "${1:-$HOME}" 2>/dev/null \
+        | awk 'NR==2 {printf "%d", $4/1024; found=1} END {if (!found) printf "0"}'
 }
 
 # pf_arch -- uname -m, the value specs match against

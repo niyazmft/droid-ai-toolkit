@@ -53,6 +53,14 @@ ev_log() {
         '{t:"log", step:$st, line:$line}'
 }
 
+# ev_data <kind> <payload-json>
+# Structured payload a step produced (device snapshot, health report). Kept
+# separate from `log` so the app never has to parse prose.
+ev_data() {
+    jq -cn --arg kind "$1" --argjson payload "$2" \
+        '{t:"data", kind:$kind, payload:$payload}'
+}
+
 # ev_done <code> [skipped-json-array]
 ev_done() {
     jq -cn --argjson c "${1:-0}" --argjson sk "${2:-[]}" \

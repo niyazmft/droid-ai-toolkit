@@ -6510,6 +6510,8 @@ if [ "$API_MODE" -eq 1 ]; then
     . "$TOOLKIT_DIR/lib/preflight.sh"
     # shellcheck source=lib/steps/probe.sh
     . "$TOOLKIT_DIR/lib/steps/probe.sh"
+    # shellcheck source=lib/steps/status.sh
+    . "$TOOLKIT_DIR/lib/steps/status.sh"
     # shellcheck source=lib/runner.sh
     . "$TOOLKIT_DIR/lib/runner.sh"
     api_dispatch

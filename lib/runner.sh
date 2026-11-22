@@ -104,6 +104,12 @@ runner_run() {
     log=$(log_path "$id")
     : >> "$log" 2>/dev/null || true
 
+    # Steps that produce structured output write it to this file; the runner
+    # emits it as a `data` event. A file keeps the NDJSON stream clean, so a
+    # primitive can still print freely to its log.
+    RUNNER_RESULT=$(mktemp 2>/dev/null) || RUNNER_RESULT=""
+    export RUNNER_RESULT
+
     local step s_id s_title s_run s_when s_optional s_retry t0 t1 ms attempt max
     while IFS= read -r step; do
         [ -n "$step" ] || continue
@@ -136,6 +142,7 @@ runner_run() {
         max=$(( s_retry + 1 ))
         while :; do
             ev_step "$s_id" "running" "$s_title" 0
+            [ -n "$RUNNER_RESULT" ] && : > "$RUNNER_RESULT"
             t0=$(date +%s)
             "$s_run" "$step" "$spec" >> "$log" 2>&1
             rc=$?
@@ -145,6 +152,10 @@ runner_run() {
             if [ "$rc" -eq 0 ]; then
                 state_mark "$id" "$s_id" ok "$ms" >/dev/null 2>&1 || true
                 ev_step "$s_id" "ok" "$s_title" "$ms"
+                if [ -n "$RUNNER_RESULT" ] && [ -s "$RUNNER_RESULT" ] \
+                   && jq -e . "$RUNNER_RESULT" >/dev/null 2>&1; then
+                    ev_data "$s_id" "$(cat "$RUNNER_RESULT")"
+                fi
                 break
             fi
 
@@ -170,6 +181,7 @@ $(printf '%s' "$spec" | jq -c '.steps[]?')
 EOF
 
     state_finish "$id" >/dev/null 2>&1 || true
+    rm -f "${RUNNER_RESULT:-}"
     ev_done 0 "$(printf '%s' "$skipped" | jq -Rc 'split(" ") | map(select(length > 0))')"
     return 0
 }
@@ -182,8 +194,10 @@ api_dispatch() {
             return 0
             ;;
         status)
-            ev_error 2 "status lands in phase 1"
-            return 2
+            # Read-only, so it is safe to run without Termux (useful for local
+            # testing); missing probes simply come back empty.
+            runner_run status
+            return $?
             ;;
         run)
             if [ -z "${API_ACTION:-}" ]; then
