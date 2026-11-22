@@ -51,7 +51,13 @@ object Protocol {
         val services: List<Service>
     )
 
-    data class Action(val id: String, val title: String, val summary: String, val category: String)
+    data class Action(
+        val id: String,
+        val title: String,
+        val summary: String,
+        val category: String,
+        val destructive: Boolean
+    )
 
     /** Every JSON line in the stream, in order. Non-JSON lines are dropped. */
     fun events(stdout: String): List<JSONObject> =
@@ -125,7 +131,8 @@ object Protocol {
                 id = a.optString("id"),
                 title = a.optString("title"),
                 summary = a.optString("summary"),
-                category = a.optString("category")
+                category = a.optString("category"),
+                destructive = a.optBoolean("destructive")
             )
         }
     }

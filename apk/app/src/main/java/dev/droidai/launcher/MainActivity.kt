@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -189,10 +190,14 @@ private fun Home() {
     var showRaw by remember { mutableStateOf(false) }
     var raw by remember { mutableStateOf("") }
     var steps by remember { mutableStateOf<List<Protocol.Step>>(emptyList()) }
+    var pending by remember { mutableStateOf<Protocol.Action?>(null) }
     var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
 
     LaunchedEffect(Unit) {
         Runner.send(context, listOf("--api", "status"))
+        // Foreground supervisor: keeps a low oom_score_adj and makes Termux's death
+        // visible instead of silent. It cannot prevent an LMK kill.
+        runCatching { SupervisorService.start(context) }
     }
 
     LaunchedEffect(result) {
@@ -325,11 +330,15 @@ private fun Home() {
                 Text(a.summary, style = MaterialTheme.typography.bodySmall)
                 TextButton(
                     onClick = {
-                        failure = null
-                        Runner.send(context, listOf("--api", "run", a.id))
+                        if (a.destructive) {
+                            pending = a
+                        } else {
+                            failure = null
+                            Runner.send(context, listOf("--api", "run", a.id))
+                        }
                     },
                     enabled = !running
-                ) { Text("Run") }
+                ) { Text(if (a.destructive) "Remove…" else "Run") }
             }
         }
 
@@ -357,6 +366,25 @@ private fun Home() {
             )
         }
         TextButton(onClick = { foreign = Security.foreignHolders(context) }) { Text("Re-check") }
+
+        pending?.let { a ->
+            AlertDialog(
+                onDismissRequest = { pending = null },
+                title = { Text(a.title) },
+                text = { Text(a.summary + "\n\nThis cannot be undone.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pending = null
+                        failure = null
+                        // The engine refuses destructive specs without this flag.
+                        Runner.send(context, listOf("--api", "run", a.id, "--yes"))
+                    }) { Text("Confirm") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pending = null }) { Text("Cancel") }
+                }
+            )
+        }
 
         TextButton(onClick = { showRaw = !showRaw }) {
             Text(if (showRaw) "Hide raw output" else "Show raw output")

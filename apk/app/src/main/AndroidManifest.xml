@@ -4,6 +4,11 @@
     <!-- Termux gates RUN_COMMAND on this dangerous permission (user-granted). -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
+    <!-- Supervisor: keeps a low oom_score_adj while watching the toolkit, and shows
+         Termux's death in the notification shade instead of leaving it silent. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- Required when targetSdk >= 30 so the app can see com.termux. -->
     <queries>
         <package android:name="com.termux" />
@@ -39,5 +44,10 @@
         <receiver
             android:name=".TermuxResultReceiver"
             android:exported="false" />
+
+        <service
+            android:name=".SupervisorService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
