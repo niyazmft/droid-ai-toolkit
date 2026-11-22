@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "id": "n8n.install",
+  "title": "n8n",
+  "summary": "Install n8n, build its native modules, and write the Termux environment file",
+  "category": "workflows",
+  "requires": {
+    "arch": ["aarch64", "armv8l", "x86_64"],
+    "min_mem_mb": 700,
+    "min_disk_mb": 3000,
+    "tools": ["node", "pnpm"]
+  },
+  "steps": [
+    {
+      "id": "deps",
+      "title": "Ensure build tools",
+      "run": "step_pkg_install",
+      "args": { "packages": ["python", "make", "clang", "pkg-config"] },
+      "optional": true
+    },
+    {
+      "id": "install",
+      "title": "Install package (two-phase pnpm)",
+      "run": "step_pnpm_global",
+      "args": { "name": "n8n", "spec": "latest" },
+      "retry_on_sigkill": 2
+    },
+    {
+      "id": "native",
+      "title": "Build native modules",
+      "run": "step_n8n_native",
+      "args": { "jobs": 1 }
+    },
+    {
+      "id": "env",
+      "title": "Write environment file",
+      "run": "step_n8n_env"
+    },
+    {
+      "id": "verify",
+      "title": "Verify",
+      "run": "step_n8n_verify"
+    }
+  ]
+}
