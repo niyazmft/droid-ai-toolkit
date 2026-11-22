@@ -7,6 +7,12 @@
     <!-- Required when targetSdk >= 30 so the app can see com.termux. -->
     <queries>
         <package android:name="com.termux" />
+        <!-- NOTE: <queries> accepts only package/intent/provider — there is no
+             <permission> child, and AAPT rejects one. getPackagesHoldingPermissions()
+             is unfiltered on API < 30 (both target devices), which is where the
+             permission audit is complete. On API 30+ it can be partial; the fix
+             there is QUERY_ALL_PACKAGES, deliberately not requested. -->
+
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />

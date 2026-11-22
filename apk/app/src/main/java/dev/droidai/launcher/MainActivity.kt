@@ -20,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
@@ -187,6 +188,36 @@ private fun Home() {
                 "exit ${r.exitCode}" + if (r.errmsg.isNotBlank()) " · ${r.errmsg}" else "",
                 style = MaterialTheme.typography.labelLarge
             )
+        }
+
+        // allow-external-apps is one global boolean in Termux — there is no
+        // per-app allowlist. The permission grant is the only real boundary, so
+        // surface every other holder instead of assuming ours is the only one.
+        var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
+
+        Text("Security", style = MaterialTheme.typography.titleMedium)
+        if (foreign.isEmpty()) {
+            Text(
+                "Only this app holds the Termux command permission.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        } else {
+            Text(
+                "${foreign.size} other app(s) can also run commands in Termux:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+            foreign.forEach { pkg ->
+                Text(pkg, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(
+                "Revoke with:\n" + foreign.joinToString("\n") { Security.revokeCommand(it) },
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        TextButton(onClick = { foreign = Security.foreignHolders(context) }) {
+            Text("Re-check")
         }
 
         Text(

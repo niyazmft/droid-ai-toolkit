@@ -30,10 +30,35 @@ The debug build is signed with the standard debug key.
    actually sending a command; failure to produce a result means the gate is
    still closed.
 
+## Security: who can run commands in Termux?
+
+`allow-external-apps` is a **single global boolean** in Termux — there is no per-app
+allowlist, and no way to say "only this app". So the boundary is made of two things:
+
+1. **The permission grant.** Only apps holding
+   `com.termux.permission.RUN_COMMAND` can use RUN_COMMAND. It is not silently
+   grantable: it is a dangerous permission *defined by Termux*, and the user must
+   approve it under *App info → Permissions → Additional permissions*.
+2. **The audit.** The home screen lists every package that currently holds that
+   permission, and prints the command to revoke any it does not recognise:
+
+   ```bash
+   adb shell pm revoke <package> com.termux.permission.RUN_COMMAND
+   ```
+
+A RUN_COMMAND intent carries **no caller identity**, so the toolkit cannot verify
+"this came from our app". Keeping the grant to this app alone *is* the enforcement;
+the audit is how a stray grant becomes visible instead of silent.
+
+Note on API 30+: `getPackagesHoldingPermissions()` is subject to package visibility.
+On API < 30 (both target devices) the audit is complete; on API 30+ it can be
+partial unless `QUERY_ALL_PACKAGES` is requested, which is deliberately not done.
+
 ## What it does today (v0.1)
 
 - Runs `install.sh --api status` and shows the raw NDJSON.
 - Runs `install.sh --api list` to show the action catalog.
+- Audits which packages hold Termux's RUN_COMMAND permission.
 
 Results arrive through a `PendingIntent` broadcast, because a background
 `RUN_COMMAND` has no TTY and no shared filesystem.
