@@ -2227,7 +2227,7 @@ ids = 0
 pubs = 0
 for path in sys.argv[1].splitlines():
     path = path.strip()
-    if not path:
+    if not path or path in done:
         continue
     try:
         data = open(path, encoding="utf-8", errors="replace").read()
@@ -2805,11 +2805,37 @@ PYOCFSSAFE
     # expensive — the matching files total ~181 MB of bundled JS and four regex
     # passes over that take minutes on a phone. It is not stuck. Give it a
     # generous budget and do not tighten the timeout.
-    local BT cands
+    local BT cands BT_PROGRESS
+    # Per-file checkpoint. This pass costs 48 minutes on 8x (2 913 s measured) and
+    # a kill used to restart it from zero. A file is recorded only after its write
+    # completes, so a kill loses at most the file in flight; re-doing that one is a
+    # no-op because the "bt-stable" marker makes the second pass skip it.
+    BT_PROGRESS="$OPENCLAW_ROOT/.droid-bt-progress"
+    : >> "$BT_PROGRESS" 2>/dev/null || BT_PROGRESS=""
     cands=$(grep -rl --include='*.js' --include='*.mjs' -F 'birthtime' "$OPENCLAW_ROOT/dist" 2>/dev/null | grep -v '\.bak' || true)
-    if BT=$(python3 - "$cands" <<'PYOCBT'
+    if BT=$(python3 - "$cands" "$BT_PROGRESS" <<'PYOCBT'
 import re
 import sys
+
+PROGRESS = sys.argv[2] if len(sys.argv) > 2 else ""
+done = set()
+if PROGRESS:
+    try:
+        with open(PROGRESS, encoding="utf-8", errors="replace") as fh:
+            done = {line.strip() for line in fh if line.strip()}
+    except OSError:
+        done = set()
+
+
+def mark(path):
+    if not PROGRESS:
+        return
+    try:
+        with open(PROGRESS, "a", encoding="utf-8") as fh:
+            fh.write(path + "\n")
+            fh.flush()
+    except OSError:
+        pass
 
 PROD = re.compile(r'birthtime:\s?[A-Za-z0-9_$?.]{1,48}\.birthtimeNs\.toString\(\)')
 CMP_NS = re.compile(r'([A-Za-z0-9_$?.]+)\.birthtimeNs\s*(===|!==)\s*([A-Za-z0-9_$?.]+)\.birthtimeNs')
@@ -2831,6 +2857,7 @@ for path in sys.argv[1].splitlines():
     except OSError:
         continue
     if "birthtime" not in data or "droid-ai-toolkit: bt-stable" in data:
+        mark(path)
         continue
     orig = data
     # Each pass is guarded by a cheap C-speed substring test first. Running four
@@ -2852,6 +2879,7 @@ for path in sys.argv[1].splitlines():
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("/* droid-ai-toolkit: bt-stable */\n" + data)
         changed += 1
+    mark(path)
 print(changed)
 PYOCBT
     ); then
@@ -2881,6 +2909,10 @@ PYOCBT
         echo -e "   ${BLUE}The patch pass was interrupted before it finished. Re-run AGENTS → OpenClaw → [R] Repair.${NC}"
         echo -e "   ${BLUE}Until it is clean, CLI writes fail with 'Existing shared-state database generation changed'.${NC}"
         printf '%s\n' "$BT_LEFT" | sed "s|^$OPENCLAW_ROOT/dist/|   - |" | head -8
+    else
+        # Complete pass: drop the checkpoint so a later repair re-scans instead of
+        # skipping files that may have changed upstream in place.
+        [ -n "$BT_PROGRESS" ] && rm -f "$BT_PROGRESS" 2>/dev/null
     fi
 
     # --- 3) reclaim phantom agent leases left by Android PID recycling ---
