@@ -39,6 +39,7 @@ class SupervisorService : Service() {
     private val job = SupervisorJob()
     private var scope = CoroutineScope(job + Dispatchers.Default)
     private var loop: Job? = null
+    private var attempts = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -81,6 +82,31 @@ class SupervisorService : Service() {
             }
             val running = snapshot.services.count { it.status == "online" }
             val mem = snapshot.services.sumOf { it.memMb }
+
+            if (running == 0) {
+                // Observe-only is not enough: Termux is alive (the probe answered) but
+                // nothing is serving. Try to bring it back, and stop trying after a few
+                // attempts — a broken install must not be restarted forever.
+                if (attempts < MAX_ATTEMPTS) {
+                    attempts++
+                    update(
+                        "No services online — restarting (attempt $attempts/$MAX_ATTEMPTS)",
+                        "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free"
+                    )
+                    if (!Runner.running.value) {
+                        Runner.send(this, listOf("--api", "run", "service.resurrect"))
+                        withTimeoutOrNull(90_000) { Runner.result.filterNotNull().first() }
+                    }
+                } else {
+                    update(
+                        "Services are down and restarting did not help",
+                        "tap to open the app for details"
+                    )
+                }
+                return
+            }
+
+            attempts = 0
             update(
                 "$running service(s) online · ${mem} MB",
                 "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free"
@@ -136,6 +162,7 @@ class SupervisorService : Service() {
         private const val NOTIFICATION_ID = 42
         private const val INTERVAL_MS = 60_000L
         private const val TIMEOUT_MS = 25_000L
+        private const val MAX_ATTEMPTS = 3
         const val ACTION_STOP = "dev.droidai.launcher.SUPERVISOR_STOP"
 
         fun start(context: Context) {
