@@ -10,9 +10,10 @@
     "lint:md": "markdownlint '**/*.md'",
     "lint:compat": "python3 scripts/gen_compat.py --check",
     "lint:sh": "npx --yes shellcheck *.sh",
-    "lint:all": "pnpm run lint:js && pnpm run lint:css && pnpm run lint:md && pnpm run lint:compat && pnpm run lint:actions && pnpm run lint:sh",
+    "lint:all": "pnpm run lint:js && pnpm run lint:css && pnpm run lint:md && pnpm run lint:compat && pnpm run lint:actions && pnpm run lint:kt && pnpm run lint:sh",
     "prepare": "husky",
-    "lint:actions": "bash scripts/lint_actions.sh"
+    "lint:actions": "bash scripts/lint_actions.sh",
+    "lint:kt": "bash scripts/lint_kotlin.sh"
   },
   "keywords": [],
   "author": "",

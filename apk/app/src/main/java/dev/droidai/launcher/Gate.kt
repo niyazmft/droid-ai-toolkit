@@ -35,12 +35,13 @@ object Gate {
     val termuxUnresponsive = MutableStateFlow(false)
 
     fun refresh(context: Context) {
-        termuxInstalled.value = runCatching {
-            context.packageManager.getPackageInfo(Termux.PKG, 0)
-        }.isSuccess
+        termuxInstalled.value =
+            runCatching {
+                context.packageManager.getPackageInfo(Termux.PKG, 0)
+            }.isSuccess
 
         permissionGranted.value =
             ContextCompat.checkSelfPermission(context, Termux.PERMISSION) ==
-                PackageManager.PERMISSION_GRANTED
+            PackageManager.PERMISSION_GRANTED
     }
 }

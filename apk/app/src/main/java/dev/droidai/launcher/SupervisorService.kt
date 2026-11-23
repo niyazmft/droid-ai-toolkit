@@ -35,7 +35,6 @@ import kotlinx.coroutines.withTimeoutOrNull
  * app earlier.
  */
 class SupervisorService : Service() {
-
     private val job = SupervisorJob()
     private var scope = CoroutineScope(job + Dispatchers.Default)
     private var loop: Job? = null
@@ -47,18 +46,23 @@ class SupervisorService : Service() {
         startForeground(NOTIFICATION_ID, notification("Starting…", "watching the toolkit"))
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
         if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
         }
         if (loop?.isActive != true) {
-            loop = scope.launch {
-                while (isActive) {
-                    tick()
-                    delay(INTERVAL_MS)
+            loop =
+                scope.launch {
+                    while (isActive) {
+                        tick()
+                        delay(INTERVAL_MS)
+                    }
                 }
-            }
         }
         return START_STICKY
     }
@@ -91,7 +95,7 @@ class SupervisorService : Service() {
                     attempts++
                     update(
                         "No services online — restarting (attempt $attempts/$MAX_ATTEMPTS)",
-                        "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free"
+                        "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free",
                     )
                     if (!Runner.running.value) {
                         Runner.send(this, listOf("--api", "run", "service.resurrect"))
@@ -100,7 +104,7 @@ class SupervisorService : Service() {
                 } else {
                     update(
                         "Services are down and restarting did not help",
-                        "tap to open the app for details"
+                        "tap to open the app for details",
                     )
                 }
                 return
@@ -108,29 +112,40 @@ class SupervisorService : Service() {
 
             attempts = 0
             update(
-                "$running service(s) online · ${mem} MB",
-                "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free"
+                "$running service(s) online · $mem MB",
+                "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free",
             )
         }
     }
 
-    private fun update(title: String, text: String) {
+    private fun update(
+        title: String,
+        text: String,
+    ) {
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, notification(title, text))
     }
 
-    private fun notification(title: String, text: String): Notification {
-        val open = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val stop = PendingIntent.getService(
-            this, 1,
-            Intent(this, SupervisorService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        return NotificationCompat.Builder(this, CHANNEL)
+    private fun notification(
+        title: String,
+        text: String,
+    ): Notification {
+        val open =
+            PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        val stop =
+            PendingIntent.getService(
+                this,
+                1,
+                Intent(this, SupervisorService::class.java).setAction(ACTION_STOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        return NotificationCompat
+            .Builder(this, CHANNEL)
             .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
@@ -145,7 +160,7 @@ class SupervisorService : Service() {
         val manager = getSystemService(NotificationManager::class.java)
         if (manager.getNotificationChannel(CHANNEL) == null) {
             manager.createNotificationChannel(
-                NotificationChannel(CHANNEL, "Toolkit supervisor", NotificationManager.IMPORTANCE_LOW)
+                NotificationChannel(CHANNEL, "Toolkit supervisor", NotificationManager.IMPORTANCE_LOW),
             )
         }
     }

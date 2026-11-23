@@ -35,7 +35,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
 class MainActivity : ComponentActivity() {
-
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
             Gate.refresh(this)
@@ -64,7 +63,7 @@ class MainActivity : ComponentActivity() {
         runCatching {
             startActivity(
                 Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
         }
     }
@@ -92,44 +91,51 @@ class MainActivity : ComponentActivity() {
         }
 
         when {
-            !termux -> Setup(
-                title = "Termux is required",
-                body = "Droid AI runs inside Termux, which owns the Linux environment. " +
-                    "Install it from F-Droid or the GitHub releases — not the Play Store build, " +
-                    "which is outdated.",
-                primary = "Get Termux" to { openUrl("https://f-droid.org/packages/com.termux/") },
-                secondary = "Re-check" to { Gate.refresh(this@MainActivity) }
-            )
+            !termux ->
+                Setup(
+                    title = "Termux is required",
+                    body =
+                        "Droid AI runs inside Termux, which owns the Linux environment. " +
+                            "Install it from F-Droid or the GitHub releases — not the Play Store build, " +
+                            "which is outdated.",
+                    primary = "Get Termux" to { openUrl("https://f-droid.org/packages/com.termux/") },
+                    secondary = "Re-check" to { Gate.refresh(this@MainActivity) },
+                )
 
-            !permission -> Setup(
-                title = "Allow commands in Termux",
-                body = "Android needs you to grant \"Run commands in Termux environment\". " +
-                    "It is a dangerous permission defined by Termux, so it appears under " +
-                    "Additional permissions in App info.",
-                primary = "Grant permission" to { requestPermission() },
-                secondary = "Re-check" to { Gate.refresh(this@MainActivity) }
-            )
+            !permission ->
+                Setup(
+                    title = "Allow commands in Termux",
+                    body =
+                        "Android needs you to grant \"Run commands in Termux environment\". " +
+                            "It is a dangerous permission defined by Termux, so it appears under " +
+                            "Additional permissions in App info.",
+                    primary = "Grant permission" to { requestPermission() },
+                    secondary = "Re-check" to { Gate.refresh(this@MainActivity) },
+                )
 
-            probe != true -> Setup(
-                title = if (down) "Termux isn't running" else "Enable external commands",
-                body = if (down) {
-                    "Android killed Termux's process (low memory), so it cannot run commands " +
-                        "right now. Open Termux, then come back and retry.\n\n" +
-                        "This is not the allow-external-apps setting — that one is already on."
-                } else {
-                    "Termux only accepts commands from other apps when allow-external-apps " +
-                        "is true. In Termux, run:\n\n" +
-                        "echo \"allow-external-apps = true\" >> ~/.termux/termux.properties\n" +
-                        "termux-reload-settings\n\n" +
-                        "Then come back and retry." +
-                        if (message.isNotBlank()) "\n\nReported: $message" else ""
-                },
-                primary = "Open Termux" to { Termux.openTermux(this@MainActivity) },
-                secondary = "Retry" to {
-                    Gate.probeOk.value = null
-                    Termux.probe(this@MainActivity)
-                }
-            )
+            probe != true ->
+                Setup(
+                    title = if (down) "Termux isn't running" else "Enable external commands",
+                    body =
+                        if (down) {
+                            "Android killed Termux's process (low memory), so it cannot run commands " +
+                                "right now. Open Termux, then come back and retry.\n\n" +
+                                "This is not the allow-external-apps setting — that one is already on."
+                        } else {
+                            "Termux only accepts commands from other apps when allow-external-apps " +
+                                "is true. In Termux, run:\n\n" +
+                                "echo \"allow-external-apps = true\" >> ~/.termux/termux.properties\n" +
+                                "termux-reload-settings\n\n" +
+                                "Then come back and retry." +
+                                if (message.isNotBlank()) "\n\nReported: $message" else ""
+                        },
+                    primary = "Open Termux" to { Termux.openTermux(this@MainActivity) },
+                    secondary =
+                        "Retry" to {
+                            Gate.probeOk.value = null
+                            Termux.probe(this@MainActivity)
+                        },
+                )
 
             else -> Home()
         }
@@ -141,14 +147,14 @@ private fun Setup(
     title: String,
     body: String,
     primary: Pair<String, () -> Unit>,
-    secondary: Pair<String, () -> Unit>
+    secondary: Pair<String, () -> Unit>,
 ) {
     Column(
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(title, style = MaterialTheme.typography.headlineSmall)
         Text(body, style = MaterialTheme.typography.bodyMedium)
@@ -164,12 +170,15 @@ private fun Section(title: String) {
     Text(
         title,
         style = MaterialTheme.typography.titleMedium,
-        modifier = Modifier.padding(top = 12.dp)
+        modifier = Modifier.padding(top = 12.dp),
     )
 }
 
 @Composable
-private fun Fact(label: String, value: String) {
+private fun Fact(
+    label: String,
+    value: String,
+) {
     if (value.isBlank()) return
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
@@ -240,24 +249,24 @@ private fun Home() {
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text("Droid AI", style = MaterialTheme.typography.headlineMedium)
         Text(
             snapshot?.let { "${it.device.model} · ${it.device.arch}" } ?: "Termux is ready.",
-            style = MaterialTheme.typography.bodyMedium
+            style = MaterialTheme.typography.bodyMedium,
         )
 
         Row(
             Modifier.padding(vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Button(
                 onClick = {
                     failure = null
                     Runner.send(context, listOf("--api", "status"))
                 },
-                enabled = !running
+                enabled = !running,
             ) { Text("Refresh") }
 
             OutlinedButton(
@@ -266,7 +275,7 @@ private fun Home() {
                     askedForActions = true
                     Runner.send(context, listOf("--api", "list"))
                 },
-                enabled = !running
+                enabled = !running,
             ) { Text("Actions") }
         }
 
@@ -282,17 +291,25 @@ private fun Home() {
         if (steps.isNotEmpty()) {
             Section("Last run")
             steps.forEach { s ->
-                val mark = when (s.state) {
-                    "ok" -> "\u2714"
-                    "failed" -> "\u2716"
-                    "skipped" -> "\u2013"
-                    else -> "\u2026"
-                }
+                val mark =
+                    when (s.state) {
+                        "ok" -> "\u2714"
+                        "failed" -> "\u2716"
+                        "skipped" -> "\u2013"
+                        else -> "\u2026"
+                    }
                 val took = if (s.ms >= 1000) "  (${s.ms / 1000}s)" else ""
                 Text(
                     "$mark ${s.title}$took",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (s.state == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                    color =
+                        if (s.state ==
+                            "failed"
+                        ) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
                 )
             }
         }
@@ -326,20 +343,20 @@ private fun Home() {
                                 failure = null
                                 Runner.send(
                                     context,
-                                    listOf("--api", "run", "service.stop", "--arg", "service=${sv.name}")
+                                    listOf("--api", "run", "service.stop", "--arg", "service=${sv.name}"),
                                 )
                             },
-                            enabled = !running
+                            enabled = !running,
                         ) { Text("Stop", style = MaterialTheme.typography.bodySmall) }
                         TextButton(
                             onClick = {
                                 failure = null
                                 Runner.send(
                                     context,
-                                    listOf("--api", "run", "service.restart", "--arg", "service=${sv.name}")
+                                    listOf("--api", "run", "service.restart", "--arg", "service=${sv.name}"),
                                 )
                             },
-                            enabled = !running
+                            enabled = !running,
                         ) { Text("Restart", style = MaterialTheme.typography.bodySmall) }
                     }
                 }
@@ -359,10 +376,11 @@ private fun Home() {
                             // Say it before doing it: a tool whose floor is above this
                             // device's free memory will fail, and the user should hear
                             // that from a dialog, not from an OOM-killed install.
-                            val short = snapshot?.let {
-                                (a.minMemMb > 0 && it.device.memAvailableMb < a.minMemMb) ||
-                                    (a.minDiskMb > 0 && it.device.diskFreeMb < a.minDiskMb)
-                            } ?: false
+                            val short =
+                                snapshot?.let {
+                                    (a.minMemMb > 0 && it.device.memAvailableMb < a.minMemMb) ||
+                                        (a.minDiskMb > 0 && it.device.diskFreeMb < a.minDiskMb)
+                                } ?: false
 
                             when {
                                 a.destructive -> pending = a
@@ -373,12 +391,16 @@ private fun Home() {
                                 }
                             }
                         },
-                        enabled = !running
+                        enabled = !running,
                     ) {
                         Text(
                             if (a.destructive) "Remove…" else "Run",
-                            color = if (a.destructive) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.primary
+                            color =
+                                if (a.destructive) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
                         )
                     }
                 }
@@ -391,13 +413,13 @@ private fun Home() {
         if (foreign.isEmpty()) {
             Text(
                 "Only this app holds the Termux command permission.",
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
             )
         } else {
             Text(
                 "${foreign.size} other app(s) can also run commands in Termux:",
                 color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
             )
             foreign.forEach { pkg ->
                 Text(pkg, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
@@ -405,7 +427,7 @@ private fun Home() {
             Text(
                 "Revoke with:\n" + foreign.joinToString("\n") { Security.revokeCommand(it) },
                 fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
             )
         }
         TextButton(onClick = { foreign = Security.foreignHolders(context) }) { Text("Re-check") }
@@ -417,14 +439,24 @@ private fun Home() {
                 title = { Text("This device may not fit ${a.title}") },
                 text = {
                     Text(
-                        (if (a.minMemMb > 0)
-                            "${a.title} asks for ${a.minMemMb} MB free memory; this device has " +
-                                "${snap?.device?.memAvailableMb ?: 0} MB.\n\n" else "") +
-                            (if (a.minDiskMb > 0)
-                                "It asks for ${a.minDiskMb} MB free storage; this device has " +
-                                    "${snap?.device?.diskFreeMb ?: 0} MB.\n\n" else "") +
+                        (
+                            if (a.minMemMb > 0) {
+                                "${a.title} asks for ${a.minMemMb} MB free memory; this device has " +
+                                    "${snap?.device?.memAvailableMb ?: 0} MB.\n\n"
+                            } else {
+                                ""
+                            }
+                        ) +
+                            (
+                                if (a.minDiskMb > 0) {
+                                    "It asks for ${a.minDiskMb} MB free storage; this device has " +
+                                        "${snap?.device?.diskFreeMb ?: 0} MB.\n\n"
+                                } else {
+                                    ""
+                                }
+                            ) +
                             "Installing anyway usually ends with Android killing it part-way. " +
-                            "Close something and tap Refresh first, or continue at your own risk."
+                            "Close something and tap Refresh first, or continue at your own risk.",
                     )
                 },
                 confirmButton = {
@@ -436,7 +468,7 @@ private fun Home() {
                 },
                 dismissButton = {
                     TextButton(onClick = { capacity = null }) { Text("Cancel") }
-                }
+                },
             )
         }
 
@@ -455,7 +487,7 @@ private fun Home() {
                 },
                 dismissButton = {
                     TextButton(onClick = { pending = null }) { Text("Cancel") }
-                }
+                },
             )
         }
 
@@ -466,7 +498,7 @@ private fun Home() {
             Text(
                 raw.take(20000),
                 fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
             )
         }
     }

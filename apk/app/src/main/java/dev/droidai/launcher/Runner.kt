@@ -14,7 +14,7 @@ data class RunResult(
     val stderr: String,
     val exitCode: Int,
     val err: Int,
-    val errmsg: String
+    val errmsg: String,
 ) {
     val ok: Boolean get() = exitCode == 0 && errmsg.isBlank()
 }
@@ -45,20 +45,26 @@ object Runner {
      * dropped, and silently assuming success is how the catalog request went
      * missing.
      */
-    fun send(context: Context, args: List<String>, isProbe: Boolean = false): Boolean {
+    fun send(
+        context: Context,
+        args: List<String>,
+        isProbe: Boolean = false,
+    ): Boolean {
         if (_running.value) return false
         this.isProbe = isProbe
         _running.value = true
         _result.value = null
 
         val receiver = Intent(context, TermuxResultReceiver::class.java).setAction(ACTION_RESULT)
-        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
+        val flags =
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
         val pending = PendingIntent.getBroadcast(context, REQUEST_CODE, receiver, flags)
         val intent = Termux.buildIntent(args, pending)
 
-        val started = runCatching { context.startService(intent) }.isSuccess ||
-            runCatching { ContextCompat.startForegroundService(context, intent) }.isSuccess
+        val started =
+            runCatching { context.startService(intent) }.isSuccess ||
+                runCatching { ContextCompat.startForegroundService(context, intent) }.isSuccess
 
         if (!started) {
             _running.value = false
@@ -90,13 +96,14 @@ object Runner {
 
     fun deliver(intent: Intent) {
         val bundle = intent.getBundleExtra(Termux.RESULT_BUNDLE)
-        val result = RunResult(
-            stdout = bundle?.getString(Termux.R_STDOUT) ?: "",
-            stderr = bundle?.getString(Termux.R_STDERR) ?: "",
-            exitCode = bundle?.getInt(Termux.R_EXIT) ?: -1,
-            err = bundle?.getInt(Termux.R_ERR) ?: -1,
-            errmsg = bundle?.getString(Termux.R_ERRMSG) ?: ""
-        )
+        val result =
+            RunResult(
+                stdout = bundle?.getString(Termux.R_STDOUT) ?: "",
+                stderr = bundle?.getString(Termux.R_STDERR) ?: "",
+                exitCode = bundle?.getInt(Termux.R_EXIT) ?: -1,
+                err = bundle?.getInt(Termux.R_ERR) ?: -1,
+                errmsg = bundle?.getString(Termux.R_ERRMSG) ?: "",
+            )
         _result.value = result
         _running.value = false
 
@@ -105,20 +112,33 @@ object Runner {
             // the intent outright (with an errmsg) when the property is off, so a
             // successful `data` event means every gate is open.
             Gate.probeOk.value = result.exitCode == 0 && result.stdout.contains("\"t\":\"data\"")
-            Gate.probeMessage.value = if (Gate.probeOk.value == true) {
-                ""
-            } else {
-                // Never just "it did not work": exit code, err code and whichever
-                // stream has text are what make the gate diagnosable.
-                val detail = result.errmsg.ifBlank { result.stderr }.ifBlank { result.stdout }.trim()
-                val head = detail.lineSequence().take(3).joinToString(" / ").take(300)
-                "exit=${result.exitCode} err=${result.err} " +
-                    if (head.isBlank()) "(no output and no error text)" else head
-            }
+            Gate.probeMessage.value =
+                if (Gate.probeOk.value == true) {
+                    ""
+                } else {
+                    // Never just "it did not work": exit code, err code and whichever
+                    // stream has text are what make the gate diagnosable.
+                    val detail =
+                        result.errmsg
+                            .ifBlank { result.stderr }
+                            .ifBlank { result.stdout }
+                            .trim()
+                    val head =
+                        detail
+                            .lineSequence()
+                            .take(3)
+                            .joinToString(" / ")
+                            .take(300)
+                    "exit=${result.exitCode} err=${result.err} " +
+                        if (head.isBlank()) "(no output and no error text)" else head
+                }
         }
     }
 }
 
 class TermuxResultReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) = Runner.deliver(intent)
+    override fun onReceive(
+        context: Context,
+        intent: Intent,
+    ) = Runner.deliver(intent)
 }

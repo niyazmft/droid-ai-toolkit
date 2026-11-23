@@ -20,7 +20,6 @@ import android.content.Context
  * `<queries><permission android:name="com.termux.permission.RUN_COMMAND"/></queries>`.
  */
 object Security {
-
     /** Every package currently holding the Termux RUN_COMMAND permission. */
     fun holders(context: Context): List<String> =
         runCatching {
@@ -31,10 +30,8 @@ object Security {
         }.getOrDefault(emptyList())
 
     /** Holders other than this app — each one is a way into Termux's shell. */
-    fun foreignHolders(context: Context): List<String> =
-        holders(context).filter { it != context.packageName }
+    fun foreignHolders(context: Context): List<String> = holders(context).filter { it != context.packageName }
 
     /** The command to revoke a grant, for a user who wants to close the gap. */
-    fun revokeCommand(pkg: String): String =
-        "adb shell pm revoke $pkg ${Termux.PERMISSION}"
+    fun revokeCommand(pkg: String): String = "adb shell pm revoke $pkg ${Termux.PERMISSION}"
 }

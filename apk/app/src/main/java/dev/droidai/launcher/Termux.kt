@@ -46,7 +46,8 @@ object Termux {
      * install.sh intact. Nothing is interpolated into a shell string by the app:
      * the argument list is passed as argv.
      */
-    private val launcher = """
+    private val launcher =
+        """
         for d in "${'$'}HOME/droid-ai-toolkit" "${'$'}HOME/toolkit-test" "${'$'}HOME"; do
           if [ -f "${'$'}d/install.sh" ] && [ -d "${'$'}d/lib" ]; then
             cd "${'$'}d" || exit 1
@@ -55,9 +56,12 @@ object Termux {
         done
         printf '%s\n' '{"t":"error","code":4,"msg":"toolkit not found under ${'$'}HOME (expected ~/droid-ai-toolkit)"}'
         exit 4
-    """.trimIndent()
+        """.trimIndent()
 
-    fun buildIntent(args: List<String>, pending: PendingIntent): Intent =
+    fun buildIntent(
+        args: List<String>,
+        pending: PendingIntent,
+    ): Intent =
         Intent().apply {
             component = ComponentName(PKG, SERVICE)
             action = ACTION_RUN

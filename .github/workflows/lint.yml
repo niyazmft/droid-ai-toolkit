@@ -23,6 +23,13 @@ jobs:
           node-version: 22
           cache: 'pnpm'
 
+      # lint:all includes ktlint, which is a JVM program.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Install dependencies
         run: pnpm install
 
