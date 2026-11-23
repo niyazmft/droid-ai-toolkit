@@ -606,13 +606,7 @@ private fun Home() {
                     }
                 }
 
-                Tab.METRICS ->
-                    Placeholder(
-                        "Metrics",
-                        "Memory and swap history, per-service allocation and process events.\n\n" +
-                            "Needs the sampler (one sample every five minutes), so this stays empty " +
-                            "until it has run for a while.",
-                    )
+                Tab.METRICS -> MetricsScreen(snapshot = snapshot)
 
                 Tab.SETTINGS ->
                     SettingsScreen(

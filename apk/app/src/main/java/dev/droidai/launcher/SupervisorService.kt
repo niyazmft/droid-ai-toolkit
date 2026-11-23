@@ -39,6 +39,7 @@ class SupervisorService : Service() {
     private var scope = CoroutineScope(job + Dispatchers.Default)
     private var loop: Job? = null
     private var attempts = 0
+    private var lastSampleAt = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -120,6 +121,24 @@ class SupervisorService : Service() {
             }
 
             attempts = 0
+
+            // Record one point every five minutes. Reusing this tick means analytics adds
+            // no wakeups: the supervisor already asks Termux for a status every minute.
+            val now = System.currentTimeMillis()
+            if (now - lastSampleAt >= Metrics.SAMPLE_INTERVAL_MS) {
+                lastSampleAt = now
+                Metrics.record(
+                    this,
+                    Metrics.Sample(
+                        ts = now,
+                        memMb = snapshot.device.memAvailableMb,
+                        swapMb = snapshot.device.swapFreeMb,
+                        services = running,
+                        rssMb = mem,
+                    ),
+                )
+            }
+
             update(
                 "$running service(s) online · $mem MB",
                 "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free",
