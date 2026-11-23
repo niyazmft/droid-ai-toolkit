@@ -324,21 +324,31 @@ private fun Home() {
         }
 
         if (actions.isNotEmpty()) {
-            Section("Actions")
-            actions.forEach { a ->
-                Text(a.title, style = MaterialTheme.typography.titleSmall)
-                Text(a.summary, style = MaterialTheme.typography.bodySmall)
-                TextButton(
-                    onClick = {
-                        if (a.destructive) {
-                            pending = a
-                        } else {
-                            failure = null
-                            Runner.send(context, listOf("--api", "run", a.id))
-                        }
-                    },
-                    enabled = !running
-                ) { Text(if (a.destructive) "Remove…" else "Run") }
+            // Grouped by the spec's own category: 17 actions in one flat list is a wall,
+            // and the catalog already says which are agents, services, workflows, etc.
+            actions.groupBy { it.category }.toSortedMap().forEach { (category, list) ->
+                Section(category.replaceFirstChar { it.uppercase() })
+                list.sortedBy { it.title }.forEach { a ->
+                    Text(a.title, style = MaterialTheme.typography.titleSmall)
+                    Text(a.summary, style = MaterialTheme.typography.bodySmall)
+                    TextButton(
+                        onClick = {
+                            if (a.destructive) {
+                                pending = a
+                            } else {
+                                failure = null
+                                Runner.send(context, listOf("--api", "run", a.id))
+                            }
+                        },
+                        enabled = !running
+                    ) {
+                        Text(
+                            if (a.destructive) "Remove…" else "Run",
+                            color = if (a.destructive) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
         }
 
