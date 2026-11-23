@@ -39,22 +39,48 @@ object Termux {
     const val BASH = "/data/data/com.termux/files/usr/bin/bash"
     const val HOME_DIR = "/data/data/com.termux/files/home"
 
+    private const val REPO_URL = "https://github.com/niyazmft/droid-ai-toolkit.git"
+    private const val TARBALL_URL =
+        "https://github.com/niyazmft/droid-ai-toolkit/archive/refs/heads/main.tar.gz"
+
     /**
      * Finds the toolkit in Termux and runs its machine interface.
      *
      * `bash -c` receives the arguments after $0, so "--api status" reaches
      * install.sh intact. Nothing is interpolated into a shell string by the app:
      * the argument list is passed as argv.
+     *
+     * When no checkout exists this **fetches one** instead of failing. That is what
+     * makes "install Termux from F-Droid, and that is it" true: the user never has
+     * to clone the repository or open a shell. `--api` needs the whole checkout (it
+     * sources lib/), so `curl … | bash` is not enough here — hence a clone, with a
+     * tarball fallback for a device without git.
+     *
+     * `$HOME/install.sh` is deliberately not a candidate. It is the curl-installed
+     * monolith, it cannot serve `--api`, and running a stale copy of it is what
+     * broke a Hermes update on 8x (see AGENTS.md, v1.17.7).
      */
     private val launcher =
         """
-        for d in "${'$'}HOME/droid-ai-toolkit" "${'$'}HOME/toolkit-test" "${'$'}HOME"; do
-          if [ -f "${'$'}d/install.sh" ] && [ -d "${'$'}d/lib" ]; then
+        for d in "${'$'}HOME/droid-ai-toolkit" "${'$'}HOME/toolkit-test"; do
+          if [ -f "${'$'}d/install.sh" ]; then
             cd "${'$'}d" || exit 1
             exec bash ./install.sh "${'$'}@"
           fi
         done
-        printf '%s\n' '{"t":"error","code":4,"msg":"toolkit not found under ${'$'}HOME (expected ~/droid-ai-toolkit)"}'
+        DEST="${'$'}HOME/droid-ai-toolkit"
+        command -v git >/dev/null 2>&1 || pkg install -y git >/dev/null 2>&1
+        command -v curl >/dev/null 2>&1 || pkg install -y curl >/dev/null 2>&1
+        rm -rf "${'$'}DEST"
+        if git clone --depth 1 $REPO_URL "${'$'}DEST" >/dev/null 2>&1; then
+          :
+        elif curl -fsSL $TARBALL_URL | tar -xz -C "${'$'}HOME" >/dev/null 2>&1; then
+          mv "${'$'}HOME/droid-ai-toolkit-main" "${'$'}DEST" >/dev/null 2>&1
+        fi
+        if [ -f "${'$'}DEST/install.sh" ]; then
+          cd "${'$'}DEST" && exec bash ./install.sh "${'$'}@"
+        fi
+        printf '%s\n' '{"t":"error","code":4,"msg":"first-run setup could not download the toolkit: no network, or git and curl are both unavailable"}'
         exit 4
         """.trimIndent()
 
@@ -79,5 +105,12 @@ object Termux {
         return runCatching { context.startActivity(i) }.isSuccess
     }
 
-    fun probe(context: Context) = Runner.send(context, listOf("--api", "status"), isProbe = true)
+    /** The one line a user must paste into Termux, offered as a copy button. */
+    const val ALLOW_EXTERNAL_APPS =
+        """echo "allow-external-apps = true" >> ~/.termux/termux.properties && termux-reload-settings"""
+
+    fun probe(context: Context) {
+        Gate.resetProbe()
+        Runner.send(context, listOf("--api", "status"), Origin.PROBE)
+    }
 }

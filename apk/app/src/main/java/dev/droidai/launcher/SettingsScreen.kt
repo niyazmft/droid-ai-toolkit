@@ -4,7 +4,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -19,6 +21,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 
 private const val APP_VERSION = "0.1.0"
@@ -42,6 +45,9 @@ fun SettingsScreen(
     val autoStart by Prefs.autoStartGateway.collectAsState()
     val confirmRemove by Prefs.confirmRemove.collectAsState()
     val retainRaw by Prefs.retainRaw.collectAsState()
+    // collectAsState, not .value: the row used to keep showing the old answer after
+    // "Re-check" succeeded, because reading a StateFlow value is not observable.
+    val permission by Gate.permissionGranted.collectAsState()
     var confirmCleanup by remember { mutableStateOf(false) }
 
     // No verticalScroll here: this screen is rendered inside the tab content's scroller,
@@ -67,69 +73,77 @@ fun SettingsScreen(
         Section("Startup & Services")
         Panel {
             SwitchRow(
-                title = "Auto-start OpenClaw gateway",
-                subtitle = "Restart the gateway if it is down when the supervisor checks.",
+                title = "Restart the gateway automatically",
+                subtitle =
+                    "If the OpenClaw gateway stops, try to start it again — up to three " +
+                        "times, then stop trying.",
                 checked = autoStart,
-                enabled = true,
             ) { Prefs.setAutoStart(it) }
             Fact(
-                "Boot restore",
+                "Restarts after reboot",
                 when (snapshot?.termux?.bootInstalled) {
-                    true -> "installed"
-                    false -> "missing"
+                    true -> "set up"
+                    false -> "not set up"
                     null -> "unknown"
                 },
             )
             Text(
-                "Boot restore is written by the engine (SERVICES → PM2).",
+                "Reboot support is installed by the toolkit (SERVICES → PM2 → Autostart on Boot).",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TextButton(onClick = onRefresh, enabled = !running) { Text("Re-read status") }
+            TextButton(
+                onClick = onRefresh,
+                enabled = !running,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text("Re-read status") }
         }
 
         Section("Termux & Safety")
         Panel {
-            Fact("Command permission", if (Gate.permissionGranted.value) "granted" else "not granted")
-            Fact("Termux", snapshot?.termux?.version ?: "—")
-            TextButton(onClick = onRecheckPermission) { Text("Re-check") }
+            Fact("Command access", if (permission) "allowed" else "not allowed")
+            Fact("Termux version", snapshot?.termux?.version ?: "—")
+            TextButton(
+                onClick = onRecheckPermission,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text("Check again") }
             SwitchRow(
-                title = "Confirm before Remove…",
-                subtitle = "Ask before deleting a venv, checkout or shims.",
+                title = "Ask before removing",
+                subtitle = "Confirm before deleting a tool, its files or its shortcuts.",
                 checked = confirmRemove,
-                enabled = true,
             ) { Prefs.setConfirmRemove(it) }
             SwitchRow(
-                title = "Retain raw command output",
-                subtitle = "Keep the last run's stdout for troubleshooting.",
+                title = "Keep the last command output",
+                subtitle = "Useful when asking for help — it is the raw evidence behind a failure.",
                 checked = retainRaw,
-                enabled = true,
             ) { Prefs.setRetainRaw(it) }
         }
 
         Section("Cleanup")
         Panel {
             Text(
-                "Delete the old shared pnpm project (global/5) and the shims that point into it. " +
-                    "Refused unless every tool is installed under tools/.",
+                "Removes an old shared package folder left behind by earlier versions. " +
+                    "Refused while any tool still depends on it.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             TextButton(
                 onClick = { confirmCleanup = true },
                 enabled = !running,
-            ) { Text("Remove legacy pnpm project", color = MaterialTheme.colorScheme.error) }
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) { Text("Remove the old package folder", color = MaterialTheme.colorScheme.error) }
         }
     }
 
     if (confirmCleanup) {
         AlertDialog(
             onDismissRequest = { confirmCleanup = false },
-            title = { Text("Remove legacy pnpm project?") },
+            title = { Text("Remove the old package folder?") },
             text = {
                 Text(
-                    "This deletes ~/.local/share/pnpm/global and the binaries that reference " +
-                        "it. Tools already migrated to tools/ are unaffected. This cannot be undone.",
+                    "This deletes the legacy shared pnpm folder and the shortcuts that point " +
+                        "at it. Tools already moved to their own folders are unaffected. " +
+                        "This cannot be undone.",
                 )
             },
             confirmButton = {
@@ -145,15 +159,34 @@ fun SettingsScreen(
     }
 }
 
+/**
+ * A labelled switch.
+ *
+ * `toggleable(role = Role.Switch)` on the whole row makes this one TalkBack stop that
+ * announces "Ask before removing, on, switch" and toggles on double-tap. Before this,
+ * the title, the subtitle and an unlabelled switch were three separate stops, so a
+ * screen-reader user could not tell which setting they were about to change.
+ */
 @Composable
 private fun SwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
-    enabled: Boolean,
+    enabled: Boolean = true,
     onChange: (Boolean) -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onChange,
+            ).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyMedium)
             Text(
@@ -162,6 +195,8 @@ private fun SwitchRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
+        // onCheckedChange = null: the row owns the gesture, so the switch cannot be
+        // focused twice or toggled twice.
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }

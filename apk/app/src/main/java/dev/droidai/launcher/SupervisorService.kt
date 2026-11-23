@@ -74,6 +74,23 @@ class SupervisorService : Service() {
             update("Termux is not installed", "install it from F-Droid")
             return
         }
+
+        // Do not send RUN_COMMAND while the gate is closed for policy reasons. Termux
+        // answers such a request by posting its own *sticky* "Plugin Execution Command
+        // Error" notification (channel termux_plugin_command_errors, FLAG_ONGOING_EVENT,
+        // never cancelled) — so a supervisor polling every 60 s turns one wrong setting
+        // into an un-dismissable error in the shade. Observed on 8x: 907 notifications
+        // from com.termux in a day.
+        //
+        // UNREACHABLE deliberately still polls: detecting a dead Termux is this service's
+        // whole purpose, and a request that gets no answer posts no notification.
+        val gateClosed =
+            Gate.probe.value == Probe.DENIED || Gate.probe.value == Probe.NO_TOOLKIT
+        if (gateClosed) {
+            update("Setup is not finished", "open the app to complete the one-time step")
+            return
+        }
+
         if (!Runner.running.value) {
             Runner.send(this, listOf("--api", "status"))
             val result = withTimeoutOrNull(TIMEOUT_MS) { Runner.result.filterNotNull().first() }

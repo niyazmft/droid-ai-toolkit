@@ -9,7 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,6 +24,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -59,16 +61,13 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
         Text("Metrics", style = MaterialTheme.typography.headlineMedium)
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AssistChip(
-                onClick = { windowHours = 24 },
-                label = { Text("24h") },
-                enabled = windowHours != 24,
-            )
-            AssistChip(
-                onClick = { windowHours = 168 },
-                label = { Text("7d") },
-                enabled = windowHours != 168,
-            )
+            listOf(24, 168).forEach { hours ->
+                FilterChip(
+                    selected = windowHours == hours,
+                    onClick = { windowHours = hours },
+                    label = { Text(if (hours == 24) "24h" else "7d") },
+                )
+            }
         }
 
         if (samples.isEmpty()) {
@@ -91,6 +90,11 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
                     points = samples.map { it.memMb.toFloat() },
                     modifier = Modifier.fillMaxWidth().height(64.dp),
                     color = MaterialTheme.colorScheme.primary,
+                    // A Canvas is invisible to a screen reader. Without this, the whole
+                    // Memory panel was silent apart from its low/high caption.
+                    description =
+                        "Memory available over the last $windowHours hours: low " +
+                            "${samples.minOf { it.memMb }} MB, high ${samples.maxOf { it.memMb }} MB.",
                 )
                 Text(
                     "low ${samples.minOf { it.memMb }} MB · high ${samples.maxOf { it.memMb }} MB",
@@ -100,10 +104,18 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
 
             Section("Swap free")
             Panel {
+                Text(
+                    "free swap in MB · higher is better",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 LineChart(
                     points = samples.map { it.swapMb.toFloat() },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
-                    color = MaterialTheme.colorScheme.tertiary,
+                    color = MaterialTheme.colorScheme.primary,
+                    description =
+                        "Free swap over the last $windowHours hours: from " +
+                            "${samples.minOf { it.swapMb }} MB to ${samples.maxOf { it.swapMb }} MB.",
                 )
             }
 
@@ -179,8 +191,15 @@ private fun LineChart(
     points: List<Float>,
     modifier: Modifier,
     color: Color,
+    description: String = "",
 ) {
-    Canvas(modifier) {
+    Canvas(
+        if (description.isBlank()) {
+            modifier
+        } else {
+            modifier.semantics { contentDescription = description }
+        },
+    ) {
         if (points.size < 2) return@Canvas
         // Downsample to about the pixel width: one path segment per point on a 7-day
         // window would be thousands of segments for no visible gain.

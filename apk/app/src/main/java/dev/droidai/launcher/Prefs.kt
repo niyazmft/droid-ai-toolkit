@@ -16,6 +16,7 @@ object Prefs {
     private const val KEY_AUTO_START = "auto_start_gateway"
     private const val KEY_CONFIRM_REMOVE = "confirm_remove"
     private const val KEY_RETAIN_RAW = "retain_raw"
+    private const val KEY_TERMUX_READY = "termux_ready"
 
     private var store: SharedPreferences? = null
 
@@ -23,12 +24,29 @@ object Prefs {
     val confirmRemove = MutableStateFlow(true)
     val retainRaw = MutableStateFlow(true)
 
+    /**
+     * This device has passed the Termux gates at least once.
+     *
+     * Persisted because every cold start otherwise paid the full probe (~8 s here) on a
+     * "Checking your device…" screen before it could show anything. A device that already
+     * works should open straight onto the Overview; the probe still runs in the
+     * background, and a real failure demotes the flag again.
+     */
+    val termuxReady = MutableStateFlow(false)
+
     fun init(context: Context) {
         val prefs = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         store = prefs
         autoStartGateway.value = prefs.getBoolean(KEY_AUTO_START, true)
         confirmRemove.value = prefs.getBoolean(KEY_CONFIRM_REMOVE, true)
         retainRaw.value = prefs.getBoolean(KEY_RETAIN_RAW, true)
+        termuxReady.value = prefs.getBoolean(KEY_TERMUX_READY, false)
+    }
+
+    fun setTermuxReady(value: Boolean) {
+        if (termuxReady.value == value) return
+        termuxReady.value = value
+        store?.edit()?.putBoolean(KEY_TERMUX_READY, value)?.apply()
     }
 
     fun setAutoStart(value: Boolean) {

@@ -1,22 +1,24 @@
 package dev.droidai.launcher
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -25,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,6 +65,19 @@ private val KNOWN_TOOLS =
         Triple("paperclip", "Paperclip", "workflows"),
     )
 
+/** What each tool is for, in the words of someone who has not used it before. */
+private val TOOL_BLURB =
+    mapOf(
+        "openclaw" to "A personal agent gateway — connects your agents to chat apps.",
+        "hermes" to "Nous Research's agent, with tools and memory.",
+        "pi" to "A lightweight coding agent you can run from the terminal.",
+        "nanobot" to "A small agent runtime for scripts and tasks.",
+        "ollama" to "Runs AI models locally on this device.",
+        "gemini" to "Google's Gemini command-line assistant.",
+        "n8n" to "Automate things with workflows, like a self-hosted Zapier.",
+        "paperclip" to "A workflow canvas with a web interface.",
+    )
+
 private fun versionOf(
     snapshot: Protocol.Snapshot?,
     key: String,
@@ -74,6 +90,26 @@ private fun versionOf(
         // Pi, Gemini, Paperclip and Nanobot are not in the status payload: probing them costs
         // seconds per refresh (Gemini's --version took 76 s on 8x).
         else -> ""
+    }
+
+/**
+ * The verb on the button.
+ *
+ * It used to be `action.id == "hermes.install" -> "Repair"` unconditionally, so a device
+ * that had never installed Hermes was offered "Repair" — a word that means "something is
+ * broken" to someone who is not looking at a repository. Also: every action used to be
+ * labelled the same way, so two buttons reading "Update" were indistinguishable by
+ * sight and to TalkBack.
+ */
+private fun actionLabel(
+    action: Protocol.Action,
+    installed: Boolean,
+): String =
+    when {
+        action.destructive -> "Remove…"
+        action.id.startsWith("hermes.") && installed -> "Repair"
+        installed -> "Update"
+        else -> "Install"
     }
 
 private fun rows(
@@ -92,7 +128,7 @@ private fun rows(
             meta = version.ifBlank { "tools/$key" },
             installed = version.isNotBlank(),
             category = category,
-            description = mine.joinToString(" ") { it.summary },
+            description = TOOL_BLURB[key] ?: mine.joinToString(" ") { it.summary },
             actions = mine,
         )
     }
@@ -104,8 +140,8 @@ fun PackagesScreen(
     running: Boolean,
     onRun: (Protocol.Action) -> Unit,
 ) {
-    var query by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("All") }
+    var query by rememberSaveable { mutableStateOf("") }
+    var category by rememberSaveable { mutableStateOf("All") }
 
     val all = remember(snapshot, actions) { rows(snapshot, actions) }
     val visible =
@@ -120,9 +156,8 @@ fun PackagesScreen(
     ) {
         Text("Packages", style = MaterialTheme.typography.headlineMedium)
         Text(
-            "Termux · ${snapshot?.device?.arch ?: "—"} · ${all.count { it.installed }} of ${all.size} installed",
+            "${all.count { it.installed }} of ${all.size} installed · ${snapshot?.device?.arch ?: "—"}",
             style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
@@ -137,49 +172,39 @@ fun PackagesScreen(
             trailingIcon = {
                 if (query.isNotEmpty()) {
                     IconButton(onClick = { query = "" }) {
-                        Icon(Icons.Filled.Clear, contentDescription = "Clear")
+                        Icon(Icons.Filled.Clear, contentDescription = "Clear search")
                     }
                 }
             },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
         )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Was a plain Row: "Workflows" wrapped onto two lines and made the chip row
+        // uneven. Scrolling horizontally keeps one line at any font scale.
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             listOf("All", "Agents", "Utilities", "Workflows").forEach { c ->
-                AssistChip(
+                // FilterChip, not a disabled AssistChip: the old code greyed the selected
+                // chip out, so the chosen filter looked switched off and dropped out of
+                // the TalkBack focus order.
+                FilterChip(
+                    selected = category == c,
                     onClick = { category = c },
                     label = { Text(c) },
-                    enabled = category != c,
+                    modifier = Modifier.heightIn(min = 40.dp),
                 )
-            }
-        }
-
-        if (running) {
-            // The mock shows "65%". The engine reports step boundaries, not percentages,
-            // so this stays indeterminate and names the step instead of inventing a number.
-            Card(
-                colors =
-                    CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    ),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Installing…", style = MaterialTheme.typography.titleSmall)
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Text(
-                        "The engine reports steps as they finish, so progress is shown as " +
-                            "running rather than a percentage.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
         }
 
         if (visible.isEmpty()) {
             Text(
-                "No packages match.",
+                if (query.isNotBlank()) {
+                    "No tool matches \"$query\"."
+                } else {
+                    "Nothing in this category."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -208,14 +233,17 @@ fun PackagesScreen(
                         }
                         StatusChip(
                             online = row.installed,
-                            label = if (row.installed) "Installed" else "Available",
+                            label = if (row.installed) "Installed" else "Not installed",
+                            // "Not installed" is a state, not a fault: the error colour
+                            // made every uninstalled tool look broken.
+                            neutral = !row.installed,
                         )
                     }
 
                     Text(
                         row.description,
                         style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2,
+                        maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
                     )
 
@@ -226,21 +254,25 @@ fun PackagesScreen(
                     ) {
                         row.actions.forEach { action ->
                             if (action.destructive) {
-                                TextButton(onClick = { onRun(action) }, enabled = !running) {
+                                TextButton(
+                                    onClick = { onRun(action) },
+                                    enabled = !running,
+                                    modifier = Modifier.heightIn(min = 48.dp),
+                                ) {
                                     Text(
-                                        "Remove…",
+                                        actionLabel(action, row.installed),
                                         style = MaterialTheme.typography.labelLarge,
                                         color = MaterialTheme.colorScheme.error,
                                     )
                                 }
                             } else {
-                                Button(onClick = { onRun(action) }, enabled = !running) {
+                                Button(
+                                    onClick = { onRun(action) },
+                                    enabled = !running,
+                                    modifier = Modifier.heightIn(min = 48.dp),
+                                ) {
                                     Text(
-                                        when {
-                                            action.id == "hermes.install" -> "Repair"
-                                            row.installed -> "Update"
-                                            else -> "Install"
-                                        },
+                                        actionLabel(action, row.installed),
                                         style = MaterialTheme.typography.labelLarge,
                                     )
                                 }
