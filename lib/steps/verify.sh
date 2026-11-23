@@ -100,3 +100,19 @@ step_verify_path() {
     echo "missing: $path"
     return 1
 }
+
+# step_pkg_remove <step-json> -- apt package removal, non-interactive.
+step_pkg_remove() {
+    local step="$1" pkg
+    local -a pkgs=()
+
+    while IFS= read -r pkg; do
+        pkgs+=("$pkg")
+    done < <(printf '%s' "$step" | jq -r '.args.packages[]?')
+
+    [ "${#pkgs[@]}" -gt 0 ] || return 0
+    export DEBIAN_FRONTEND=noninteractive
+    echo "pkg uninstall: ${pkgs[*]}"
+    pkg uninstall -y "${pkgs[@]}" 2>&1 | tail -5
+    return "${PIPESTATUS[0]}"
+}

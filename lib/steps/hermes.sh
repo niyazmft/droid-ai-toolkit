@@ -65,3 +65,28 @@ step_hermes_pm2() {
     fi
     echo "hermes running: pid=$pid"
 }
+
+# step_hermes_uninstall -- remove Hermes.
+#
+# Not step_uninstall_tool: Hermes lives in ~/.hermes (venv, checkout, plugins, state),
+# not in a per-tool pnpm project, and it is managed by PM2 under a bash interpreter.
+# Removing the directory without stopping the process first leaves PM2 resurrecting a
+# dead path on every boot.
+step_hermes_uninstall() {
+    if command -v pm2 >/dev/null 2>&1 && [ -f "$HOME/.pm2/pm2.pid" ]; then
+        pm2 delete hermes >/dev/null 2>&1 || true
+        pm2 save >/dev/null 2>&1 || true
+    fi
+
+    case "$HOME/.hermes" in
+        "$HOME"/.hermes) ;;
+        *) echo "refusing to remove an unexpected path"; return 1 ;;
+    esac
+
+    if [ -d "$HOME/.hermes" ]; then
+        rm -rf "$HOME/.hermes" && echo "removed $HOME/.hermes"
+    else
+        echo "already absent: $HOME/.hermes"
+    fi
+    return 0
+}
