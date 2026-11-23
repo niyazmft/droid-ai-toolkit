@@ -14,12 +14,23 @@ matters for anyone who does not want to install the APK. They must agree because
 
 ```bash
 bash install.sh --api list
-bash install.sh --api status
+bash install.sh --api status [--fast]
 bash install.sh --api run <action-id> [--answers FILE] [--fresh] [--yes]
 ```
 
 `--api` runs headless: no menu, no TUI, no TTY required. The TUI is a separate frontend
 over the same actions.
+
+### `--fast`
+
+`status --fast` returns the same document with the tool version strings left blank
+(`tools.pnpm`, `tools.openclaw`, `tools.hermes`, `tools.n8n`, `tools.ollama`). Device
+facts, Termux readiness and the `services` array are unaffected.
+
+A consumer must not treat a blank version as "not installed". The flag exists because
+each version probe starts a whole Node or Python interpreter: measured on 8x, a full
+status run costs 22.6 s wall and 18.9 s of user CPU, which is far too much for a timer.
+Use `--fast` for polling, and the full form when a screen is about to display versions.
 
 ## Events (NDJSON, one object per line, stdout)
 

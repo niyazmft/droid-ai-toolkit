@@ -43,6 +43,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val autoStart by Prefs.autoStartGateway.collectAsState()
+    val supervisorOn by Prefs.supervisorEnabled.collectAsState()
     val confirmRemove by Prefs.confirmRemove.collectAsState()
     val retainRaw by Prefs.retainRaw.collectAsState()
     // collectAsState, not .value: the row used to keep showing the old answer after
@@ -63,15 +64,18 @@ fun SettingsScreen(
         Panel {
             Fact("Version", APP_VERSION)
             Fact("Package", context.packageName)
-            Fact(
-                "Device",
-                snapshot?.let { "${it.device.model} · Android ${it.device.android} (API ${it.device.api})" } ?: "—",
-            )
-            Fact("Arch", snapshot?.device?.arch ?: "—")
         }
 
         Section("Startup & Services")
         Panel {
+            SwitchRow(
+                title = "Show a status notification",
+                subtitle =
+                    "A small always-on notification that reports how many services are " +
+                        "running, and that notices when the runtime stops. Turn it off to " +
+                        "clear the notification — but then nothing restarts services by itself.",
+                checked = supervisorOn,
+            ) { Prefs.setSupervisorEnabled(it) }
             SwitchRow(
                 title = "Restart the gateway automatically",
                 subtitle =

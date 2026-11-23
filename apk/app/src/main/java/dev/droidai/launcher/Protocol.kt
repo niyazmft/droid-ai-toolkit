@@ -39,6 +39,12 @@ object Protocol {
         val n8n: String,
         val ollama: String,
         val pm2Installed: Boolean,
+        /**
+         * Presence per catalog tool, decided by the engine from the filesystem, not from a
+         * version string. Empty when the engine is older than this field — callers must
+         * fall back to [openclaw]/[hermes]/… being non-blank.
+         */
+        val installed: Map<String, Boolean> = emptyMap(),
     )
 
     data class Service(
@@ -116,6 +122,13 @@ object Protocol {
                         n8n = tool.optString("n8n"),
                         ollama = tool.optString("ollama"),
                         pm2Installed = tool.optBoolean("pm2_installed"),
+                        installed =
+                            tool.optJSONObject("installed")?.let { obj ->
+                                obj
+                                    .keys()
+                                    .asSequence()
+                                    .associateWith { k -> obj.optBoolean(k) }
+                            } ?: emptyMap(),
                     ),
                 services =
                     (0 until services.length()).map { i ->

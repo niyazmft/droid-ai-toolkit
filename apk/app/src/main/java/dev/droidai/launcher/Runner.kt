@@ -88,6 +88,11 @@ object Runner {
     private val _label = MutableStateFlow("")
     val label: StateFlow<String> = _label
 
+    /** Catalog action id of the in-flight run ("" for a plain status read). */
+    private var actionId: String = ""
+
+    fun lastActionId(): String = actionId
+
     private var origin = Origin.SYSTEM
 
     /** A user action that arrived while something else was running. */
@@ -129,6 +134,7 @@ object Runner {
     ): Dispatch {
         origin = o
         _label.value = label
+        actionId = if (args.size >= 3 && args[1] == "run") args[2] else ""
         _startedAt.value = System.currentTimeMillis()
         _running.value = true
         _result.value = null

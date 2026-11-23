@@ -82,13 +82,41 @@ _st_services() {
         else [] end' 2>/dev/null || printf '[]'
 }
 
+# _st_installed_json -- presence per catalog tool, as a JSON object of booleans.
+#
+# Presence is a directory (or a PATH entry), never a version string. `--version` starts a
+# whole Node/Python runtime, so a blank version used to mean "not installed" to the app's
+# Packages screen — which is how 8x came to report 0 of 8 with four tools sitting on disk.
+# A stat costs nothing and keeps working under `--fast`.
+_st_installed_json() {
+    local root="$HOME/.local/share/pnpm/tools"
+    local openclaw=false pi=false gemini=false n8n=false paperclip=false
+    local hermes=false nanobot=false ollama=false
+    if [ -d "$root/openclaw" ]; then openclaw=true; fi
+    if [ -d "$root/pi" ]; then pi=true; fi
+    if [ -d "$root/gemini" ]; then gemini=true; fi
+    if [ -d "$root/n8n" ]; then n8n=true; fi
+    if [ -d "$root/paperclip" ]; then paperclip=true; fi
+    # Hermes keeps its own checkout, and nanobot/ollama are not pnpm tools at all.
+    if [ -d "$HOME/.hermes/hermes-agent" ]; then hermes=true; fi
+    if command -v nanobot >/dev/null 2>&1; then nanobot=true; fi
+    if command -v ollama >/dev/null 2>&1; then ollama=true; fi
+    jq -nc \
+        --argjson openclaw "$openclaw" --argjson pi "$pi" --argjson gemini "$gemini" \
+        --argjson n8n "$n8n" --argjson paperclip "$paperclip" --argjson hermes "$hermes" \
+        --argjson nanobot "$nanobot" --argjson ollama "$ollama" \
+        '{openclaw: $openclaw, pi: $pi, gemini: $gemini, n8n: $n8n,
+          paperclip: $paperclip, hermes: $hermes, nanobot: $nanobot, ollama: $ollama}' 2>/dev/null \
+        || printf '{}'
+}
+
 status_collect() {
     local out="${RUNNER_RESULT:-/dev/null}"
     local model android api abi arch
     local mem_total mem_avail swap_total swap_free disk_free
     local termux_ver allow_ext boot_installed doze hl
     local node pnpm py openclaw hermes n8n ollama pm2_inst
-    local services
+    local services services_installed
 
     model=$(_st_getprop ro.product.model)
     android=$(_st_getprop ro.build.version.release)
@@ -109,14 +137,34 @@ status_collect() {
     if pf_supports_hardlinks "$HOME"; then hl=true; else hl=false; fi
 
     node=$(_st_version node --version)
-    pnpm=$(_st_version pnpm --version)
     py=$(_st_version python3 --version)
     if command -v pm2 >/dev/null 2>&1; then pm2_inst=true; else pm2_inst=false; fi
-    openclaw=$(_st_version openclaw --version)
-    hermes=$(_st_version hermes --version)
-    n8n=$(_st_version n8n --version)
-    ollama=$(_st_version ollama --version)
+
+    # Tool versions are the expensive half of this snapshot: each one starts a whole
+    # Node or Python runtime just to print a string. Measured on 8x, the four CLI
+    # probes below accounted for most of a 22 s run.
+    #
+    # --fast exists for the APK's supervisor, which polls this on a timer: it needs
+    # services and memory, not version strings, and it can spend 19 s of CPU per poll
+    # on nothing. `pnpm` goes too — it is a Node script, and nothing displays it.
+    if [ "${DROIDAI_STATUS_FAST:-0}" = "1" ]; then
+        pnpm=""
+        openclaw=""
+        hermes=""
+        n8n=""
+        ollama=""
+    else
+        pnpm=$(_st_version pnpm --version)
+        openclaw=$(_st_version openclaw --version)
+        hermes=$(_st_version hermes --version)
+        n8n=$(_st_version n8n --version)
+        ollama=$(_st_version ollama --version)
+    fi
     services=$(_st_services)
+    # Default assigned plainly: `${var:-{}}` lets bash brace expansion append a
+    # second `}`, which produced `{...}}` and made jq reject the whole document.
+    services_installed=$(_st_installed_json)
+    if [ -z "$services_installed" ]; then services_installed='{}'; fi
 
     jq -n \
         --arg model "$model" --arg android "$android" --arg api "$api" \
@@ -129,6 +177,7 @@ status_collect() {
         --arg node "$node" --arg pnpm "$pnpm" --arg python "$py" --argjson pm2_installed "$pm2_inst" \
         --arg openclaw "$openclaw" --arg hermes "$hermes" --arg n8n "$n8n" --arg ollama "$ollama" \
         --argjson services "${services:-[]}" \
+        --argjson installed "$services_installed" \
         '{
             device: {
                 model: $model, android: $android, api: ($api | tonumber? // 0),
@@ -145,7 +194,8 @@ status_collect() {
             },
             tools: {
                 node: $node, pnpm: $pnpm, python: $python, pm2_installed: $pm2_installed,
-                openclaw: $openclaw, hermes: $hermes, n8n: $n8n, ollama: $ollama
+                openclaw: $openclaw, hermes: $hermes, n8n: $n8n, ollama: $ollama,
+                installed: $installed
             },
             services: $services
         }' > "$out" 2>/dev/null

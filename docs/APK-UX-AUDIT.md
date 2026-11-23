@@ -297,3 +297,68 @@ before tapping Check again. `uiautomator` confirms the screen renders as intende
 
 **Consequence for support:** "I ran the command and it still says no" has a known cause
 that is not the user's mistake. Do not answer it with a reinstall.
+
+---
+
+## Follow-up: the supervisor's cost, and making it optional
+
+### ✅ F36. The supervisor polled every 60 s at ~19 s of CPU each
+
+Measured on 8x: one `--api status` run costs **22.6 s wall / 18.9 s user CPU**. The
+supervisor ran it **every 60 s**, so it held roughly a third of a CPU core permanently, and
+re-posted its notification on every tick — `post_frequency … count=163, demoted=163`, i.e.
+Android had started demoting the app for chattiness.
+
+This is the answer to "isn't that notification consuming resources": the notification is
+nearly free and is *mandatory* for a foreground service, but the polling behind it was the
+actual drain.
+
+Three changes:
+
+* **Post only on change.** An unchanged status is not news.
+* **Adaptive cadence.** Healthy → 5 min; something wrong → 60 s; nothing at all while
+  `PowerManager.isDeviceIdleMode` (a dozing phone should not spend 19 s of CPU to be told
+  nothing changed).
+* **Timeout 25 s → 45 s.** 25 s against a 22.6 s run was a coin flip, so healthy devices
+  occasionally showed "Termux is not responding" because the poll was abandoned a second
+  before its answer arrived.
+
+Measured after: **1 notification post in 180 s**, and ~6% of a core instead of ~23%.
+
+### ✅ F37. `status` spent most of its time starting interpreters
+
+The version probes (`openclaw`, `hermes`, `n8n`, `ollama`, `pnpm`) each boot a Node or
+Python runtime to print one string. `--api status --fast` skips them and leaves those
+fields blank; device facts, Termux readiness and `services` are unchanged.
+
+Measured on 8x, same device, back to back:
+
+| | wall | user CPU |
+|---|---|---|
+| `status` | 23.1 s | 19.5 s |
+| `status --fast` | 7.2 s | 5.3 s |
+
+**3.7× less CPU.** The supervisor uses `--fast`; the app's own refresh keeps the full form,
+and a system-origin snapshot is no longer allowed to overwrite a full one — otherwise the
+blank versions would wipe OpenClaw/Hermes from the Device panel every five minutes.
+`docs/CONTRACT.md` documents the flag and warns consumers not to read a blank version as
+"not installed".
+
+What remains in fast mode is mostly `pm2 jlist`, which starts Node too. Replacing it with a
+read of the daemon's own files is the next step down, and is an engine change rather than a
+cadence tweak.
+
+### ✅ F38. The supervisor is now the user's choice
+
+Settings → Startup & Services → **"Show a status notification"**.
+
+The notification is required by Android for a foreground service, so the only way to remove
+it is to stop supervising — which is a real trade: nothing then notices the runtime dying
+silently, and nothing restarts services. Default is on, the subtitle states the cost of
+turning it off, and the preference persists.
+
+Turning it off calls `stopService` and cancels the notification (not the `ACTION_STOP`
+broadcast: sending an action to a stopped service starts it first, flashes a "Starting…"
+notification, then stops). Verified on 8x: shade went from *Droid AI · 2 service(s) online*
+to just Termux and Android system, `SupervisorService` record gone; turning it back on
+restored both.

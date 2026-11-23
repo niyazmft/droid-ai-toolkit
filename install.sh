@@ -39,6 +39,9 @@ API_ACTION=""
 API_ANSWERS=""
 API_RUN_ID=""
 API_FRESH=0
+# --fast: skip probes that start a Node/Python interpreter (tool --version). Used by
+# the APK's supervisor, which polls status on a timer and cannot afford 19 s of CPU.
+API_FAST=0
 ASSUME_YES=0
 # Parameters for an action (--arg key=value), passed to steps as JSON.
 API_PARAMS='{}'
@@ -48,6 +51,7 @@ while [ $# -gt 0 ]; do
         --api)          API_MODE=1 ;;
         --yes|-y)       ASSUME_YES=1 ;;
         --fresh)        API_FRESH=1 ;;
+        --fast)         API_FAST=1 ;;
         --answers)      shift; API_ANSWERS="${1:-}" ;;
         --arg)
             # key=value, repeatable. Kept as JSON so a step can read it without the
@@ -6595,6 +6599,9 @@ if [ "$API_MODE" -eq 1 ]; then
     done
     # shellcheck source=lib/runner.sh
     . "$TOOLKIT_DIR/lib/runner.sh"
+    # Read by lib/steps/status.sh. Exported rather than passed as an arg so the step
+    # contract (see actions/status.json) does not change shape for a caller-side wish.
+    export DROIDAI_STATUS_FAST="$API_FAST"
     api_dispatch
     exit $?
 fi

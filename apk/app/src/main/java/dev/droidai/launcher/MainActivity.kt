@@ -35,6 +35,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -60,6 +61,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -122,9 +124,16 @@ class MainActivity : ComponentActivity() {
         val detail by Gate.detail.collectAsState()
         val readyBefore by Prefs.termuxReady.collectAsState()
 
+        // Retry until the probe resolves.
+        //
+        // One send was not enough: the supervisor polls through the same single transport
+        // slot, so the startup probe could be skipped entirely and the gate would sit on
+        // CHECKING forever. A skipped send used to be indistinguishable from a slow one.
         LaunchedEffect(termux, permission) {
-            if (termux && permission && probe == Probe.CHECKING && !Runner.running.value) {
-                Termux.probe(this@MainActivity)
+            if (!termux || !permission) return@LaunchedEffect
+            while (Gate.probe.value == Probe.CHECKING) {
+                if (!Runner.running.value) Termux.probe(this@MainActivity)
+                delay(1500)
             }
         }
 
@@ -479,16 +488,30 @@ private fun Home() {
     val tab = Tab.valueOf(tabName)
     val confirmRemove by Prefs.confirmRemove.collectAsState()
     val retainRaw by Prefs.retainRaw.collectAsState()
+    val supervisorOn by Prefs.supervisorEnabled.collectAsState()
+    val installedKnown by Prefs.installedTools.collectAsState()
+    val failedTools by Prefs.failedTools.collectAsState()
+    // Home is composed during a warm start while the probe is still running, so it needs
+    // the gate's state too — to know when it is safe to start the supervisor.
+    val probeState by Gate.probe.collectAsState()
     val snackbar = remember { SnackbarHostState() }
 
-    LaunchedEffect(Unit) {
-        // No status request here: Root() owns the startup probe, and that probe *is* a
-        // status run whose result fills this screen. Sending a second one only fought it
-        // for the single transport slot.
-
-        // Foreground supervisor: keeps a low oom_score_adj and makes Termux's death
-        // visible instead of silent. It cannot prevent an LMK kill.
-        runCatching { SupervisorService.start(context) }
+    // No status request here: Root() owns the startup probe, and that probe *is* a
+    // status run whose result fills this screen. Sending a second one only fought it
+    // for the single transport slot.
+    LaunchedEffect(supervisorOn, probeState) {
+        // The supervisor is what puts a permanent notification in the shade, so it is the
+        // user's call (Settings → Startup & Services). Off must also remove the
+        // notification, not just stop polling.
+        //
+        // Gated on the probe having resolved: starting it during CHECKING let its
+        // `status --fast` poll win the transport slot ahead of the startup probe.
+        runCatching {
+            when {
+                !supervisorOn -> SupervisorService.stop(context)
+                probeState != Probe.CHECKING -> SupervisorService.start(context)
+            }
+        }
     }
 
     // Tick once a second while something runs: this drives the elapsed-time readout
@@ -510,7 +533,8 @@ private fun Home() {
 
     LaunchedEffect(result) {
         val r = result ?: return@LaunchedEffect
-        val fromUser = Runner.lastOrigin() == Origin.USER
+        val origin = Runner.lastOrigin()
+        val fromUser = origin == Origin.USER
 
         // The supervisor polls once a minute through the same transport. Its status
         // run must not overwrite the record of what the user actually just did.
@@ -538,7 +562,34 @@ private fun Home() {
             return@LaunchedEffect
         }
 
-        Protocol.snapshot(r.stdout)?.let { snapshot = it }
+        // Only a full snapshot may fill this screen. The supervisor polls `status --fast`,
+        // which leaves version strings blank, and Packages reads "installed" from those
+        // versions — accepting a fast snapshot is exactly how the app came to report
+        // "0 of 8 installed" on a device with four tools installed.
+        if (origin != Origin.SYSTEM) {
+            Protocol.snapshot(r.stdout)?.let { snap ->
+                snapshot = snap
+                Prefs.setInstalledTools(
+                    listOf("openclaw", "hermes", "n8n", "ollama")
+                        .filter { key ->
+                            when (key) {
+                                "openclaw" -> snap.tools.openclaw.isNotBlank()
+                                "hermes" -> snap.tools.hermes.isNotBlank()
+                                "n8n" -> snap.tools.n8n.isNotBlank()
+                                "ollama" -> snap.tools.ollama.isNotBlank()
+                                else -> false
+                            }
+                        }.toSet(),
+                )
+            }
+        }
+
+        // Remember per-tool failure, so Packages can offer a "Needs attention" group
+        // instead of leaving the user to remember which repair did not work.
+        if (fromUser && Runner.lastActionId().isNotBlank()) {
+            val tool = Runner.lastActionId().substringBefore('.')
+            Prefs.markFailed(tool, failed = r.exitCode != 0 || r.errmsg.isNotBlank())
+        }
     }
 
     // Fetch the catalog once the device is idle. Keyed on `running` so the retry happens
@@ -587,7 +638,31 @@ private fun Home() {
                                 contentDescription = null,
                             )
                         },
-                        label = { Text(t.label) },
+                        label = {
+                            Text(
+                                t.label,
+                                fontWeight =
+                                    if (tab ==
+                                        t
+                                    ) {
+                                        FontWeight.SemiBold
+                                    } else {
+                                        FontWeight.Normal
+                                    },
+                            )
+                        },
+                        colors =
+                            NavigationBarItemDefaults.colors(
+                                // The selected tab used to be a pale tint on a pale bar, which
+                                // is why "where am I" was unclear. A solid indicator with a
+                                // contrasting icon is unambiguous, and it does not rely on
+                                // colour alone because the label also goes semibold.
+                                selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                indicatorColor = MaterialTheme.colorScheme.primary,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
                     )
                 }
             }
@@ -676,18 +751,19 @@ private fun Home() {
                         Panel {
                             Fact("Model", s.device.model)
                             Fact("Android", "${s.device.android} · API ${s.device.api}")
-                            Fact("Arch", s.device.arch)
+                            // Arch lives in the header subtitle, once, next to the model.
+                            // Repeating it here was noise on every screen.
                             Fact("Memory", "${s.device.memAvailableMb} MB free of ${s.device.memTotalMb} MB")
                             Fact("Swap free", "${s.device.swapFreeMb} MB")
                             Fact("Disk free", "${s.device.diskFreeMb / 1024} GB")
                             Fact("Termux", s.termux.version)
                             Fact("Boot restore", if (s.termux.bootInstalled) "installed" else "missing")
-                            Fact("Node", s.tools.node)
-                            Fact("Python", s.tools.python)
+                            Fact("Node", Format.toolVersion(s.tools.node))
+                            Fact("Python", Format.toolVersion(s.tools.python))
                             Fact("PM2", if (s.tools.pm2Installed) "installed" else "missing")
-                            if (s.tools.openclaw.isNotBlank()) Fact("OpenClaw", s.tools.openclaw)
-                            if (s.tools.hermes.isNotBlank()) Fact("Hermes", s.tools.hermes)
-                            if (s.tools.n8n.isNotBlank()) Fact("n8n", s.tools.n8n)
+                            if (s.tools.openclaw.isNotBlank()) Fact("OpenClaw", Format.toolVersion(s.tools.openclaw))
+                            if (s.tools.hermes.isNotBlank()) Fact("Hermes", Format.toolVersion(s.tools.hermes))
+                            if (s.tools.n8n.isNotBlank()) Fact("n8n", Format.toolVersion(s.tools.n8n))
                         }
 
                         Section("Services")
@@ -800,6 +876,8 @@ private fun Home() {
                         snapshot = snapshot,
                         actions = actions,
                         running = running,
+                        knownInstalled = installedKnown,
+                        failedTools = failedTools,
                         onRun = { action ->
                             val short =
                                 snapshot?.let {
