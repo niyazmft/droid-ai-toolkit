@@ -5,70 +5,97 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
- * Tools as tools, not as actions.
+ * Tools as tools, not as actions — the shape the TUI has always had, and the shape the
+ * packages mock-up asks for: search, category filter, one card per tool with its version,
+ * install state and its own verbs.
  *
- * The catalog is flat — `openclaw.install`, `openclaw.uninstall`, `pi.install`, … — which is
- * right for the engine but reads as a wall of verbs in the UI. This screen regroups it by
- * tool, which is the shape the TUI has always had (AGENTS → OpenClaw → Install/Repair/…),
- * and shows the installed version next to each one.
- *
- * Nothing here is new capability: every button is a catalog action. It is the same
- * catalog rendered per tool instead of per category.
+ * Every button is still a catalog action; this is a rendering, not new capability.
  */
-private data class ToolRow(
+private data class PackageRow(
     val key: String,
     val title: String,
-    val version: String,
+    val meta: String,
+    val installed: Boolean,
+    val category: String,
+    val description: String,
     val actions: List<Protocol.Action>,
 )
 
-private fun tools(
+private val KNOWN_TOOLS =
+    listOf(
+        Triple("openclaw", "OpenClaw gateway", "agents"),
+        Triple("hermes", "Hermes Agent", "agents"),
+        Triple("pi", "Pi coding agent", "agents"),
+        Triple("nanobot", "Nanobot", "agents"),
+        Triple("ollama", "Ollama", "utilities"),
+        Triple("gemini", "Gemini CLI", "utilities"),
+        Triple("n8n", "n8n", "workflows"),
+        Triple("paperclip", "Paperclip", "workflows"),
+    )
+
+private fun versionOf(
+    snapshot: Protocol.Snapshot?,
+    key: String,
+): String =
+    when (key) {
+        "openclaw" -> snapshot?.tools?.openclaw.orEmpty()
+        "hermes" -> snapshot?.tools?.hermes.orEmpty()
+        "n8n" -> snapshot?.tools?.n8n.orEmpty()
+        "ollama" -> snapshot?.tools?.ollama.orEmpty()
+        // Pi, Gemini, Paperclip and Nanobot are not in the status payload: probing them costs
+        // seconds per refresh (Gemini's --version took 76 s on 8x).
+        else -> ""
+    }
+
+private fun rows(
     snapshot: Protocol.Snapshot?,
     actions: List<Protocol.Action>,
-): List<ToolRow> {
-    val known =
-        listOf(
-            "openclaw" to "OpenClaw",
-            "hermes" to "Hermes Agent",
-            "n8n" to "n8n",
-            "pi" to "Pi coding agent",
-            "gemini" to "Gemini CLI",
-            "ollama" to "Ollama",
-            "paperclip" to "Paperclip",
-            "nanobot" to "Nanobot",
+): List<PackageRow> =
+    KNOWN_TOOLS.mapNotNull { (key, title, category) ->
+        val mine = actions.filter { it.id.startsWith("$key.") }.sortedBy { it.id }
+        if (mine.isEmpty()) return@mapNotNull null
+        val version = versionOf(snapshot, key)
+        PackageRow(
+            key = key,
+            title = title,
+            // The mock shows a version plus a runtime hint; when no version is available,
+            // name where it lives rather than invent one.
+            meta = version.ifBlank { "tools/$key" },
+            installed = version.isNotBlank(),
+            category = category,
+            description = mine.joinToString(" ") { it.summary },
+            actions = mine,
         )
-    return known
-        .map { (key, title) ->
-            val version =
-                when (key) {
-                    "openclaw" -> snapshot?.tools?.openclaw.orEmpty()
-                    "hermes" -> snapshot?.tools?.hermes.orEmpty()
-                    "n8n" -> snapshot?.tools?.n8n.orEmpty()
-                    "ollama" -> snapshot?.tools?.ollama.orEmpty()
-                    // Pi and Gemini are not in the status payload: probing them costs seconds
-                    // (Gemini's --version took 76 s on 8x), which is not worth slowing every
-                    // status refresh for a label.
-                    else -> ""
-                }
-            ToolRow(
-                key = key,
-                title = title,
-                version = version,
-                actions = actions.filter { it.id.startsWith("$key.") }.sortedBy { it.id },
-            )
-        }.filter { it.actions.isNotEmpty() }
-}
+    }
 
 @Composable
 fun PackagesScreen(
@@ -77,73 +104,150 @@ fun PackagesScreen(
     running: Boolean,
     onRun: (Protocol.Action) -> Unit,
 ) {
-    val rows = tools(snapshot, actions)
+    var query by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("All") }
+
+    val all = remember(snapshot, actions) { rows(snapshot, actions) }
+    val visible =
+        all.filter { row ->
+            (category == "All" || row.category == category.lowercase()) &&
+                (query.isBlank() || row.title.contains(query, ignoreCase = true))
+        }
 
     Column(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text("Packages", style = MaterialTheme.typography.headlineMedium)
         Text(
-            "${rows.count { it.version.isNotBlank() }} of ${rows.size} installed",
+            "Termux · ${snapshot?.device?.arch ?: "—"} · ${all.count { it.installed }} of ${all.size} installed",
             style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        rows.forEach { tool ->
-            Section(tool.title)
-            Panel {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(50),
+            placeholder = { Text("Search OpenClaw, Hermes, Ollama…") },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            trailingIcon = {
+                if (query.isNotEmpty()) {
+                    IconButton(onClick = { query = "" }) {
+                        Icon(Icons.Filled.Clear, contentDescription = "Clear")
+                    }
+                }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("All", "Agents", "Utilities", "Workflows").forEach { c ->
+                AssistChip(
+                    onClick = { category = c },
+                    label = { Text(c) },
+                    enabled = category != c,
+                )
+            }
+        }
+
+        if (running) {
+            // The mock shows "65%". The engine reports step boundaries, not percentages,
+            // so this stays indeterminate and names the step instead of inventing a number.
+            Card(
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Installing…", style = MaterialTheme.typography.titleSmall)
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text(
-                        if (tool.version.isBlank()) "not installed" else tool.version,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    StatusChip(
-                        online = tool.version.isNotBlank(),
-                        label = if (tool.version.isNotBlank()) "installed" else "missing",
+                        "The engine reports steps as they finish, so progress is shown as " +
+                            "running rather than a percentage.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+        }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    tool.actions.forEach { action ->
-                        if (action.destructive) {
-                            TextButton(onClick = { onRun(action) }, enabled = !running) {
-                                Text(
-                                    "Remove…",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.error,
-                                )
-                            }
-                        } else {
-                            Button(onClick = { onRun(action) }, enabled = !running) {
-                                // `hermes.install` is the repair path; naming it "Repair"
-                                // matches what it does and what the TUI calls it.
-                                Text(
-                                    when {
-                                        // hermes.install is the repair path, whatever the
-                                        // version string says.
-                                        action.id == "hermes.install" -> "Repair"
-                                        // An installed tool's install action is an upgrade.
-                                        tool.version.isNotBlank() -> "Update"
-                                        else -> "Install"
-                                    },
-                                    style = MaterialTheme.typography.labelLarge,
-                                )
+        if (visible.isEmpty()) {
+            Text(
+                "No packages match.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        visible.forEach { row ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    ),
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(row.title, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                row.meta,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        StatusChip(
+                            online = row.installed,
+                            label = if (row.installed) "Installed" else "Available",
+                        )
+                    }
+
+                    Text(
+                        row.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        row.actions.forEach { action ->
+                            if (action.destructive) {
+                                TextButton(onClick = { onRun(action) }, enabled = !running) {
+                                    Text(
+                                        "Remove…",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            } else {
+                                Button(onClick = { onRun(action) }, enabled = !running) {
+                                    Text(
+                                        when {
+                                            action.id == "hermes.install" -> "Repair"
+                                            row.installed -> "Update"
+                                            else -> "Install"
+                                        },
+                                        style = MaterialTheme.typography.labelLarge,
+                                    )
+                                }
                             }
                         }
                     }
                 }
-
-                Text(
-                    tool.actions.joinToString(" · ") { it.summary },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
             }
         }
     }
