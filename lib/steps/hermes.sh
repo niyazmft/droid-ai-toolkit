@@ -41,8 +41,20 @@ step_hermes_pm2() {
     bin=$(command -v hermes 2>/dev/null) || { echo "hermes is not on PATH"; return 1; }
     command -v pm2 >/dev/null 2>&1 || { echo "pm2 is not installed"; return 1; }
 
+    # Start the venv interpreter with the entry point as an argument. Handing PM2 the
+    # `hermes` shim plus `--interpreter bash` looks right but ended up running the venv
+    # entry point (a Python file) under bash:
+    #     venv/bin/hermes: line 5: syntax error near unexpected token `('
+    # because whatever PM2 resolves to is not the bash shim. Naming python explicitly
+    # removes the guesswork: no shebang resolution, no interpreter choice.
+    local venv="$HOME/.hermes/hermes-agent/venv/bin"
+    if [ ! -x "$venv/python" ] || [ ! -f "$venv/hermes" ]; then
+        echo "no venv entry point at $venv/hermes"
+        return 1
+    fi
+
     pm2 delete hermes >/dev/null 2>&1 || true
-    pm2 start "$bin" --name hermes --interpreter bash -- gateway 2>&1 | tail -3
+    pm2 start "$venv/python" --name hermes --interpreter none -- "$venv/hermes" gateway 2>&1 | tail -3
     pm2 save >/dev/null 2>&1 || true
 
     sleep 6
