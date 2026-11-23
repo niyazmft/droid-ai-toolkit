@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "id": "paperclip.install",
+  "title": "Paperclip",
+  "summary": "Multi-agent workspace (EXPERIMENTAL, ~2 GB RAM). Needs PostgreSQL running; delegates to paperclip_manual_install.sh.",
+  "category": "workflows",
+  "requires": {
+    "arch": ["aarch64", "x86_64"],
+    "min_mem_mb": 1800,
+    "min_disk_mb": 4000,
+    "predicates": ["postgres_running"]
+  },
+  "steps": [
+    { "id": "install", "title": "Run paperclip_manual_install.sh", "run": "step_run_script",
+      "args": { "script": "$HOME/paperclip_manual_install.sh", "timeout_s": 3600 },
+      "retry_on_sigkill": 1 },
+    { "id": "verify", "title": "Verify server bundle", "run": "step_verify_path",
+      "args": { "path": "$HOME/paperclip/server/dist" } }
+  ]
+}

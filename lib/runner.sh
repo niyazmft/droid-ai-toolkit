@@ -65,12 +65,24 @@ runner_preflight() {
     [ "${mem:-0}" -lt "${min_mem:-0}" ] && ok=0
     [ "${disk:-0}" -lt "${min_disk:-0}" ] && ok=0
 
+    # Named preconditions a spec can require (probe.sh predicates). Used for things a
+    # numeric threshold cannot express, e.g. "a warm wheel cache exists" — without one,
+    # pip would compile cryptography for 30-90 minutes and probably be OOM-killed.
+    local preds p failed=""
+    preds=$(printf '%s' "$spec" | jq -r '(.requires.predicates // []) | join(" ")')
+    for p in $preds; do
+        if ! pred_apply "$p"; then
+            failed="$failed $p"
+            ok=0
+        fi
+    done
+
     if [ "$ok" -eq 1 ]; then
         ev_preflight true "$arch" "${mem:-0}" "${disk:-0}"
         return 0
     fi
     ev_preflight false "$arch" "${mem:-0}" "${disk:-0}"
-    ev_log preflight "refused: arch=$arch (allowed: ${allowed:-any}) mem=${mem}MB (need ${min_mem}MB) disk=${disk}MB (need ${min_disk}MB)"
+    ev_log preflight "refused: arch=$arch (allowed: ${allowed:-any}) mem=${mem}MB (need ${min_mem}MB) disk=${disk}MB (need ${min_disk}MB)${failed:+ unmet:${failed}}"
     return 3
 }
 

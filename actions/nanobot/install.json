@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "nanobot.install",
   "title": "Nanobot",
-  "summary": "Python agent. aarch64/x86_64 only (jiter needs maturin). cryptography/jiter build from source without a wheel cache (30-90 min).",
+  "summary": "Python agent. Needs a jiter wheel matching this Python's ABI; otherwise pip compiles for 30-90 minutes (aarch64/x86_64 only: maturin rejects armv8l).",
   "category": "agents",
   "requires": {
     "arch": [
@@ -13,6 +13,9 @@
     "min_disk_mb": 2500,
     "tools": [
       "pip3"
+    ],
+    "predicates": [
+      "has_matching_jiter_wheel"
     ]
   },
   "steps": [

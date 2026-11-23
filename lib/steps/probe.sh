@@ -47,6 +47,32 @@ pred_has_warm_pnpm_store() {
 }
 
 # pred_apply <name> [arg] -- evaluate a predicate by name, for spec "when" fields.
+# A warm wheel cache is what separates a seconds-long install from a 30-90 minute
+# source build for cryptography/jiter on Android.
+pred_has_wheel_cache() {
+    local cache="${HERMES_WHEEL_CACHE:-$HOME/~}"
+    cache="${HERMES_WHEEL_CACHE:-$HOME/.hermes/wheel-cache}"
+    [ -d "$cache" ] && [ -n "$(ls -A "$cache" 2>/dev/null)" ]
+}
+
+# Is there a jiter wheel built for THIS interpreter's ABI?
+#
+# "A wheel cache exists" is too weak a gate: on 8x the cache holds jiter cp313 wheels
+# while the system python is 3.14, so pip still had to compile — which is the 30-90
+# minute build this is meant to prevent. jiter is the binding constraint for anything
+# that depends on anthropic (nanobot, hermes).
+pred_has_matching_jiter_wheel() {
+    local cache mm
+    cache="${HERMES_WHEEL_CACHE:-$HOME/.hermes/wheel-cache}"
+    [ -d "$cache" ] || return 1
+    mm=$(python3 -c 'import sys; print("cp%d%d" % sys.version_info[:2])' 2>/dev/null) || return 1
+    local f
+    for f in "$cache"/jiter-*-"$mm"-*android*; do
+        [ -e "$f" ] && return 0
+    done
+    return 1
+}
+
 pred_apply() {
     local name="$1"; shift
     if [ -z "$name" ]; then
@@ -58,4 +84,13 @@ pred_apply() {
         return 1
     fi
     "pred_$name" "$@"
+}
+
+# pred_postgres_running -- Paperclip needs PostgreSQL up before it starts; it has no
+# way to bring the cluster up itself.
+pred_postgres_running() {
+    if command -v pg_isready >/dev/null 2>&1; then
+        pg_isready -q -h 127.0.0.1 -p 5432 2>/dev/null && return 0
+    fi
+    pgrep -f "postgres" >/dev/null 2>&1
 }

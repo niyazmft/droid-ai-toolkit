@@ -78,3 +78,25 @@ step_pkg_install() {
     pkg install -y "${pkgs[@]}" 2>&1 | tail -5
     return "${PIPESTATUS[0]}"
 }
+
+# step_verify_path <step-json> -- fail unless args.path exists.
+# Used where the proof is an installed tree rather than a command (Paperclip's server
+# bundle), and where `command -v` would be meaningless.
+step_verify_path() {
+    local step="$1" path
+    path=$(printf '%s' "$step" | jq -r '.args.path // empty')
+    if [ -z "$path" ]; then
+        echo "step_verify_path: missing args.path"
+        return 1
+    fi
+    path=${path//\$PREFIX/$PREFIX}
+    path=${path//\$HOME/$HOME}
+    path=${path/#\~/$HOME}
+
+    if [ -e "$path" ]; then
+        echo "present: $path"
+        return 0
+    fi
+    echo "missing: $path"
+    return 1
+}
