@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "id": "hermes.install",
+  "title": "Hermes Agent",
+  "summary": "Repair an existing Hermes install: venv interpreter pin, platform shims, dependencies from the wheel cache, optional honcho memory plugin, then restart the gateway. aarch64/x86_64 only.",
+  "category": "agents",
+  "requires": {
+    "arch": ["aarch64", "x86_64"],
+    "min_mem_mb": 900,
+    "min_disk_mb": 4000
+  },
+  "steps": [
+    { "id": "repair", "title": "Repair venv, shims and deps", "run": "step_hermes_repair" },
+    { "id": "verify", "title": "Verify CLI", "run": "step_verify_cmd",
+      "args": { "cmd": ["hermes", "--version"], "timeout_s": 180 } },
+    { "id": "pm2", "title": "Restart gateway under PM2", "run": "step_hermes_pm2",
+      "optional": true }
+  ]
+}
