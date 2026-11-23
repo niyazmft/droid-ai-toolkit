@@ -31,5 +31,8 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    // Core icon set only (~40 glyphs). R8 keeps the ones referenced; extended is 2-4 MB
+    // of icons we would never draw.
+    implementation("androidx.compose.material:material-icons-core")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

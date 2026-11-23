@@ -159,6 +159,7 @@ object Protocol {
     }
 
     data class Step(
+        val id: String,
         val title: String,
         val state: String,
         val ms: Long,
@@ -175,9 +176,33 @@ object Protocol {
             if (title.isBlank()) {
                 null
             } else {
-                Step(title = title, state = e.optString("state"), ms = e.optLong("ms"))
+                Step(
+                    id = e.optString("id"),
+                    title = title,
+                    state = e.optString("state"),
+                    ms = e.optLong("ms"),
+                )
             }
         }
+
+    /**
+     * One entry per step, in first-seen order, showing its final state.
+     *
+     * The stream emits `running` and then `ok` for the same step, so the raw list shows
+     * every step twice. What a reader wants is the outcome, not the transitions.
+     */
+    fun finalSteps(stdout: String): List<Step> {
+        val order = LinkedHashMap<String, Step>()
+        steps(stdout).forEach { step ->
+            val key = step.id.ifBlank { step.title }
+            val previous = order[key]
+            // A terminal state wins; a later `running` must not overwrite it.
+            if (previous == null || previous.state == "running" || step.state != "running") {
+                order[key] = step
+            }
+        }
+        return order.values.toList()
+    }
 
     /** The last `step` event's title, for a progress line. */
     fun currentStep(stdout: String): String? =

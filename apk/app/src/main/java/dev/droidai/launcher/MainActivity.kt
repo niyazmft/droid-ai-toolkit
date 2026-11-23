@@ -8,17 +8,30 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,9 +42,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 class MainActivity : ComponentActivity() {
@@ -46,7 +62,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Gate.refresh(this)
         setContent {
-            MaterialTheme {
+            DroidTheme {
                 Surface(Modifier.fillMaxSize()) { Root() }
             }
         }
@@ -170,7 +186,7 @@ private fun Section(title: String) {
     Text(
         title,
         style = MaterialTheme.typography.titleMedium,
-        modifier = Modifier.padding(top = 12.dp),
+        modifier = Modifier.padding(top = 12.dp, bottom = 2.dp),
     )
 }
 
@@ -181,9 +197,72 @@ private fun Fact(
 ) {
     if (value.isBlank()) return
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-        Text(value, style = MaterialTheme.typography.bodySmall)
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        // A version string like "Hermes Agent vgit.707cf0f (2026.9.24) · stable · …"
+        // must not wrap the row: one line each keeps the panel a table, not a paragraph.
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1.4f),
+            textAlign = TextAlign.End,
+        )
     }
+}
+
+/** A rounded surface for one group of related rows. */
+@Composable
+private fun Panel(content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        colors =
+            CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+            ),
+    ) {
+        Column(
+            Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun StatusChip(online: Boolean) {
+    val bg = if (online) Tokens.SuccessContainer else MaterialTheme.colorScheme.errorContainer
+    val fg = if (online) Tokens.OnSuccessContainer else MaterialTheme.colorScheme.onErrorContainer
+    Surface(color = bg, contentColor = fg, shape = RoundedCornerShape(50)) {
+        Text(
+            if (online) "online" else "stopped",
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun Placeholder(
+    title: String,
+    body: String,
+) {
+    Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 8.dp))
+    Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+private enum class Tab(
+    val label: String,
+) {
+    TERMINAL("Terminal"),
+    METRICS("Metrics"),
+    SETTINGS("Settings"),
 }
 
 @Composable
@@ -202,6 +281,7 @@ private fun Home() {
     var pending by remember { mutableStateOf<Protocol.Action?>(null) }
     var capacity by remember { mutableStateOf<Protocol.Action?>(null) }
     var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
+    var tab by remember { mutableStateOf(Tab.TERMINAL) }
 
     LaunchedEffect(Unit) {
         Runner.send(context, listOf("--api", "status"))
@@ -213,7 +293,7 @@ private fun Home() {
     LaunchedEffect(result) {
         val r = result ?: return@LaunchedEffect
         raw = r.stdout
-        steps = Protocol.steps(r.stdout)
+        steps = Protocol.finalSteps(r.stdout)
 
         if (r.exitCode != 0 || r.errmsg.isNotBlank()) {
             failure = Protocol.error(r.stdout, r.stderr, r.errmsg)
@@ -222,10 +302,8 @@ private fun Home() {
         }
         failure = null
 
-        // Route on the payload, not on which button was pressed. Commands overlap
-        // (a probe result is still in the StateFlow when Home first composes), and
-        // the old `mode` flag let a late status response clear a catalog that had
-        // already arrived — which is why Actions sometimes rendered nothing.
+        // Route on the payload, not on which button was pressed: a probe result is still
+        // in the StateFlow when the screen first composes, so responses can overlap.
         val catalog = Protocol.actions(r.stdout)
         if (catalog.isNotEmpty()) {
             actions = catalog
@@ -235,271 +313,359 @@ private fun Home() {
         Protocol.snapshot(r.stdout)?.let { snapshot = it }
     }
 
-    // Fetch the catalog once the device is idle. Keyed on `running` so the retry
-    // happens after the previous command finishes, and the flag is only set when
-    // the send really dispatched (a dropped request must be retried, not assumed).
+    // Fetch the catalog once the device is idle. Keyed on `running` so the retry happens
+    // after the previous command finishes, and only when the send really dispatched.
     LaunchedEffect(running, snapshot) {
         if (!running && snapshot != null && actions.isEmpty() && !askedForActions) {
             if (Runner.send(context, listOf("--api", "list"))) askedForActions = true
         }
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Text("Droid AI", style = MaterialTheme.typography.headlineMedium)
-        Text(
-            snapshot?.let { "${it.device.model} · ${it.device.arch}" } ?: "Termux is ready.",
-            style = MaterialTheme.typography.bodyMedium,
-        )
-
-        Row(
-            Modifier.padding(vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(
-                onClick = {
-                    failure = null
-                    Runner.send(context, listOf("--api", "status"))
-                },
-                enabled = !running,
-            ) { Text("Refresh") }
-
-            OutlinedButton(
-                onClick = {
-                    failure = null
-                    askedForActions = true
-                    Runner.send(context, listOf("--api", "list"))
-                },
-                enabled = !running,
-            ) { Text("Actions") }
-        }
-
-        if (running) {
-            LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text("Working…", style = MaterialTheme.typography.bodySmall)
-        }
-
-        failure?.let {
-            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-        }
-
-        if (steps.isNotEmpty()) {
-            Section("Last run")
-            steps.forEach { s ->
-                val mark =
-                    when (s.state) {
-                        "ok" -> "\u2714"
-                        "failed" -> "\u2716"
-                        "skipped" -> "\u2013"
-                        else -> "\u2026"
-                    }
-                val took = if (s.ms >= 1000) "  (${s.ms / 1000}s)" else ""
-                Text(
-                    "$mark ${s.title}$took",
-                    style = MaterialTheme.typography.bodySmall,
-                    color =
-                        if (s.state ==
-                            "failed"
-                        ) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                Tab.values().forEach { t ->
+                    NavigationBarItem(
+                        selected = tab == t,
+                        onClick = { tab = t },
+                        icon = {
+                            Icon(
+                                when (t) {
+                                    Tab.TERMINAL -> Icons.Filled.List
+                                    Tab.METRICS -> MetricsIcon
+                                    Tab.SETTINGS -> Icons.Filled.Settings
+                                },
+                                contentDescription = t.label,
+                            )
                         },
+                        label = { Text(t.label) },
+                    )
+                }
+            }
+        },
+    ) { pad ->
+        Column(
+            Modifier
+                .padding(pad)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Droid AI", style = MaterialTheme.typography.headlineMedium)
+                    Text(
+                        snapshot?.let { "${it.device.model} · ${it.device.arch}" } ?: "Termux is ready.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        failure = null
+                        Runner.send(context, listOf("--api", "status"))
+                    },
+                    enabled = !running,
+                ) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh") }
+            }
+
+            if (running) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp))
+            }
+
+            failure?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(vertical = 4.dp),
                 )
             }
-        }
 
-        snapshot?.let { s ->
-            Section("Device")
-            Fact("Model", s.device.model)
-            Fact("Android", "${s.device.android} · API ${s.device.api}")
-            Fact("Arch", s.device.arch)
-            Fact("Memory", "${s.device.memAvailableMb} MB free of ${s.device.memTotalMb} MB")
-            Fact("Swap free", "${s.device.swapFreeMb} MB")
-            Fact("Disk free", "${s.device.diskFreeMb / 1024} GB")
-            Fact("Termux", s.termux.version)
-            Fact("Boot restore", if (s.termux.bootInstalled) "installed" else "missing")
-            Fact("Node", s.tools.node)
-            Fact("Python", s.tools.python)
-            Fact("PM2", if (s.tools.pm2Installed) "installed" else "missing")
-            if (s.tools.openclaw.isNotBlank()) Fact("OpenClaw", s.tools.openclaw)
-            if (s.tools.hermes.isNotBlank()) Fact("Hermes", s.tools.hermes)
-            if (s.tools.n8n.isNotBlank()) Fact("n8n", s.tools.n8n)
-
-            Section("Services")
-            if (s.services.isEmpty()) {
-                Text("No PM2 services running.", style = MaterialTheme.typography.bodySmall)
-            } else {
-                s.services.forEach { sv ->
-                    Fact(sv.name, "${sv.status} · ${sv.memMb} MB · ${sv.restarts} restarts")
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TextButton(
-                            onClick = {
-                                failure = null
-                                Runner.send(
-                                    context,
-                                    listOf("--api", "run", "service.stop", "--arg", "service=${sv.name}"),
+            when (tab) {
+                Tab.TERMINAL -> {
+                    if (steps.isNotEmpty()) {
+                        Section("Last run")
+                        Panel {
+                            steps.forEach { s ->
+                                val mark =
+                                    when (s.state) {
+                                        "ok" -> "\u2714"
+                                        "failed" -> "\u2716"
+                                        "skipped" -> "\u2013"
+                                        else -> "\u2026"
+                                    }
+                                val took = if (s.ms >= 1000) "  (${s.ms / 1000}s)" else ""
+                                Text(
+                                    "$mark ${s.title}$took",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color =
+                                        if (s.state == "failed") {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
                                 )
-                            },
-                            enabled = !running,
-                        ) { Text("Stop", style = MaterialTheme.typography.bodySmall) }
-                        TextButton(
-                            onClick = {
-                                failure = null
-                                Runner.send(
-                                    context,
-                                    listOf("--api", "run", "service.restart", "--arg", "service=${sv.name}"),
-                                )
-                            },
-                            enabled = !running,
-                        ) { Text("Restart", style = MaterialTheme.typography.bodySmall) }
+                            }
+                        }
                     }
-                }
-            }
-        }
 
-        if (actions.isNotEmpty()) {
-            // Grouped by the spec's own category: 17 actions in one flat list is a wall,
-            // and the catalog already says which are agents, services, workflows, etc.
-            actions.groupBy { it.category }.toSortedMap().forEach { (category, list) ->
-                Section(category.replaceFirstChar { it.uppercase() })
-                list.sortedBy { it.title }.forEach { a ->
-                    Text(a.title, style = MaterialTheme.typography.titleSmall)
-                    Text(a.summary, style = MaterialTheme.typography.bodySmall)
-                    TextButton(
-                        onClick = {
-                            // Say it before doing it: a tool whose floor is above this
-                            // device's free memory will fail, and the user should hear
-                            // that from a dialog, not from an OOM-killed install.
-                            val short =
-                                snapshot?.let {
-                                    (a.minMemMb > 0 && it.device.memAvailableMb < a.minMemMb) ||
-                                        (a.minDiskMb > 0 && it.device.diskFreeMb < a.minDiskMb)
-                                } ?: false
+                    snapshot?.let { s ->
+                        Section("Device")
+                        Panel {
+                            Fact("Model", s.device.model)
+                            Fact("Android", "${s.device.android} · API ${s.device.api}")
+                            Fact("Arch", s.device.arch)
+                            Fact("Memory", "${s.device.memAvailableMb} MB free of ${s.device.memTotalMb} MB")
+                            Fact("Swap free", "${s.device.swapFreeMb} MB")
+                            Fact("Disk free", "${s.device.diskFreeMb / 1024} GB")
+                            Fact("Termux", s.termux.version)
+                            Fact("Boot restore", if (s.termux.bootInstalled) "installed" else "missing")
+                            Fact("Node", s.tools.node)
+                            Fact("Python", s.tools.python)
+                            Fact("PM2", if (s.tools.pm2Installed) "installed" else "missing")
+                            if (s.tools.openclaw.isNotBlank()) Fact("OpenClaw", s.tools.openclaw)
+                            if (s.tools.hermes.isNotBlank()) Fact("Hermes", s.tools.hermes)
+                            if (s.tools.n8n.isNotBlank()) Fact("n8n", s.tools.n8n)
+                        }
 
-                            when {
-                                a.destructive -> pending = a
-                                short -> capacity = a
-                                else -> {
-                                    failure = null
-                                    Runner.send(context, listOf("--api", "run", a.id))
+                        Section("Services")
+                        Panel {
+                            if (s.services.isEmpty()) {
+                                Text(
+                                    "No PM2 services running.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            s.services.forEach { sv ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        sv.name,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    StatusChip(sv.status == "online")
+                                }
+                                Text(
+                                    "${sv.memMb} MB · ${sv.restarts} restarts",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    TextButton(
+                                        onClick = {
+                                            failure = null
+                                            Runner.send(
+                                                context,
+                                                listOf(
+                                                    "--api",
+                                                    "run",
+                                                    "service.stop",
+                                                    "--arg",
+                                                    "service=${sv.name}",
+                                                ),
+                                            )
+                                        },
+                                        enabled = !running,
+                                    ) { Text("Stop", style = MaterialTheme.typography.labelLarge) }
+                                    TextButton(
+                                        onClick = {
+                                            failure = null
+                                            Runner.send(
+                                                context,
+                                                listOf(
+                                                    "--api",
+                                                    "run",
+                                                    "service.restart",
+                                                    "--arg",
+                                                    "service=${sv.name}",
+                                                ),
+                                            )
+                                        },
+                                        enabled = !running,
+                                    ) { Text("Restart", style = MaterialTheme.typography.labelLarge) }
                                 }
                             }
-                        },
-                        enabled = !running,
-                    ) {
-                        Text(
-                            if (a.destructive) "Remove…" else "Run",
-                            color =
-                                if (a.destructive) {
-                                    MaterialTheme.colorScheme.error
-                                } else {
-                                    MaterialTheme.colorScheme.primary
+                            Button(
+                                onClick = {
+                                    failure = null
+                                    Runner.send(context, listOf("--api", "run", "service.resurrect"))
                                 },
-                        )
+                                enabled = !running,
+                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                            ) { Text("Restart services") }
+                        }
+                    }
+
+                    if (actions.isNotEmpty()) {
+                        actions.groupBy { it.category }.toSortedMap().forEach { (category, list) ->
+                            Section(category.replaceFirstChar { it.uppercase() })
+                            Panel {
+                                list.sortedBy { it.title }.forEach { a ->
+                                    Text(a.title, style = MaterialTheme.typography.titleSmall)
+                                    Text(
+                                        a.summary,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    TextButton(
+                                        onClick = {
+                                            // Say it before doing it: a tool whose floor is
+                                            // above this device's free memory will fail.
+                                            val short =
+                                                snapshot?.let {
+                                                    (a.minMemMb > 0 && it.device.memAvailableMb < a.minMemMb) ||
+                                                        (a.minDiskMb > 0 && it.device.diskFreeMb < a.minDiskMb)
+                                                } ?: false
+
+                                            when {
+                                                a.destructive -> pending = a
+                                                short -> capacity = a
+                                                else -> {
+                                                    failure = null
+                                                    Runner.send(context, listOf("--api", "run", a.id))
+                                                }
+                                            }
+                                        },
+                                        enabled = !running,
+                                    ) {
+                                        Text(
+                                            if (a.destructive) "Remove…" else "Run",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color =
+                                                if (a.destructive) {
+                                                    MaterialTheme.colorScheme.error
+                                                } else {
+                                                    MaterialTheme.colorScheme.primary
+                                                },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Section("Security")
+                    Panel {
+                        if (foreign.isEmpty()) {
+                            Text(
+                                "Only this app holds the Termux command permission.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        } else {
+                            Text(
+                                "${foreign.size} other app(s) can also run commands in Termux:",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            foreign.forEach { pkg ->
+                                Text(
+                                    pkg,
+                                    fontFamily = FontFamily.Monospace,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            Text(
+                                "Revoke with:\n" + foreign.joinToString("\n") { Security.revokeCommand(it) },
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        TextButton(onClick = { foreign = Security.foreignHolders(context) }) {
+                            Text("Re-check", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+
+                    TextButton(onClick = { showRaw = !showRaw }) {
+                        Text(if (showRaw) "Hide raw output" else "Show raw output")
+                    }
+                    if (showRaw) {
+                        Panel {
+                            Text(
+                                raw.take(20000),
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                     }
                 }
+
+                Tab.METRICS ->
+                    Placeholder(
+                        "Metrics",
+                        "Memory and swap history, per-service allocation and process events.\n\n" +
+                            "Needs the sampler (one sample every five minutes), so this stays empty " +
+                            "until it has run for a while.",
+                    )
+
+                Tab.SETTINGS ->
+                    Placeholder(
+                        "Settings",
+                        "Startup and services, Termux safety, and cleanup.\n\n" +
+                            "The engine facts behind these (boot restore, wheel cache, legacy pnpm " +
+                            "project) are already reported by the status action.",
+                    )
             }
         }
+    }
 
-        // allow-external-apps is one global boolean; the permission grant is the
-        // only real boundary, so name every other holder rather than assume none.
-        Section("Security")
-        if (foreign.isEmpty()) {
-            Text(
-                "Only this app holds the Termux command permission.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        } else {
-            Text(
-                "${foreign.size} other app(s) can also run commands in Termux:",
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            foreign.forEach { pkg ->
-                Text(pkg, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-            }
-            Text(
-                "Revoke with:\n" + foreign.joinToString("\n") { Security.revokeCommand(it) },
-                fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        TextButton(onClick = { foreign = Security.foreignHolders(context) }) { Text("Re-check") }
-
-        capacity?.let { a ->
-            val snap = snapshot
-            AlertDialog(
-                onDismissRequest = { capacity = null },
-                title = { Text("This device may not fit ${a.title}") },
-                text = {
-                    Text(
+    capacity?.let { a ->
+        val snap = snapshot
+        AlertDialog(
+            onDismissRequest = { capacity = null },
+            title = { Text("This device may not fit ${a.title}") },
+            text = {
+                Text(
+                    (
+                        if (a.minMemMb > 0) {
+                            "${a.title} asks for ${a.minMemMb} MB free memory; this device has " +
+                                "${snap?.device?.memAvailableMb ?: 0} MB.\n\n"
+                        } else {
+                            ""
+                        }
+                    ) +
                         (
-                            if (a.minMemMb > 0) {
-                                "${a.title} asks for ${a.minMemMb} MB free memory; this device has " +
-                                    "${snap?.device?.memAvailableMb ?: 0} MB.\n\n"
+                            if (a.minDiskMb > 0) {
+                                "It asks for ${a.minDiskMb} MB free storage; this device has " +
+                                    "${snap?.device?.diskFreeMb ?: 0} MB.\n\n"
                             } else {
                                 ""
                             }
                         ) +
-                            (
-                                if (a.minDiskMb > 0) {
-                                    "It asks for ${a.minDiskMb} MB free storage; this device has " +
-                                        "${snap?.device?.diskFreeMb ?: 0} MB.\n\n"
-                                } else {
-                                    ""
-                                }
-                            ) +
-                            "Installing anyway usually ends with Android killing it part-way. " +
-                            "Close something and tap Refresh first, or continue at your own risk.",
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        capacity = null
-                        failure = null
-                        Runner.send(context, listOf("--api", "run", a.id))
-                    }) { Text("Install anyway") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { capacity = null }) { Text("Cancel") }
-                },
-            )
-        }
+                        "Installing anyway usually ends with Android killing it part-way. " +
+                        "Close something and tap Refresh first, or continue at your own risk.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    capacity = null
+                    failure = null
+                    Runner.send(context, listOf("--api", "run", a.id))
+                }) { Text("Install anyway") }
+            },
+            dismissButton = {
+                TextButton(onClick = { capacity = null }) { Text("Cancel") }
+            },
+        )
+    }
 
-        pending?.let { a ->
-            AlertDialog(
-                onDismissRequest = { pending = null },
-                title = { Text(a.title) },
-                text = { Text(a.summary + "\n\nThis cannot be undone.") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        pending = null
-                        failure = null
-                        // The engine refuses destructive specs without this flag.
-                        Runner.send(context, listOf("--api", "run", a.id, "--yes"))
-                    }) { Text("Confirm") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { pending = null }) { Text("Cancel") }
-                },
-            )
-        }
-
-        TextButton(onClick = { showRaw = !showRaw }) {
-            Text(if (showRaw) "Hide raw output" else "Show raw output")
-        }
-        if (showRaw) {
-            Text(
-                raw.take(20000),
-                fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
+    pending?.let { a ->
+        AlertDialog(
+            onDismissRequest = { pending = null },
+            title = { Text(a.title) },
+            text = { Text(a.summary + "\n\nThis cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pending = null
+                    failure = null
+                    // The engine refuses destructive specs without this flag.
+                    Runner.send(context, listOf("--api", "run", a.id, "--yes"))
+                }) { Text("Confirm") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pending = null }) { Text("Cancel") }
+            },
+        )
     }
 }
