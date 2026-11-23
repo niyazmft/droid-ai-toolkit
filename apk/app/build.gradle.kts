@@ -16,6 +16,22 @@ android {
     }
 
     buildFeatures { compose = true }
+
+    buildTypes {
+        release {
+            // The "lightweight" claim has to survive a real build: R8 shrinks the Compose
+            // runtime and keeps only the handful of icons actually referenced.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            // Signed with the debug key so the release build can be installed and smoke
+            // tested on the device. Replace before any real distribution.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 
     compileOptions {
