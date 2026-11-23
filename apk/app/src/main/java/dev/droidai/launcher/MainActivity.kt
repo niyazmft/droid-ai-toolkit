@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -219,7 +220,7 @@ private fun Fact(
 
 /** A rounded surface for one group of related rows. */
 @Composable
-private fun Panel(content: @Composable ColumnScope.() -> Unit) {
+internal fun Panel(content: @Composable ColumnScope.() -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         colors =
@@ -282,6 +283,7 @@ private fun Home() {
     var capacity by remember { mutableStateOf<Protocol.Action?>(null) }
     var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
     var tab by remember { mutableStateOf(Tab.TERMINAL) }
+    var showRawScreen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         Runner.send(context, listOf("--api", "status"))
@@ -344,6 +346,12 @@ private fun Home() {
             }
         },
     ) { pad ->
+        if (showRawScreen) {
+            Box(Modifier.padding(pad)) {
+                RawOutputScreen(raw = raw, onBack = { showRawScreen = false })
+            }
+            return@Scaffold
+        }
         Column(
             Modifier
                 .padding(pad)
@@ -577,17 +585,8 @@ private fun Home() {
                         }
                     }
 
-                    TextButton(onClick = { showRaw = !showRaw }) {
-                        Text(if (showRaw) "Hide raw output" else "Show raw output")
-                    }
-                    if (showRaw) {
-                        Panel {
-                            Text(
-                                raw.take(20000),
-                                fontFamily = FontFamily.Monospace,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
+                    TextButton(onClick = { showRawScreen = true }) {
+                        Text("Show raw output")
                     }
                 }
 
