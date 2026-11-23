@@ -518,63 +518,6 @@ private fun Home() {
                         }
                     }
 
-                    if (actions.isNotEmpty()) {
-                        actions.groupBy { it.category }.toSortedMap().forEach { (category, list) ->
-                            Section(category.replaceFirstChar { it.uppercase() })
-                            Panel {
-                                list.sortedBy { it.title }.forEach { a ->
-                                    Text(a.title, style = MaterialTheme.typography.titleSmall)
-                                    Text(
-                                        a.summary,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    TextButton(
-                                        onClick = {
-                                            // Say it before doing it: a tool whose floor is
-                                            // above this device's free memory will fail.
-                                            val short =
-                                                snapshot?.let {
-                                                    (a.minMemMb > 0 && it.device.memAvailableMb < a.minMemMb) ||
-                                                        (a.minDiskMb > 0 && it.device.diskFreeMb < a.minDiskMb)
-                                                } ?: false
-
-                                            when {
-                                                a.destructive && confirmRemove -> pending = a
-                                                a.destructive -> {
-                                                    // Confirmation is off in Settings: skip the
-                                                    // dialog, but the engine still requires --yes.
-                                                    failure = null
-                                                    Runner.send(
-                                                        context,
-                                                        listOf("--api", "run", a.id, "--yes"),
-                                                    )
-                                                }
-                                                short -> capacity = a
-                                                else -> {
-                                                    failure = null
-                                                    Runner.send(context, listOf("--api", "run", a.id))
-                                                }
-                                            }
-                                        },
-                                        enabled = !running,
-                                    ) {
-                                        Text(
-                                            if (a.destructive) "Remove…" else "Run",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            color =
-                                                if (a.destructive) {
-                                                    MaterialTheme.colorScheme.error
-                                                } else {
-                                                    MaterialTheme.colorScheme.primary
-                                                },
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
                     Section("Security")
                     Panel {
                         if (foreign.isEmpty()) {
