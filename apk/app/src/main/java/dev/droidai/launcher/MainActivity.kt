@@ -191,6 +191,7 @@ private fun Home() {
     var raw by remember { mutableStateOf("") }
     var steps by remember { mutableStateOf<List<Protocol.Step>>(emptyList()) }
     var pending by remember { mutableStateOf<Protocol.Action?>(null) }
+    var capacity by remember { mutableStateOf<Protocol.Action?>(null) }
     var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
 
     LaunchedEffect(Unit) {
@@ -333,11 +334,21 @@ private fun Home() {
                     Text(a.summary, style = MaterialTheme.typography.bodySmall)
                     TextButton(
                         onClick = {
-                            if (a.destructive) {
-                                pending = a
-                            } else {
-                                failure = null
-                                Runner.send(context, listOf("--api", "run", a.id))
+                            // Say it before doing it: a tool whose floor is above this
+                            // device's free memory will fail, and the user should hear
+                            // that from a dialog, not from an OOM-killed install.
+                            val short = snapshot?.let {
+                                (a.minMemMb > 0 && it.device.memAvailableMb < a.minMemMb) ||
+                                    (a.minDiskMb > 0 && it.device.diskFreeMb < a.minDiskMb)
+                            } ?: false
+
+                            when {
+                                a.destructive -> pending = a
+                                short -> capacity = a
+                                else -> {
+                                    failure = null
+                                    Runner.send(context, listOf("--api", "run", a.id))
+                                }
                             }
                         },
                         enabled = !running
@@ -376,6 +387,36 @@ private fun Home() {
             )
         }
         TextButton(onClick = { foreign = Security.foreignHolders(context) }) { Text("Re-check") }
+
+        capacity?.let { a ->
+            val snap = snapshot
+            AlertDialog(
+                onDismissRequest = { capacity = null },
+                title = { Text("This device may not fit ${a.title}") },
+                text = {
+                    Text(
+                        (if (a.minMemMb > 0)
+                            "${a.title} asks for ${a.minMemMb} MB free memory; this device has " +
+                                "${snap?.device?.memAvailableMb ?: 0} MB.\n\n" else "") +
+                            (if (a.minDiskMb > 0)
+                                "It asks for ${a.minDiskMb} MB free storage; this device has " +
+                                    "${snap?.device?.diskFreeMb ?: 0} MB.\n\n" else "") +
+                            "Installing anyway usually ends with Android killing it part-way. " +
+                            "Close something and tap Refresh first, or continue at your own risk."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        capacity = null
+                        failure = null
+                        Runner.send(context, listOf("--api", "run", a.id))
+                    }) { Text("Install anyway") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { capacity = null }) { Text("Cancel") }
+                }
+            )
+        }
 
         pending?.let { a ->
             AlertDialog(

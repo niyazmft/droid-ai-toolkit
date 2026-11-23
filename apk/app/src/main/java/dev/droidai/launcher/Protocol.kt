@@ -56,7 +56,9 @@ object Protocol {
         val title: String,
         val summary: String,
         val category: String,
-        val destructive: Boolean
+        val destructive: Boolean,
+        val minMemMb: Int,
+        val minDiskMb: Int
     )
 
     /** Every JSON line in the stream, in order. Non-JSON lines are dropped. */
@@ -132,7 +134,9 @@ object Protocol {
                 title = a.optString("title"),
                 summary = a.optString("summary"),
                 category = a.optString("category"),
-                destructive = a.optBoolean("destructive")
+                destructive = a.optBoolean("destructive"),
+                minMemMb = a.optJSONObject("requires")?.optInt("min_mem_mb") ?: 0,
+                minDiskMb = a.optJSONObject("requires")?.optInt("min_disk_mb") ?: 0
             )
         }
     }
