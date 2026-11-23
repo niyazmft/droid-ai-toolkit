@@ -42,6 +42,7 @@ class SupervisorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Prefs.init(this)
         createChannel()
         startForeground(NOTIFICATION_ID, notification("Starting…", "watching the toolkit"))
     }
@@ -86,6 +87,14 @@ class SupervisorService : Service() {
             }
             val running = snapshot.services.count { it.status == "online" }
             val mem = snapshot.services.sumOf { it.memMb }
+
+            if (running == 0 && !Prefs.autoStartGateway.value) {
+                update(
+                    "No services online (auto-start is off)",
+                    "turn it on in Settings to let the supervisor restart the gateway",
+                )
+                return
+            }
 
             if (running == 0) {
                 // Observe-only is not enough: Termux is alive (the probe answered) but

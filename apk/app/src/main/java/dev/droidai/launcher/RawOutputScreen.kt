@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun RawOutputScreen(
     raw: String,
+    retained: Boolean = true,
     onBack: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
@@ -78,7 +79,13 @@ fun RawOutputScreen(
             }
         }
 
-        if (raw.isBlank()) {
+        if (!retained) {
+            Text(
+                "Raw output retention is off (Settings → Termux & Safety).",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else if (raw.isBlank()) {
             Text(
                 "Nothing captured yet. Run an action and its output appears here.",
                 style = MaterialTheme.typography.bodyMedium,

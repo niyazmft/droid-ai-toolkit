@@ -61,6 +61,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Prefs.init(this)
         Gate.refresh(this)
         setContent {
             DroidTheme {
@@ -183,7 +184,7 @@ private fun Setup(
 }
 
 @Composable
-private fun Section(title: String) {
+internal fun Section(title: String) {
     Text(
         title,
         style = MaterialTheme.typography.titleMedium,
@@ -192,7 +193,7 @@ private fun Section(title: String) {
 }
 
 @Composable
-private fun Fact(
+internal fun Fact(
     label: String,
     value: String,
 ) {
@@ -284,6 +285,8 @@ private fun Home() {
     var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
     var tab by remember { mutableStateOf(Tab.TERMINAL) }
     var showRawScreen by remember { mutableStateOf(false) }
+    val confirmRemove by Prefs.confirmRemove.collectAsState()
+    val retainRaw by Prefs.retainRaw.collectAsState()
 
     LaunchedEffect(Unit) {
         Runner.send(context, listOf("--api", "status"))
@@ -348,7 +351,11 @@ private fun Home() {
     ) { pad ->
         if (showRawScreen) {
             Box(Modifier.padding(pad)) {
-                RawOutputScreen(raw = raw, onBack = { showRawScreen = false })
+                RawOutputScreen(
+                    raw = if (retainRaw) raw else "",
+                    retained = retainRaw,
+                    onBack = { showRawScreen = false },
+                )
             }
             return@Scaffold
         }
@@ -528,7 +535,16 @@ private fun Home() {
                                                 } ?: false
 
                                             when {
-                                                a.destructive -> pending = a
+                                                a.destructive && confirmRemove -> pending = a
+                                                a.destructive -> {
+                                                    // Confirmation is off in Settings: skip the
+                                                    // dialog, but the engine still requires --yes.
+                                                    failure = null
+                                                    Runner.send(
+                                                        context,
+                                                        listOf("--api", "run", a.id, "--yes"),
+                                                    )
+                                                }
                                                 short -> capacity = a
                                                 else -> {
                                                     failure = null
@@ -599,11 +615,22 @@ private fun Home() {
                     )
 
                 Tab.SETTINGS ->
-                    Placeholder(
-                        "Settings",
-                        "Startup and services, Termux safety, and cleanup.\n\n" +
-                            "The engine facts behind these (boot restore, wheel cache, legacy pnpm " +
-                            "project) are already reported by the status action.",
+                    SettingsScreen(
+                        snapshot = snapshot,
+                        running = running,
+                        onRefresh = {
+                            failure = null
+                            Runner.send(context, listOf("--api", "status"))
+                        },
+                        onRecheckPermission = {
+                            Gate.refresh(context)
+                            Gate.probeOk.value = null
+                            Termux.probe(context)
+                        },
+                        onRunAction = { id ->
+                            failure = null
+                            Runner.send(context, listOf("--api", "run", id, "--yes"))
+                        },
                     )
             }
         }
