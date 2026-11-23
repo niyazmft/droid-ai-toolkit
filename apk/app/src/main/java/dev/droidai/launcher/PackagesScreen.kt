@@ -1,31 +1,31 @@
 package dev.droidai.launcher
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,9 +35,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -199,6 +201,7 @@ private fun actionLabel(
         else -> "Install"
     }
 
+
 @Composable
 fun PackagesScreen(
     snapshot: Protocol.Snapshot?,
@@ -237,70 +240,151 @@ fun PackagesScreen(
     val availableExpanded = availableOpen ?: (installed.isEmpty() && attention.isEmpty())
 
     Column(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Packages", style = MaterialTheme.typography.headlineMedium)
-        Text(
-            "${all.count { it.installed }} of ${all.size} installed",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+            Text("Packages", style = MaterialTheme.typography.headlineMedium)
+            Spacer(Modifier.weight(1f))
+            Text(
+                "${all.count { it.installed }} of ${all.size} installed",
+                style = UiType.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // Sits on the title's baseline rather than on the row's box.
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+        }
 
-        // 40 dp, not 56: the old field was a Material text field whose placeholder wrapped
-        // onto a second line, so a single-purpose search box occupied as much room as a
-        // tool card. BasicTextField inside a pill keeps it to one line of chrome.
         SearchField(query) { query = it }
 
         if (matching.isEmpty()) {
+            // Only an actual search says "nothing matches". With no query and no catalog
+            // yet, the honest line is that the list is still being read.
             Text(
-                "No tool matches \"$query\".",
-                style = MaterialTheme.typography.bodyMedium,
+                if (query.isBlank()) "Reading the tool list…" else "Nothing matches \"$query\"",
+                style = UiType.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
         if (attention.isNotEmpty()) {
-            SectionHeader("Needs attention", attention.size, attentionExpanded) {
+            GroupSection("Needs attention", attention, attentionExpanded, running, onRun) {
                 attentionOpen = !attentionExpanded
-            }
-            if (attentionExpanded) {
-                attention.forEach { ToolCard(it, running, onRun) }
             }
         }
 
         if (installed.isNotEmpty()) {
-            SectionHeader("Installed", installed.size, installedExpanded) {
+            GroupSection("Installed", installed, installedExpanded, running, onRun) {
                 installedOpen = !installedExpanded
-            }
-            if (installedExpanded) {
-                installed.forEach { ToolCard(it, running, onRun) }
             }
         }
 
         if (available.isNotEmpty()) {
-            SectionHeader("Not installed", available.size, availableExpanded) {
+            GroupSection("Not installed", available, availableExpanded, running, onRun) {
                 availableOpen = !availableExpanded
-            }
-            if (availableExpanded) {
-                available.forEach { ToolCard(it, running, onRun) }
             }
         }
     }
 }
 
+/**
+ * Label, then one card holding every row in the group.
+ *
+ * The group is the card, not each row: that is what keeps "Installed" and "Not installed"
+ * as two objects on the page instead of a flat list, and it is where the 16 dp radius
+ * does its work.
+ */
+@Composable
+private fun GroupSection(
+    title: String,
+    rows: List<ToolRow>,
+    expanded: Boolean,
+    running: Boolean,
+    onRun: (Protocol.Action) -> Unit,
+    onToggle: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        GroupHeader(title, rows.size, expanded, onToggle)
+        if (expanded) {
+            UiCard(contentPadding = PaddingValues(0.dp), spacing = 0.dp) {
+                rows.forEachIndexed { index, row ->
+                    if (index > 0) {
+                        UiDivider(Modifier.padding(horizontal = 16.dp))
+                    }
+                    ToolRow(row, running, onRun)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A collapsible group label.
+ *
+ * `stateDescription` is what makes this usable without sight: a screen reader announces
+ * "Installed, 3 tools, collapsed, button" instead of three unlabelled words.
+ */
+@Composable
+private fun GroupHeader(
+    title: String,
+    count: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 40.dp)
+            .clickable(
+                onClickLabel = if (expanded) "Collapse" else "Expand",
+                role = Role.Button,
+                onClick = onToggle,
+            )
+            .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            style = UiType.subtle,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "$count",
+            style = UiType.meta,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.weight(1f))
+        val rotation by animateFloatAsState(if (expanded) 0f else -90f, label = "chevron")
+        Icon(
+            Icons.Filled.KeyboardArrowDown,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp).rotate(rotation),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Search.
+ *
+ * A pill, because that is the shape this vocabulary uses for anything you touch. The
+ * placeholder and the field share one fixed-height box, so the two lines cannot drift
+ * apart — the previous design's prompt sat high because only the field was padded.
+ */
 @Composable
 private fun SearchField(
     query: String,
     onChange: (String) -> Unit,
 ) {
     Surface(
-        shape = RoundedCornerShape(50),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp),
+        modifier = Modifier.fillMaxWidth().height(52.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shape = CircleShape,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Row(
-            Modifier.padding(horizontal = 12.dp),
+            Modifier.fillMaxWidth().height(52.dp).padding(start = 16.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
@@ -309,12 +393,16 @@ private fun SearchField(
                 modifier = Modifier.size(18.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Box(Modifier.weight(1f).padding(horizontal = 8.dp)) {
+            Box(
+                Modifier.weight(1f).height(52.dp).padding(start = 10.dp, end = 8.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
                 if (query.isEmpty()) {
                     Text(
                         "Search tools",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
                     )
                 }
                 BasicTextField(
@@ -325,20 +413,28 @@ private fun SearchField(
                         MaterialTheme.typography.bodyMedium.copy(
                             color = MaterialTheme.colorScheme.onSurface,
                         ),
+                    // The one place the accent appears in an input: the caret.
+                    cursorBrush = SolidColor(Skin.palette.accent),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     modifier =
                         Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 10.dp)
                             .semantics { stateDescription = "Search tools" },
                 )
             }
             if (query.isNotEmpty()) {
-                IconButton(onClick = { onChange("") }, modifier = Modifier.size(32.dp)) {
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .clickable(onClickLabel = "Clear search") { onChange("") }
+                        .semantics { role = Role.Button },
+                    contentAlignment = Alignment.Center,
+                ) {
                     Icon(
                         Icons.Filled.Clear,
                         contentDescription = "Clear search",
                         modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -347,132 +443,55 @@ private fun SearchField(
 }
 
 /**
- * A collapsible group header.
+ * One tool inside the group card.
  *
- * `stateDescription` is what makes this usable without sight: a screen reader announces
- * "Installed, 4 tools, collapsed, button" instead of four unlabelled words.
+ * Order is what a person scanning the list needs: name, then state on the line beneath it
+ * ("Installed · v2026.9.8", or the reason it needs attention), then what the tool is, then
+ * the one action. State is a dot and a word — not a chip — so a list of six installed tools
+ * stays quiet and the single broken one is the only red thing on the screen.
  */
 @Composable
-private fun SectionHeader(
-    title: String,
-    count: Int,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .clickable(onClickLabel = if (expanded) "Collapse" else "Expand", onClick = onToggle)
-            .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }
-            .padding(top = 12.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            "$count",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        // Material 3 expand affordance: the standard 24 dp chevron, rotating rather than
-        // swapping glyphs. The previous "\u25BE"/"\u25B8" text characters rendered at
-        // label size and read as punctuation, not as a control.
-        val rotation by animateFloatAsState(if (expanded) 0f else -90f, label = "chevron")
-        Icon(
-            Icons.Filled.KeyboardArrowDown,
-            contentDescription = null,
-            modifier = Modifier.padding(start = 4.dp).rotate(rotation),
-        )
-    }
-}
-
-@Composable
-private fun ToolCard(
+private fun ToolRow(
     row: ToolRow,
     running: Boolean,
     onRun: (Protocol.Action) -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors =
-            CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-            ),
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(row.title, style = MaterialTheme.typography.titleSmall)
-                    // A version when the engine gave us one. Never a made-up path: "tools/pi"
-                    // described our directory layout, which the user has no reason to know.
-                    if (row.version.isNotBlank()) {
-                        Text(
-                            row.version,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                when (row.group) {
-                    Group.ATTENTION -> StatusChip(online = false, label = "Needs attention")
-                    Group.INSTALLED -> StatusChip(online = true, label = "Installed")
-                    Group.AVAILABLE -> StatusChip(online = false, label = "Not installed", neutral = true)
-                }
-            }
+        Text(row.title, style = MaterialTheme.typography.titleMedium)
 
-            row.issue?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.error,
+        when (row.group) {
+            Group.ATTENTION -> UiState(row.issue.orEmpty(), StateTone.ATTENTION)
+            Group.INSTALLED ->
+                UiState(
+                    if (row.version.isNotBlank()) "Installed · v${row.version}" else "Installed",
+                    StateTone.OK,
                 )
-            }
+            Group.AVAILABLE -> UiState("Not installed", StateTone.PLAIN)
+        }
 
-            Text(
-                row.blurb,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
+        Text(
+            row.blurb,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
 
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                row.actions.forEach { action ->
-                    if (action.destructive) {
-                        TextButton(
-                            onClick = { onRun(action) },
-                            enabled = !running,
-                            modifier = Modifier.heightIn(min = 48.dp),
-                        ) {
-                            Text(
-                                actionLabel(action, row.installed),
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                        }
-                    } else {
-                        Button(
-                            onClick = { onRun(action) },
-                            enabled = !running,
-                            modifier = Modifier.heightIn(min = 48.dp),
-                        ) {
-                            Text(
-                                actionLabel(action, row.installed),
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                        }
-                    }
-                }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            row.actions.forEach { action ->
+                UiPill(
+                    label = actionLabel(action, row.installed),
+                    onClick = { onRun(action) },
+                    enabled = !running,
+                    ghost = action.destructive,
+                )
             }
         }
     }

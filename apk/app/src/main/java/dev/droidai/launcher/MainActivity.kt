@@ -6,19 +6,29 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.List
@@ -26,16 +36,11 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -45,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,15 +62,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
@@ -78,14 +88,34 @@ class MainActivity : ComponentActivity() {
     private var recheckOnResume = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Edge-to-edge: the design draws its own header rule against the status bar rather
+        // than leaving a grey system strip above a page that is not grey.
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         Prefs.init(this)
         Runner.attach(this)
         Gate.refresh(this)
         setContent {
-            DroidTheme {
-                Surface(Modifier.fillMaxSize()) { Root() }
+            val mode by Prefs.themeMode.collectAsState()
+            val dark =
+                when (mode) {
+                    Prefs.THEME_LIGHT -> false
+                    Prefs.THEME_DARK -> true
+                    else -> isSystemInDarkTheme()
+                }
+            DroidTheme(darkTheme = dark) {
+                // The bars are transparent now, so their icon colour is our decision, not
+                // the system's: over a graphite page they must go light, over paper dark.
+                SideEffect { applyBarAppearance(dark) }
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { Root() }
             }
+        }
+    }
+
+    private fun applyBarAppearance(dark: Boolean) {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !dark
+            isAppearanceLightNavigationBars = !dark
         }
     }
 
@@ -325,31 +355,29 @@ private fun Setup(
         Text(body, style = MaterialTheme.typography.bodyMedium)
 
         code?.let {
-            Panel {
-                Text(
-                    it,
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                UiCodeBlock(it)
                 TextButton(
                     onClick = {
                         clipboard.setText(AnnotatedString(it))
                         copied = true
                     },
-                    modifier = Modifier.heightIn(min = 48.dp),
+                    modifier = Modifier.heightIn(min = 44.dp),
                 ) { Text(if (copied) "Copied" else "Copy the line") }
             }
         }
 
         Button(
             onClick = primary.second,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-        ) { Text(primary.first) }
+            shape = androidx.compose.foundation.shape.CircleShape,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+        ) { Text(primary.first, style = UiType.pill) }
 
         OutlinedButton(
             onClick = secondary.second,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-        ) { Text(secondary.first) }
+            shape = androidx.compose.foundation.shape.CircleShape,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+        ) { Text(secondary.first, style = UiType.pill) }
 
         note?.let {
             Text(
@@ -365,13 +393,7 @@ private fun Setup(
                 modifier = Modifier.heightIn(min = 48.dp),
             ) { Text(if (showDetail) "Hide technical details" else "Show technical details") }
             if (showDetail) {
-                Panel {
-                    Text(
-                        detail,
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
+                UiCodeBlock(detail)
             }
         }
     }
@@ -381,8 +403,9 @@ private fun Setup(
 internal fun Section(title: String) {
     Text(
         title,
-        style = MaterialTheme.typography.titleMedium,
-        modifier = Modifier.padding(top = 12.dp, bottom = 2.dp),
+        style = UiType.subtle,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
     )
 }
 
@@ -396,7 +419,7 @@ internal fun Fact(
         Text(
             label,
             style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(0.9f),
             // Two lines, not one: at the default font size "Command permission" was
             // rendered as "Command perm…" and the device line lost its Android version.
             maxLines = 2,
@@ -404,31 +427,26 @@ internal fun Fact(
         )
         Text(
             value,
-            style = MaterialTheme.typography.bodySmall,
+            // Tabular figures keep versions and sizes in a column, which is what
+            // monospace used to be doing here.
+            style =
+                MaterialTheme.typography.bodySmall.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontFeatureSettings = "tnum",
+                ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1.4f),
+            modifier = Modifier.weight(1.7f),
             textAlign = TextAlign.End,
         )
     }
 }
 
-/** A rounded surface for one group of related rows. */
+/** A bordered group of related rows. */
 @Composable
 internal fun Panel(content: @Composable ColumnScope.() -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        colors =
-            CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-            ),
-    ) {
-        Column(
-            Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-            content = content,
-        )
-    }
+    UiCard(spacing = 6.dp, content = content)
 }
 
 /**
@@ -441,25 +459,15 @@ internal fun StatusChip(
     label: String? = null,
     neutral: Boolean = false,
 ) {
-    val bg =
-        when {
-            neutral -> MaterialTheme.colorScheme.surfaceVariant
-            online -> Tokens.SuccessContainer
-            else -> MaterialTheme.colorScheme.errorContainer
-        }
-    val fg =
-        when {
-            neutral -> MaterialTheme.colorScheme.onSurfaceVariant
-            online -> Tokens.OnSuccessContainer
-            else -> MaterialTheme.colorScheme.onErrorContainer
-        }
-    Surface(color = bg, contentColor = fg, shape = RoundedCornerShape(50)) {
-        Text(
-            label ?: if (online) "running" else "stopped",
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-        )
-    }
+    UiState(
+        text = label ?: if (online) "Running" else "Stopped",
+        tone =
+            when {
+                neutral -> StateTone.PLAIN
+                online -> StateTone.OK
+                else -> StateTone.ATTENTION
+            },
+    )
 }
 
 private enum class Tab(
@@ -471,14 +479,127 @@ private enum class Tab(
     SETTINGS("Settings"),
 }
 
-/** How old the visible answer is. Nothing here is live, so it has to say so. */
-private fun ageLabel(ageMs: Long): String =
+/**
+ * How old the visible answer is, in the shortest form that is not vague.
+ *
+ * It shares the header line with the model and arch — "JSN-L22 · aarch64 · 2m ago" — so it
+ * has to be a couple of tokens. The old "checked 2 min ago" was an entire line of prose in
+ * a place where every pixel is chrome.
+ */
+private fun ageShort(ageMs: Long): String =
     when {
-        ageMs < 60_000L -> "checked just now"
-        ageMs < 3_600_000L -> "checked ${ageMs / 60_000L} min ago"
-        ageMs < 86_400_000L -> "checked ${ageMs / 3_600_000L} h ago"
-        else -> "checked ${ageMs / 86_400_000L} d ago"
+        ageMs < 60_000L -> "just now"
+        ageMs < 3_600_000L -> "${ageMs / 60_000L}m ago"
+        ageMs < 86_400_000L -> "${ageMs / 3_600_000L}h ago"
+        else -> "${ageMs / 86_400_000L}d ago"
     }
+
+/**
+ * The wordmark and the one always-available action.
+ *
+ * Fixed above the scroller rather than inside it: Refresh used to scroll away, which on a
+ * phone with nothing installed meant the only control you wanted was off-screen. The
+ * amber block is the identity mark — the same amber that means "this is the action"
+ * everywhere else, so nothing here is decoration for its own sake.
+ */
+@Composable
+private fun AppHeader(
+    detail: String,
+    age: String?,
+    onRefresh: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 12.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Droid AI", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                listOfNotNull(detail, age).joinToString(" · "),
+                style = UiType.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onRefresh, modifier = Modifier.size(44.dp)) {
+            Icon(
+                Icons.Filled.Refresh,
+                contentDescription = "Refresh",
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * The tab bar.
+ *
+ * A hand-drawn bar instead of Material's NavigationBar, because NavigationBar's identity
+ * *is* the pill indicator — the one shape that made this app look like every other
+ * Android app. Here the selected tab gets a 2 dp amber rule above the icon, which is how
+ * a terminal marks the current tab, and the label is uppercase mono so the bar reads as a
+ * row of commands rather than a row of app sections.
+ */
+@Composable
+private fun SoftTabBar(
+    current: Tab,
+    onSelect: (Tab) -> Unit,
+) {
+    val p = Skin.palette
+    val dim = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).navigationBarsPadding()) {
+        Row(
+            Modifier.fillMaxWidth().height(62.dp).padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Tab.values().forEach { t ->
+                val selected = t == current
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        // selectable, not clickable: TalkBack needs role=Tab and the
+                        // selected state, which a bare clickable does not report.
+                        .selectable(selected = selected, role = Role.Tab) { onSelect(t) },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    // The pill behind the icon is the only place the accent is used in
+                    // chrome. It says "you are here" without a border under the bar.
+                    Box(
+                        Modifier
+                            .size(width = 54.dp, height = 30.dp)
+                            .background(if (selected) p.accentSoft else Color.Transparent, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            when (t) {
+                                Tab.OVERVIEW -> Icons.Filled.List
+                                Tab.PACKAGES -> PackageIcon
+                                Tab.METRICS -> MetricsIcon
+                                Tab.SETTINGS -> Icons.Filled.Settings
+                            },
+                            // The label names the tab; a description here made TalkBack
+                            // say "Overview, Overview".
+                            contentDescription = null,
+                            modifier = Modifier.size(19.dp),
+                            tint = if (selected) p.accent else dim,
+                        )
+                    }
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        t.label,
+                        style = UiType.tab,
+                        color = if (selected) p.accent else dim,
+                    )
+                }
+            }
+        }
+    }
+}
 
 /** Don't re-read on every resume; a minute is enough to be useful without becoming a timer. */
 private const val RESUME_REFRESH_MS = 60_000L
@@ -660,54 +781,7 @@ private fun Home() {
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
-        bottomBar = {
-            NavigationBar {
-                Tab.values().forEach { t ->
-                    NavigationBarItem(
-                        selected = tab == t,
-                        onClick = { tabName = t.name },
-                        icon = {
-                            Icon(
-                                when (t) {
-                                    Tab.OVERVIEW -> Icons.Filled.List
-                                    Tab.PACKAGES -> PackageIcon
-                                    Tab.METRICS -> MetricsIcon
-                                    Tab.SETTINGS -> Icons.Filled.Settings
-                                },
-                                // The label below already names the tab; a description
-                                // here made TalkBack say "Overview, Overview".
-                                contentDescription = null,
-                            )
-                        },
-                        label = {
-                            Text(
-                                t.label,
-                                fontWeight =
-                                    if (tab ==
-                                        t
-                                    ) {
-                                        FontWeight.SemiBold
-                                    } else {
-                                        FontWeight.Normal
-                                    },
-                            )
-                        },
-                        colors =
-                            NavigationBarItemDefaults.colors(
-                                // The selected tab used to be a pale tint on a pale bar, which
-                                // is why "where am I" was unclear. A solid indicator with a
-                                // contrasting icon is unambiguous, and it does not rely on
-                                // colour alone because the label also goes semibold.
-                                selectedIconColor = MaterialTheme.colorScheme.onPrimary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primary,
-                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            ),
-                    )
-                }
-            }
-        },
+        bottomBar = { SoftTabBar(tab) { tabName = it.name } },
     ) { pad ->
         if (showRawScreen) {
             Box(Modifier.padding(pad)) {
@@ -719,38 +793,23 @@ private fun Home() {
             }
             return@Scaffold
         }
-        Column(
-            Modifier
-                .padding(pad)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Droid AI", style = MaterialTheme.typography.headlineMedium)
-                    Text(
-                        snapshot?.let { "${it.device.model} · ${it.device.arch}" } ?: "Termux is ready.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (snapshot != null && checkedAt > 0L) {
-                        Text(
-                            ageLabel(nowTick - checkedAt),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                IconButton(
-                    onClick = {
-                        dispatch(listOf("--api", "status"), "Read device status")
-                    },
-                ) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh") }
-            }
+        Column(Modifier.padding(pad).fillMaxSize()) {
+            AppHeader(
+                detail =
+                    snapshot?.let { "${it.device.model} · ${it.device.arch}" }
+                        ?: "Termux is ready.",
+                age = if (snapshot != null && checkedAt > 0L) ageShort(nowTick - checkedAt) else null,
+                onRefresh = { dispatch(listOf("--api", "status"), "Read device status") },
+            )
 
-            if (running) {
+            Column(
+                Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (running) {
                 WorkingBanner(label = runLabel, elapsedSeconds = elapsed)
             }
 
@@ -836,18 +895,22 @@ private fun Home() {
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    TextButton(
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)) {
+                                    UiPill(
+                                        label = "Stop",
+                                        enabled = !running,
+                                        ghost = true,
                                         onClick = {
                                             dispatch(
                                                 listOf("--api", "run", "service.stop", "--arg", "service=${sv.name}"),
                                                 "Stopping ${sv.name}",
                                             )
                                         },
+                                    )
+                                    UiPill(
+                                        label = "Restart",
                                         enabled = !running,
-                                        modifier = Modifier.heightIn(min = 48.dp),
-                                    ) { Text("Stop", style = MaterialTheme.typography.labelLarge) }
-                                    TextButton(
+                                        ghost = true,
                                         onClick = {
                                             dispatch(
                                                 listOf(
@@ -860,18 +923,16 @@ private fun Home() {
                                                 "Restarting ${sv.name}",
                                             )
                                         },
-                                        enabled = !running,
-                                        modifier = Modifier.heightIn(min = 48.dp),
-                                    ) { Text("Restart", style = MaterialTheme.typography.labelLarge) }
+                                    )
                                 }
                             }
-                            Button(
+                            UiPill(
+                                label = "Restart services",
+                                enabled = !running,
                                 onClick = {
                                     dispatch(listOf("--api", "run", "service.resurrect"), "Restarting services")
                                 },
-                                enabled = !running,
-                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp).heightIn(min = 48.dp),
-                            ) { Text("Restart services") }
+                            )
                         }
                     }
 
@@ -888,35 +949,26 @@ private fun Home() {
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.bodySmall,
                             )
-                            foreign.forEach { pkg ->
-                                Text(
-                                    pkg,
-                                    fontFamily = FontFamily.Monospace,
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
+                            UiCodeBlock(foreign.joinToString("\n"))
                             // The adb command is the remedy for an advanced user; it is not
                             // the message. A non-technical reader needs the plain sentence:
                             // if you did not install these, remove them.
                             Text(
                                 "If you did not install one of these, uninstall it from Android " +
-                                    "Settings → Apps. Technical: revoke with\n" +
-                                    foreign.joinToString("\n") { Security.revokeCommand(it) },
-                                fontFamily = FontFamily.Monospace,
-                                style = MaterialTheme.typography.labelSmall,
+                                    "Settings → Apps.",
+                                style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            UiCodeBlock(foreign.joinToString("\n") { Security.revokeCommand(it) })
                         }
-                        TextButton(
+                        UiPill(
+                            label = "Check again",
+                            ghost = true,
                             onClick = { foreign = Security.foreignHolders(context) },
-                            modifier = Modifier.heightIn(min = 48.dp),
-                        ) { Text("Check again", style = MaterialTheme.typography.labelLarge) }
+                        )
                     }
 
-                    TextButton(
-                        onClick = { showRawScreen = true },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    ) { Text("Show raw output") }
+                    UiPill(label = "Show raw output", ghost = true, onClick = { showRawScreen = true })
                 }
 
                 Tab.PACKAGES ->
@@ -959,6 +1011,7 @@ private fun Home() {
                             dispatch(listOf("--api", "run", id, "--yes"), "Removing the old pnpm project")
                         },
                     )
+            }
             }
         }
     }
@@ -1035,22 +1088,29 @@ private fun WorkingBanner(
     label: String,
     elapsedSeconds: Long,
 ) {
-    Card(
-        colors =
-            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    val accent = Skin.palette.accent
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = MaterialTheme.shapes.medium,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = accent)
                 Text(
                     if (label.isBlank()) "Working…" else label,
                     style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(start = 8.dp).weight(1f),
+                    modifier = Modifier.padding(start = 10.dp).weight(1f),
                 )
-                Text(elapsedText(elapsedSeconds), style = MaterialTheme.typography.labelMedium)
+                Text(
+                    elapsedText(elapsedSeconds),
+                    style = UiType.meta,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            LinearProgressIndicator(Modifier.fillMaxWidth())
+            LinearProgressIndicator(Modifier.fillMaxWidth(), color = accent)
             if (elapsedSeconds >= 20) {
                 Text(
                     "Still working — this is normal for a large tool, which can take " +

@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -62,11 +61,10 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(24, 168).forEach { hours ->
-                FilterChip(
+                UiChoice(
+                    label = if (hours == 24) "24h" else "7d",
                     selected = windowHours == hours,
-                    onClick = { windowHours = hours },
-                    label = { Text(if (hours == 24) "24h" else "7d") },
-                )
+                ) { windowHours = hours }
             }
         }
 

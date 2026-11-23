@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Graphite, matches Theme.kt dark background. -->
+    <color name="window_bg">#161719</color>
+</resources>

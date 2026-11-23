@@ -1,4 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.DroidAI" parent="android:Theme.Material.Light.NoActionBar" />
+    <!--
+      The window theme exists only to paint the right colour for the split second before
+      Compose draws. Without it a dark launch flashed white, which is the one frame a
+      graphite design cannot survive. values-night/ overrides it for dark.
+    -->
+    <style name="Theme.DroidAI" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

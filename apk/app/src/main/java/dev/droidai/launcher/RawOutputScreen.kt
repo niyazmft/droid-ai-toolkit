@@ -10,7 +10,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -25,7 +24,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
 /**
@@ -63,7 +61,7 @@ fun RawOutputScreen(
                 Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
             }
             Text("Raw Output", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            TextButton(onClick = { clipboard.setText(AnnotatedString(raw)) }) { Text("Copy") }
+            UiPill(label = "Copy", ghost = true, onClick = { clipboard.setText(AnnotatedString(raw)) })
         }
 
         Row(
@@ -71,11 +69,11 @@ fun RawOutputScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             filters.forEach { f ->
-                AssistChip(
-                    onClick = { filter = f },
-                    label = { Text(f) },
-                    enabled = filter != f,
-                )
+                // Disabled-looking, not disabled: tapping the active filter is a no-op,
+                // and a chip that cannot be tapped would drop out of TalkBack's ordering.
+                UiChoice(label = f, selected = filter == f) {
+                    if (filter != f) filter = f
+                }
             }
         }
 
@@ -97,14 +95,8 @@ fun RawOutputScreen(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Panel {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Text(
-                        lines.joinToString("\n"),
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                UiCodeBlock(lines.joinToString("\n"), scrollHorizontally = true)
             }
         }
     }

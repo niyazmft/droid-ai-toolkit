@@ -23,6 +23,12 @@ object Prefs {
     private const val KEY_LAST_STATUS = "last_status"
     private const val KEY_LAST_STATUS_AT = "last_status_at"
     private const val KEY_RESTART_ATTEMPTS = "restart_attempts"
+    private const val KEY_THEME = "theme_mode"
+
+    /** Theme overrides. Both palettes are designed, so this is a real choice, not a fallback. */
+    const val THEME_SYSTEM = "system"
+    const val THEME_LIGHT = "light"
+    const val THEME_DARK = "dark"
 
     private var store: SharedPreferences? = null
 
@@ -83,6 +89,15 @@ object Prefs {
      */
     val restartAttempts = MutableStateFlow(0)
 
+    /**
+     * system | light | dark.
+     *
+     * Follows the device by default — the palette is designed for both — but the switch
+     * exists because a devtool is often wanted dark in a bright room, and checking the
+     * dark design should not require changing the whole phone.
+     */
+    val themeMode = MutableStateFlow(THEME_SYSTEM)
+
     fun init(context: Context) {
         val prefs = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         store = prefs
@@ -96,6 +111,7 @@ object Prefs {
         lastStatus.value = prefs.getString(KEY_LAST_STATUS, "").orEmpty()
         lastStatusAt.value = prefs.getLong(KEY_LAST_STATUS_AT, 0L)
         restartAttempts.value = prefs.getInt(KEY_RESTART_ATTEMPTS, 0)
+        themeMode.value = prefs.getString(KEY_THEME, THEME_SYSTEM) ?: THEME_SYSTEM
     }
 
     fun setRestartAttempts(value: Int) {
@@ -156,5 +172,11 @@ object Prefs {
     fun setRetainRaw(value: Boolean) {
         retainRaw.value = value
         store?.edit()?.putBoolean(KEY_RETAIN_RAW, value)?.apply()
+    }
+
+    fun setThemeMode(value: String) {
+        if (themeMode.value == value) return
+        themeMode.value = value
+        store?.edit()?.putString(KEY_THEME, value)?.apply()
     }
 }

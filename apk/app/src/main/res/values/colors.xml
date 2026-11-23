@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Cool page grey, matches Theme.kt light background. -->
+    <color name="window_bg">#F0F4F9</color>
+</resources>

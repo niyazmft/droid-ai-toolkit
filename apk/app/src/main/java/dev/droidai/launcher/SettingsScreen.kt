@@ -1,14 +1,18 @@
 package dev.droidai.launcher
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -20,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
@@ -46,6 +51,7 @@ fun SettingsScreen(
     val supervisorOn by Prefs.supervisorEnabled.collectAsState()
     val confirmRemove by Prefs.confirmRemove.collectAsState()
     val retainRaw by Prefs.retainRaw.collectAsState()
+    val themeMode by Prefs.themeMode.collectAsState()
     // collectAsState, not .value: the row used to keep showing the old answer after
     // "Re-check" succeeded, because reading a StateFlow value is not observable.
     val permission by Gate.permissionGranted.collectAsState()
@@ -59,6 +65,29 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium)
+
+        Section("Appearance")
+        Panel {
+            Text(
+                "Both palettes are designed; this only decides which one you look at.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ThemeChoice("System", themeMode == Prefs.THEME_SYSTEM, Modifier.weight(1f)) {
+                    Prefs.setThemeMode(Prefs.THEME_SYSTEM)
+                }
+                ThemeChoice("Light", themeMode == Prefs.THEME_LIGHT, Modifier.weight(1f)) {
+                    Prefs.setThemeMode(Prefs.THEME_LIGHT)
+                }
+                ThemeChoice("Dark", themeMode == Prefs.THEME_DARK, Modifier.weight(1f)) {
+                    Prefs.setThemeMode(Prefs.THEME_DARK)
+                }
+            }
+        }
 
         Section("Droid AI")
         Panel {
@@ -97,21 +126,14 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TextButton(
-                onClick = onRefresh,
-                enabled = !running,
-                modifier = Modifier.heightIn(min = 48.dp),
-            ) { Text("Re-read status") }
+            UiPill(label = "Re-read status", enabled = !running, ghost = true, onClick = onRefresh)
         }
 
         Section("Termux & Safety")
         Panel {
             Fact("Command access", if (permission) "allowed" else "not allowed")
             Fact("Termux version", snapshot?.termux?.version ?: "—")
-            TextButton(
-                onClick = onRecheckPermission,
-                modifier = Modifier.heightIn(min = 48.dp),
-            ) { Text("Check again") }
+            UiPill(label = "Check again", ghost = true, onClick = onRecheckPermission)
             SwitchRow(
                 title = "Ask before removing",
                 subtitle = "Confirm before deleting a tool, its files or its shortcuts.",
@@ -132,11 +154,12 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TextButton(
-                onClick = { confirmCleanup = true },
+            UiPill(
+                label = "Remove the old package folder",
                 enabled = !running,
-                modifier = Modifier.heightIn(min = 48.dp),
-            ) { Text("Remove the old package folder", color = MaterialTheme.colorScheme.error) }
+                ghost = true,
+                onClick = { confirmCleanup = true },
+            )
         }
     }
 
@@ -161,6 +184,37 @@ fun SettingsScreen(
                 TextButton(onClick = { confirmCleanup = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+/**
+ * One of three theme choices, as a bordered segment.
+ *
+ * A segmented row rather than a dropdown: three options fit on one line, and seeing all
+ * three next to the current one is the whole point of a theme switch.
+ */
+@Composable
+private fun ThemeChoice(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val p = Skin.palette
+    Surface(
+        onClick = onClick,
+        modifier = modifier.heightIn(min = 40.dp),
+        shape = CircleShape,
+        color = if (selected) p.accentSoft else MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, if (selected) Color.Transparent else MaterialTheme.colorScheme.outline),
+    ) {
+        Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+            Text(
+                label,
+                style = UiType.pill,
+                color = if (selected) p.accent else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

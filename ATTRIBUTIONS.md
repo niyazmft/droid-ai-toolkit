@@ -14,6 +14,17 @@ This project uses several open-source and fair-code components. Below is a list 
 | **Koffi** | [MIT](https://opensource.org/licenses/MIT) | [codeberg.org/Koromix/rygel](https://codeberg.org/Koromix/rygel) |
 | **termux-services** | [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) | [github.com/termux/termux-services](https://github.com/termux/termux-services) |
 
+## Bundled in the Android app (apk/)
+
+| Component | License | Source / Repository |
+| :--- | :--- | :--- |
+| **Inter** (Regular, Medium, SemiBold — Latin subset) | [SIL Open Font License 1.1](https://openfontlicense.org) | [github.com/rsms/inter](https://github.com/rsms/inter) |
+
+The three `.ttf` files under `apk/app/src/main/res/font/` are unmodified glyph subsets of Inter 4.1,
+produced with `pyftsubset` (Latin, punctuation, common symbols; layout features `kern, liga, calt,
+tnum, case`). Redistribution is permitted by the OFL; the fonts are not sold on their own and are
+not renamed.
+
 ## System & Environment Tools
 
 The following tools are installed as part of the Termux environment setup:
