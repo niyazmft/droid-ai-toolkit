@@ -265,7 +265,7 @@ private fun Placeholder(
 private enum class Tab(
     val label: String,
 ) {
-    TERMINAL("Terminal"),
+    OVERVIEW("Overview"),
     PACKAGES("Packages"),
     METRICS("Metrics"),
     SETTINGS("Settings"),
@@ -287,7 +287,7 @@ private fun Home() {
     var pending by remember { mutableStateOf<Protocol.Action?>(null) }
     var capacity by remember { mutableStateOf<Protocol.Action?>(null) }
     var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
-    var tab by remember { mutableStateOf(Tab.TERMINAL) }
+    var tab by remember { mutableStateOf(Tab.OVERVIEW) }
     var showRawScreen by remember { mutableStateOf(false) }
     val confirmRemove by Prefs.confirmRemove.collectAsState()
     val retainRaw by Prefs.retainRaw.collectAsState()
@@ -340,7 +340,7 @@ private fun Home() {
                         icon = {
                             Icon(
                                 when (t) {
-                                    Tab.TERMINAL -> Icons.Filled.List
+                                    Tab.OVERVIEW -> Icons.Filled.List
                                     Tab.PACKAGES -> PackageIcon
                                     Tab.METRICS -> MetricsIcon
                                     Tab.SETTINGS -> Icons.Filled.Settings
@@ -404,7 +404,7 @@ private fun Home() {
             }
 
             when (tab) {
-                Tab.TERMINAL -> {
+                Tab.OVERVIEW -> {
                     if (steps.isNotEmpty()) {
                         Section("Last run")
                         Panel {
