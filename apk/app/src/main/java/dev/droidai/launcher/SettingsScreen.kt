@@ -71,9 +71,10 @@ fun SettingsScreen(
             SwitchRow(
                 title = "Show a status notification",
                 subtitle =
-                    "A small always-on notification that reports how many services are " +
-                        "running, and that notices when the runtime stops. Turn it off to " +
-                        "clear the notification — but then nothing restarts services by itself.",
+                    "A small always-on notification reporting how many services are running. " +
+                        "It re-checks when you unlock the phone — never on a timer — so it " +
+                        "costs nothing while the phone sits idle. Off means no notification " +
+                        "and nothing restarts services by itself.",
                 checked = supervisorOn,
             ) { Prefs.setSupervisorEnabled(it) }
             SwitchRow(

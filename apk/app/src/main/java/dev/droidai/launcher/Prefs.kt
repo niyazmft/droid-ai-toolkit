@@ -20,6 +20,9 @@ object Prefs {
     private const val KEY_SUPERVISOR = "supervisor_enabled"
     private const val KEY_INSTALLED = "installed_tools"
     private const val KEY_FAILED = "failed_tools"
+    private const val KEY_LAST_STATUS = "last_status"
+    private const val KEY_LAST_STATUS_AT = "last_status_at"
+    private const val KEY_RESTART_ATTEMPTS = "restart_attempts"
 
     private var store: SharedPreferences? = null
 
@@ -62,6 +65,24 @@ object Prefs {
     /** Catalog keys whose last install/repair attempt failed on this device. */
     val failedTools = MutableStateFlow<Set<String>>(emptySet())
 
+    /**
+     * The last status document, and when it was taken.
+     *
+     * With no clock-driven polling, the first frame after opening the app has nothing to
+     * show. Rendering the previous answer with its age is honest; rendering an empty screen
+     * or silently showing old numbers as if they were live is not.
+     */
+    val lastStatus = MutableStateFlow("")
+    val lastStatusAt = MutableStateFlow(0L)
+
+    /**
+     * Consecutive "nothing is online, try to restart" attempts.
+     *
+     * Persisted because the supervisor no longer runs on a timer: without this, every
+     * unlock would reset the counter and a broken install would be restarted forever.
+     */
+    val restartAttempts = MutableStateFlow(0)
+
     fun init(context: Context) {
         val prefs = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         store = prefs
@@ -72,6 +93,26 @@ object Prefs {
         supervisorEnabled.value = prefs.getBoolean(KEY_SUPERVISOR, true)
         installedTools.value = prefs.getStringSet(KEY_INSTALLED, emptySet())?.toSet() ?: emptySet()
         failedTools.value = prefs.getStringSet(KEY_FAILED, emptySet())?.toSet() ?: emptySet()
+        lastStatus.value = prefs.getString(KEY_LAST_STATUS, "").orEmpty()
+        lastStatusAt.value = prefs.getLong(KEY_LAST_STATUS_AT, 0L)
+        restartAttempts.value = prefs.getInt(KEY_RESTART_ATTEMPTS, 0)
+    }
+
+    fun setRestartAttempts(value: Int) {
+        if (restartAttempts.value == value) return
+        restartAttempts.value = value
+        store?.edit()?.putInt(KEY_RESTART_ATTEMPTS, value)?.apply()
+    }
+
+    fun saveLastStatus(stdout: String) {
+        val at = System.currentTimeMillis()
+        lastStatus.value = stdout
+        lastStatusAt.value = at
+        store
+            ?.edit()
+            ?.putString(KEY_LAST_STATUS, stdout)
+            ?.putLong(KEY_LAST_STATUS_AT, at)
+            ?.apply()
     }
 
     fun setInstalledTools(value: Set<String>) {

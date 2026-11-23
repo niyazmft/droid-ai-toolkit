@@ -92,11 +92,25 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         Gate.refresh(this)
-        // Coming back from Termux, or from the system permission dialog, is the moment
-        // the user has just done what we asked. Re-check automatically instead of
-        // making them find a "Retry" button and press it.
-        if (recheckOnResume && Gate.termuxInstalled.value && Gate.permissionGranted.value) {
+
+        // Coming back from Termux, or from the system permission dialog, is the moment the
+        // user has just done what we asked. Re-check automatically instead of making them
+        // find a "Retry" button and press it.
+        val returningFromSetup = recheckOnResume
+        if (returningFromSetup && Gate.termuxInstalled.value && Gate.permissionGranted.value) {
             recheckOnResume = false
+            Termux.probe(this)
+            return
+        }
+
+        // Opening the app is the one moment a check costs nothing extra. Refresh only when
+        // the data is actually stale and nothing else is in flight, so this cannot quietly
+        // become a timer by another name.
+        if (!returningFromSetup &&
+            Gate.probe.value == Probe.READY &&
+            !Runner.running.value &&
+            System.currentTimeMillis() - Prefs.lastStatusAt.value > RESUME_REFRESH_MS
+        ) {
             Termux.probe(this)
         }
     }
@@ -457,6 +471,18 @@ private enum class Tab(
     SETTINGS("Settings"),
 }
 
+/** How old the visible answer is. Nothing here is live, so it has to say so. */
+private fun ageLabel(ageMs: Long): String =
+    when {
+        ageMs < 60_000L -> "checked just now"
+        ageMs < 3_600_000L -> "checked ${ageMs / 60_000L} min ago"
+        ageMs < 86_400_000L -> "checked ${ageMs / 3_600_000L} h ago"
+        else -> "checked ${ageMs / 86_400_000L} d ago"
+    }
+
+/** Don't re-read on every resume; a minute is enough to be useful without becoming a timer. */
+private const val RESUME_REFRESH_MS = 60_000L
+
 /** "1m 20s" — a phone install is measured in minutes, so seconds alone are not enough. */
 private fun elapsedText(seconds: Long): String =
     if (seconds < 60) "${seconds}s" else "${seconds / 60}m ${seconds % 60}s"
@@ -469,7 +495,11 @@ private fun Home() {
     val startedAt by Runner.startedAt.collectAsState()
     val runLabel by Runner.label.collectAsState()
 
-    var snapshot by remember { mutableStateOf<Protocol.Snapshot?>(null) }
+    // Seeded from the last saved document: with no timer, the first frame would otherwise
+    // be empty. The age label below is what keeps that honest.
+    var snapshot by remember { mutableStateOf(Protocol.snapshot(Prefs.lastStatus.value)) }
+    var checkedAt by remember { mutableStateOf(Prefs.lastStatusAt.value) }
+    var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
     var actions by remember { mutableStateOf<List<Protocol.Action>>(emptyList()) }
     var failure by remember { mutableStateOf<String?>(null) }
     var askedForActions by remember { mutableStateOf(false) }
@@ -525,6 +555,15 @@ private fun Home() {
         }
     }
 
+    // Ages are recomputed while the screen is open, so "checked 1 min ago" does not sit
+    // there saying "just now" for an hour.
+    LaunchedEffect(checkedAt) {
+        while (true) {
+            nowTick = System.currentTimeMillis()
+            delay(30_000)
+        }
+    }
+
     LaunchedEffect(notice) {
         val n = notice ?: return@LaunchedEffect
         notice = null
@@ -569,6 +608,8 @@ private fun Home() {
         if (origin != Origin.SYSTEM) {
             Protocol.snapshot(r.stdout)?.let { snap ->
                 snapshot = snap
+                checkedAt = System.currentTimeMillis()
+                Prefs.saveLastStatus(r.stdout)
                 Prefs.setInstalledTools(
                     listOf("openclaw", "hermes", "n8n", "ollama")
                         .filter { key ->
@@ -694,6 +735,13 @@ private fun Home() {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (snapshot != null && checkedAt > 0L) {
+                        Text(
+                            ageLabel(nowTick - checkedAt),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 IconButton(
                     onClick = {

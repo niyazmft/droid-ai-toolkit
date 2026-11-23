@@ -5,58 +5,73 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Watches the toolkit and says so.
+ * Watches the toolkit — when the phone is in your hand, not on a clock.
  *
- * It cannot stop Android from killing Termux — nothing can. What it can do is hold a
- * foreground service (a low oom_score_adj for this process, and a visible notification
- * that cannot be silently dropped) and turn "the gateway went quiet" into "Termux is not
- * responding — tap to open".
+ * ## Why there is no timer
  *
- * The check is a real `--api status` run, not a package check: the package and the
- * permission both survive a process kill, which is exactly the case that fooled the
- * app earlier.
+ * The old version polled `--api status` every 60 s. That run measured 22.6 s wall / 18.9 s
+ * of user CPU on 8x, because every tool version probe starts a whole Node or Python
+ * runtime — but the CPU was only half the cost. Each poll also **woke Termux**, and a
+ * runtime that is woken every minute never falls into doze. On a phone whose whole problem
+ * is that Android kills background processes for memory, spending the battery budget on
+ * asking "are you still there?" is the wrong trade.
  *
- * ## Why the cadence is not a fixed minute
+ * So the check is now driven by the user reaching for the phone: `ACTION_USER_PRESENT`
+ * (unlock) and `ACTION_SCREEN_ON`. The work happens in a moment that costs nothing extra,
+ * because the screen is already awake and lit.
  *
- * That status run is expensive: measured on 8x it is 22.6 s wall and **18.9 s of user
- * CPU**, because it shells out to `node`, `pm2`, `openclaw --version` and friends. Polling
- * it every 60 s kept roughly a third of a core busy forever, drained the battery, and —
- * because each poll also re-posted this notification — earned the channel a demotion from
- * Android (`post_frequency … demoted=163` in one day).
+ * What this gives up, deliberately: if the runtime dies while the phone sits untouched all
+ * night, nobody is told until morning. That is the point — an idle phone should be idle.
  *
- * So: poll slowly while everything is healthy, quickly only while something is wrong, and
- * not at all while the device is dozing. Re-checking a working device every five minutes
- * cannot realistically miss a failure the user would notice sooner by opening the app.
+ * ## Why it is still a foreground service
+ *
+ * `ACTION_SCREEN_ON` and `ACTION_USER_PRESENT` cannot be delivered to a manifest-registered
+ * receiver on Android 8+, so the process has to be alive to hold a runtime receiver. A
+ * foreground service is the only sanctioned way to stay alive, and Android requires it to
+ * show a notification. Between wake-ups the service does nothing at all: no timers, no
+ * wakelocks, no polling.
  */
 class SupervisorService : Service() {
     private val job = SupervisorJob()
-    private var scope = CoroutineScope(job + Dispatchers.Default)
-    private var loop: Job? = null
-    private var attempts = 0
+    private val scope = CoroutineScope(job + Dispatchers.Default)
+    private var lastCheckAt = 0L
+    private var lastHealthy = true
+    private var checkInFlight = false
     private var lastSampleAt = 0L
 
     /** Last text actually posted, so an unchanged status does not touch the shade. */
     private var postedTitle: String? = null
     private var postedText: String? = null
+
+    private val screenReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                context: Context,
+                intent: Intent,
+            ) {
+                when (intent.action) {
+                    Intent.ACTION_USER_PRESENT, Intent.ACTION_SCREEN_ON -> maybeCheck()
+                }
+            }
+        }
 
     override fun onCreate() {
         super.onCreate()
@@ -65,6 +80,22 @@ class SupervisorService : Service() {
         startForeground(NOTIFICATION_ID, notification("Starting…", "watching the toolkit"))
         postedTitle = "Starting…"
         postedText = "watching the toolkit"
+
+        val filter =
+            IntentFilter().apply {
+                addAction(Intent.ACTION_USER_PRESENT)
+                addAction(Intent.ACTION_SCREEN_ON)
+            }
+        ContextCompat.registerReceiver(
+            this,
+            screenReceiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+
+        // One check now, so the notification says something true from the first moment
+        // rather than "Starting…" until the user happens to unlock.
+        maybeCheck(force = true)
     }
 
     override fun onStartCommand(
@@ -76,42 +107,47 @@ class SupervisorService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (loop?.isActive != true) {
-            loop =
-                scope.launch {
-                    while (isActive) {
-                        val healthy = tick()
-                        delay(if (healthy) INTERVAL_HEALTHY_MS else INTERVAL_TROUBLE_MS)
-                    }
-                }
-        }
         return START_STICKY
     }
 
-    /** @return true when the device looks healthy, which is what slows the next poll down. */
+    /**
+     * Run a check, but not more often than the situation deserves.
+     *
+     * Healthy results are re-checked at most every five minutes, and a problem at most
+     * every minute: unlocking your phone four times in a row should not mean four full
+     * status runs.
+     */
+    private fun maybeCheck(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        val minGap = if (lastHealthy) HEALTHY_GAP_MS else TROUBLE_GAP_MS
+        if (!force && now - lastCheckAt < minGap) return
+        if (checkInFlight) return
+        checkInFlight = true
+        lastCheckAt = now
+        scope.launch {
+            try {
+                lastHealthy = tick()
+            } finally {
+                checkInFlight = false
+            }
+        }
+    }
+
+    /** @return true when the device looks healthy. */
     private suspend fun tick(): Boolean {
         if (!Gate.termuxInstalled.value) {
             update("Termux is not installed", "install it from F-Droid")
             return false
         }
 
-        // Do not send RUN_COMMAND while the gate is closed for policy reasons. Termux
-        // answers such a request by posting its own *sticky* "Plugin Execution Command
-        // Error" notification (FLAG_ONGOING_EVENT, never cancelled), so a supervisor
-        // polling every minute turns one wrong setting into an un-dismissable error in
-        // the shade. Observed on 8x: 939 notifications from com.termux in a day.
-        //
-        // UNREACHABLE deliberately still polls: detecting a dead Termux is this service's
-        // whole purpose, and a request that gets no answer posts no notification.
+        // Do not send RUN_COMMAND while the gate is closed for policy reasons: Termux
+        // replies by posting its own sticky "Plugin Execution Command Error" notification
+        // (FLAG_ONGOING_EVENT, never cancelled). A 60 s poll once produced 939 of them in a
+        // day on 8x.
         if (Gate.probe.value == Probe.DENIED || Gate.probe.value == Probe.NO_TOOLKIT) {
             update("Setup is not finished", "open the app to complete the one-time step")
             return false
         }
-
-        // A status run wakes Termux and spends ~19 s of CPU; an idle device should not pay
-        // that. The next tick after the screen wakes up catches up anyway, and the app
-        // probes on open.
-        if (isDozing()) return true
 
         if (Runner.running.value) return false
 
@@ -126,6 +162,7 @@ class SupervisorService : Service() {
             update("Toolkit returned no status", "tap to open the app")
             return false
         }
+
         val running = snapshot.services.count { it.status == "online" }
         val mem = snapshot.services.sumOf { it.memMb }
 
@@ -138,20 +175,20 @@ class SupervisorService : Service() {
         }
 
         if (running == 0) {
-            // Observe-only is not enough: Termux is alive (the probe answered) but nothing
-            // is serving. Try to bring it back, and stop trying after a few attempts — a
-            // broken install must not be restarted forever.
-            if (attempts < MAX_ATTEMPTS) {
-                attempts++
-                update(
-                    "No services online — restarting (attempt $attempts/$MAX_ATTEMPTS)",
-                    "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free",
-                )
-                if (!Runner.running.value) {
-                    Runner.send(this, listOf("--api", "run", "service.resurrect"), Origin.SYSTEM)
-                    withTimeoutOrNull(RESTART_TIMEOUT_MS) { Runner.result.filterNotNull().first() }
-                }
-            } else {
+            // Observe-only is not enough: Termux is alive (it answered) but nothing is
+            // serving. Try to bring it back, a bounded number of times — a broken install
+            // must not be restarted forever.
+            val attempts = (Prefs.restartAttempts.value + 1).coerceAtMost(MAX_ATTEMPTS)
+            Prefs.setRestartAttempts(attempts)
+            update(
+                "No services online — restarting (attempt $attempts/$MAX_ATTEMPTS)",
+                "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free",
+            )
+            if (!Runner.running.value) {
+                Runner.send(this, listOf("--api", "run", "service.resurrect"), Origin.SYSTEM)
+                withTimeoutOrNull(RESTART_TIMEOUT_MS) { Runner.result.filterNotNull().first() }
+            }
+            if (attempts >= MAX_ATTEMPTS) {
                 update(
                     "Services are down and restarting did not help",
                     "tap to open the app for details",
@@ -160,10 +197,10 @@ class SupervisorService : Service() {
             return false
         }
 
-        attempts = 0
+        Prefs.setRestartAttempts(0)
 
-        // Record one point every five minutes. Reusing this tick means analytics adds no
-        // wakeups: the supervisor already asks Termux for a status.
+        // One point per five minutes at most: the check itself is now event-driven, so two
+        // unlocks in a row must not become two samples.
         val now = System.currentTimeMillis()
         if (now - lastSampleAt >= Metrics.SAMPLE_INTERVAL_MS) {
             lastSampleAt = now
@@ -186,17 +223,11 @@ class SupervisorService : Service() {
         return true
     }
 
-    private fun isDozing(): Boolean =
-        runCatching {
-            getSystemService(PowerManager::class.java)?.isDeviceIdleMode == true
-        }.getOrDefault(false)
-
     /**
      * Post only when the text changed.
      *
-     * `notify()` was called on every tick whether or not anything had happened: 163 posts
-     * in a day, which Android reads as a noisy app and demotes. An unchanged status is not
-     * news.
+     * `notify()` on every tick was 163 posts in a day, which Android reads as a noisy app
+     * and demotes (`post_frequency … demoted=163`). An unchanged status is not news.
      */
     private fun update(
         title: String,
@@ -205,8 +236,7 @@ class SupervisorService : Service() {
         if (title == postedTitle && text == postedText) return
         postedTitle = title
         postedText = text
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, notification(title, text))
+        getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification(title, text))
     }
 
     private fun notification(
@@ -250,9 +280,8 @@ class SupervisorService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(screenReceiver) }
         scope.cancel()
-        // Turning the supervisor off must remove the notification too, or the app keeps a
-        // permanent entry in the shade for a service that no longer exists.
         runCatching {
             getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
         }
@@ -265,17 +294,13 @@ class SupervisorService : Service() {
         private const val CHANNEL = "supervisor"
         private const val NOTIFICATION_ID = 42
 
-        /** Healthy: a working device does not need checking every minute. */
-        private const val INTERVAL_HEALTHY_MS = 5 * 60_000L
+        /** Re-check at most this often when everything is fine. */
+        private const val HEALTHY_GAP_MS = 5 * 60_000L
 
-        /** Something is wrong: check again soon, but never in a tight loop. */
-        private const val INTERVAL_TROUBLE_MS = 60_000L
+        /** …and this often while something is wrong, so a fix shows up quickly. */
+        private const val TROUBLE_GAP_MS = 60_000L
 
-        /**
-         * A status run measured 22.6 s on 8x, so 25 s was a coin flip: the poll could be
-         * abandoned a second before the answer arrived, which reads as "Termux is not
-         * responding" on a perfectly healthy device.
-         */
+        /** A status run measured 22.6 s; the fast form 7.2 s. 45 s leaves room for both. */
         private const val TIMEOUT_MS = 45_000L
         private const val RESTART_TIMEOUT_MS = 90_000L
         private const val MAX_ATTEMPTS = 3
@@ -293,9 +318,9 @@ class SupervisorService : Service() {
         /**
          * Turn the supervisor off.
          *
-         * stopService rather than the STOP action: sending the action to a stopped
-         * service would start it first, post a "Starting…" notification, and then stop —
-         * a visible flicker in the shade for a user who just asked for less of it.
+         * stopService rather than the STOP action: sending the action to a stopped service
+         * would start it first, post a "Starting…" notification, then stop — a visible
+         * flicker for a user who just asked for less of it.
          */
         fun stop(context: Context) {
             runCatching { context.stopService(Intent(context, SupervisorService::class.java)) }
