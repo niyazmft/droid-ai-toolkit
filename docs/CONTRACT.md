@@ -3,6 +3,13 @@
 The APK is a client. Everything it can do goes through this interface, and nothing in
 the app should assume more than what is written here.
 
+## Two frontends, one catalog
+
+`bash install.sh` with no flags is the interactive TUI; `--api` is the machine interface.
+Both are supported: the TUI needs no companion app and no `RUN_COMMAND` permission, which
+matters for anyone who does not want to install the APK. They must agree because both read
+`actions/` — behaviour that exists only in the TUI is a bug in the catalog, and vice versa.
+
 ## Invocation
 
 ```bash
