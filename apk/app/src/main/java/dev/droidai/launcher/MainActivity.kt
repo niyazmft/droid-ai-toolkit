@@ -320,6 +320,28 @@ private fun Home() {
             } else {
                 s.services.forEach { sv ->
                     Fact(sv.name, "${sv.status} · ${sv.memMb} MB · ${sv.restarts} restarts")
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(
+                            onClick = {
+                                failure = null
+                                Runner.send(
+                                    context,
+                                    listOf("--api", "run", "service.stop", "--arg", "service=${sv.name}")
+                                )
+                            },
+                            enabled = !running
+                        ) { Text("Stop", style = MaterialTheme.typography.bodySmall) }
+                        TextButton(
+                            onClick = {
+                                failure = null
+                                Runner.send(
+                                    context,
+                                    listOf("--api", "run", "service.restart", "--arg", "service=${sv.name}")
+                                )
+                            },
+                            enabled = !running
+                        ) { Text("Restart", style = MaterialTheme.typography.bodySmall) }
+                    }
                 }
             }
         }

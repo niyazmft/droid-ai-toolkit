@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "id": "service.stop",
+  "title": "Stop a service",
+  "summary": "Stop one service (reversible); the name comes from --arg service=<name>",
+  "category": "services",
+  "idempotent": false,
+  "destructive": false,
+  "requires": {},
+  "steps": [
+    {
+      "id": "stop",
+      "title": "Stop",
+      "run": "step_pm2_service",
+      "args": {
+        "action": "stop"
+      }
+    }
+  ]
+}

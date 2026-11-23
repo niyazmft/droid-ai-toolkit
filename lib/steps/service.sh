@@ -43,3 +43,40 @@ step_pm2_resurrect() {
     echo "gateway did not come up"
     return 1
 }
+
+# step_pm2_service <step-json> <spec-json> <params-json>
+#
+# Per-service control. The service name comes from --arg service=<name>, not from the
+# spec: one action can then act on whichever service the app is showing, instead of
+# needing a spec per service.
+step_pm2_service() {
+    local step="$1" params="${3:-{}}" action name
+    action=$(printf '%s' "$step" | jq -r '.args.action // empty')
+    name=$(printf '%s' "$params" | jq -r '.service // empty')
+
+    if [ -z "$name" ]; then
+        echo "no service named: pass --arg service=<name>"
+        return 1
+    fi
+    if ! command -v pm2 >/dev/null 2>&1; then
+        echo "pm2 is not installed"
+        return 1
+    fi
+    if [ ! -f "$HOME/.pm2/pm2.pid" ]; then
+        echo "the pm2 daemon is not running"
+        return 1
+    fi
+
+    case "$action" in
+        start|restart) pm2 restart "$name" 2>&1 | tail -3 ;;
+        stop)          pm2 stop "$name" 2>&1 | tail -3 ;;
+        *) echo "step_pm2_service: unknown action '$action'"; return 1 ;;
+    esac
+    pm2 save >/dev/null 2>&1 || true
+
+    sleep 4
+    local status
+    status=$(pm2 jlist 2>/dev/null | jq -r --arg n "$name" '.[] | select(.name == $n) | .pm2_env.status' 2>/dev/null | head -1)
+    echo "$name is now: ${status:-unknown}"
+    return 0
+}

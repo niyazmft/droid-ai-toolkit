@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "id": "service.restart",
+  "title": "Restart a service",
+  "summary": "pm2 restart <service>, chosen by the caller (--arg service=<name>)",
+  "category": "services",
+  "idempotent": false,
+  "destructive": false,
+  "requires": {},
+  "steps": [
+    { "id": "restart", "title": "Restart", "run": "step_pm2_service",
+      "args": { "action": "restart" } }
+  ]
+}

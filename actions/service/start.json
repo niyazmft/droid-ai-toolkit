@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "id": "service.start",
+  "title": "Start a service",
+  "summary": "pm2 start <service>, chosen by the caller (--arg service=<name>)",
+  "category": "services",
+  "idempotent": false,
+  "destructive": false,
+  "requires": {},
+  "steps": [
+    { "id": "start", "title": "Start", "run": "step_pm2_service",
+      "args": { "action": "start" } }
+  ]
+}

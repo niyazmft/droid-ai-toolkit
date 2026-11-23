@@ -40,6 +40,8 @@ API_ANSWERS=""
 API_RUN_ID=""
 API_FRESH=0
 ASSUME_YES=0
+# Parameters for an action (--arg key=value), passed to steps as JSON.
+API_PARAMS='{}'
 while [ $# -gt 0 ]; do
     case "$1" in
         --n8n-migrate|--n8n-lan-https) N8N_CLI_MIGRATE=1 ;;
@@ -47,6 +49,18 @@ while [ $# -gt 0 ]; do
         --yes|-y)       ASSUME_YES=1 ;;
         --fresh)        API_FRESH=1 ;;
         --answers)      shift; API_ANSWERS="${1:-}" ;;
+        --arg)
+            # key=value, repeatable. Kept as JSON so a step can read it without the
+            # caller having to know the shell quoting rules of the engine.
+            shift
+            _kv="${1:-}"
+            if [ -n "$_kv" ]; then
+                API_PARAMS=$(printf '%s' "$API_PARAMS" | jq -c --arg kv "$_kv" '
+                    ($kv | index("=")) as $i
+                    | if $i == null then . else . + {($kv[0:$i]): ($kv[($i+1):])} end')
+            fi
+            ;;
+
         --run-id)       shift; API_RUN_ID="${1:-}" ;;
         list|status|run) API_CMD="$1" ;;
         -*)             : ;;  # unknown flag: ignore, as before

@@ -140,7 +140,9 @@ runner_run() {
         s_when=$(printf '%s' "$step" | jq -r '.when // empty')
         s_optional=$(printf '%s' "$step" | jq -r '.optional // false')
         s_idem=$(printf '%s' "$step" | jq -r '.idempotent // false')
-        s_fp=$(state_step_fingerprint "$step")
+        # Parameters are part of what the step does, so they belong in the fingerprint:
+        # stopping `openclaw` must not count as having stopped `n8n`.
+        s_fp=$(state_step_fingerprint "$step ${API_PARAMS:-{}}")
         s_retry=$(printf '%s' "$step" | jq -r '.retry_on_sigkill // 0')
 
         if ! runner_when "$s_when"; then
@@ -172,7 +174,7 @@ runner_run() {
             ev_step "$s_id" "running" "$s_title" 0
             [ -n "$RUNNER_RESULT" ] && : > "$RUNNER_RESULT"
             t0=$(date +%s)
-            "$s_run" "$step" "$spec" >> "$log" 2>&1
+            "$s_run" "$step" "$spec" "${API_PARAMS:-{}}" >> "$log" 2>&1
             rc=$?
             t1=$(date +%s)
             ms=$(( (t1 - t0) * 1000 ))
