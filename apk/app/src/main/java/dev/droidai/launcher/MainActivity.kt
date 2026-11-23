@@ -238,12 +238,15 @@ internal fun Panel(content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
-private fun StatusChip(online: Boolean) {
+internal fun StatusChip(
+    online: Boolean,
+    label: String? = null,
+) {
     val bg = if (online) Tokens.SuccessContainer else MaterialTheme.colorScheme.errorContainer
     val fg = if (online) Tokens.OnSuccessContainer else MaterialTheme.colorScheme.onErrorContainer
     Surface(color = bg, contentColor = fg, shape = RoundedCornerShape(50)) {
         Text(
-            if (online) "online" else "stopped",
+            label ?: if (online) "online" else "stopped",
             style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
         )
@@ -263,6 +266,7 @@ private enum class Tab(
     val label: String,
 ) {
     TERMINAL("Terminal"),
+    PACKAGES("Packages"),
     METRICS("Metrics"),
     SETTINGS("Settings"),
 }
@@ -337,6 +341,7 @@ private fun Home() {
                             Icon(
                                 when (t) {
                                     Tab.TERMINAL -> Icons.Filled.List
+                                    Tab.PACKAGES -> PackageIcon
                                     Tab.METRICS -> MetricsIcon
                                     Tab.SETTINGS -> Icons.Filled.Settings
                                 },
@@ -605,6 +610,33 @@ private fun Home() {
                         Text("Show raw output")
                     }
                 }
+
+                Tab.PACKAGES ->
+                    PackagesScreen(
+                        snapshot = snapshot,
+                        actions = actions,
+                        running = running,
+                        onRun = { action ->
+                            val short =
+                                snapshot?.let {
+                                    (action.minMemMb > 0 && it.device.memAvailableMb < action.minMemMb) ||
+                                        (action.minDiskMb > 0 && it.device.diskFreeMb < action.minDiskMb)
+                                } ?: false
+
+                            when {
+                                action.destructive && confirmRemove -> pending = action
+                                action.destructive -> {
+                                    failure = null
+                                    Runner.send(context, listOf("--api", "run", action.id, "--yes"))
+                                }
+                                short -> capacity = action
+                                else -> {
+                                    failure = null
+                                    Runner.send(context, listOf("--api", "run", action.id))
+                                }
+                            }
+                        },
+                    )
 
                 Tab.METRICS -> MetricsScreen(snapshot = snapshot)
 

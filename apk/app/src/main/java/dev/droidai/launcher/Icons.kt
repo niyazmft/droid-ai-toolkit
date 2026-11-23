@@ -67,3 +67,21 @@ val MetricsIcon: ImageVector by lazy {
         close()
     }
 }
+
+/** A box: the Packages tab. */
+val PackageIcon: ImageVector by lazy {
+    icon("Package") {
+        moveTo(4f, 7f)
+        lineTo(7f, 4f)
+        lineTo(17f, 4f)
+        lineTo(20f, 7f)
+        lineTo(20f, 20f)
+        lineTo(4f, 20f)
+        close()
+        moveTo(6.5f, 8f)
+        lineTo(17.5f, 8f)
+        lineTo(17.5f, 18f)
+        lineTo(6.5f, 18f)
+        close()
+    }
+}
