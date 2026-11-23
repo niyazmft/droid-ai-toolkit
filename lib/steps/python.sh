@@ -38,6 +38,38 @@ step_pip_install() {
         flags+=(--no-build-isolation --no-cache-dir)
     fi
 
+    # --no-build-isolation means pip will NOT fetch the build backend for us. Without
+    # this, a sdist install dies with "Cannot import build backend 'hatchling.build'"
+    # (observed for nanobot-ai on 8x). The backends themselves are wheels, so they
+    # install with normal isolation.
+    local backends
+    backends=$(printf '%s' "$step" | jq -r '(.args.build_backends // []) | join(" ")')
+    if [ -n "$backends" ]; then
+        echo "pip install build backends: $backends"
+        # shellcheck disable=SC2086  # space-separated list is intentional
+        "${pip_cmd[@]}" install $backends 2>&1 | tail -3
+        # shellcheck disable=SC2181
+        if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo "step_pip_install: could not install build backends: $backends"
+            return 1
+        fi
+    fi
+
+    # Prefer the toolkit's wheel cache. Packages like cryptography and jiter have no
+    # Android-tagged wheel on PyPI, so pip falls back to a source build that takes
+    # 30-90 minutes on a phone (and is the classic OOM point). The toolkit already
+    # keeps device-specific wheels from a previous successful build; using them turns
+    # that back into a seconds-long install.
+    if [ -z "${PIP_FIND_LINKS:-}" ]; then
+        local cache="${HERMES_WHEEL_CACHE:-$HOME/.hermes/wheel-cache}"
+        if [ -d "$cache" ] && [ -n "$(ls -A "$cache" 2>/dev/null)" ]; then
+            export PIP_FIND_LINKS="$cache"
+            echo "using wheel cache: $cache ($(find "$cache" -maxdepth 1 -name '*.whl' | wc -l | tr -d ' ') wheel(s))"
+        else
+            echo "no wheel cache at $cache — source builds may take 30-90 minutes"
+        fi
+    fi
+
     export RUSTFLAGS="${RUSTFLAGS:--C opt-level=2}"
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
     echo "pip install $spec (jobs=$CARGO_BUILD_JOBS, isolation=$([ "$nbi" = true ] && echo off || echo on))"

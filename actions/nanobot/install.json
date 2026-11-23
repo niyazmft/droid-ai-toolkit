@@ -2,21 +2,62 @@
   "schema": 1,
   "id": "nanobot.install",
   "title": "Nanobot",
-  "summary": "Python agent. aarch64/x86_64 only: jiter needs maturin, which rejects armv8l.",
+  "summary": "Python agent. aarch64/x86_64 only (jiter needs maturin). cryptography/jiter build from source without a wheel cache (30-90 min).",
   "category": "agents",
   "requires": {
-    "arch": ["aarch64", "x86_64"],
+    "arch": [
+      "aarch64",
+      "x86_64"
+    ],
     "min_mem_mb": 700,
     "min_disk_mb": 2500,
-    "tools": ["pip3"]
+    "tools": [
+      "pip3"
+    ]
   },
   "steps": [
-    { "id": "deps", "title": "Ensure Python tooling", "run": "step_pkg_install",
-      "args": { "packages": ["python", "python-pip"] }, "optional": true, "idempotent": true },
-    { "id": "install", "title": "pip install nanobot-ai", "run": "step_pip_install",
-      "args": { "spec": "nanobot-ai", "no_build_isolation": true },
-      "retry_on_sigkill": 2 },
-    { "id": "verify", "title": "Verify", "run": "step_verify_cmd",
-      "args": { "cmd": ["nanobot", "--version"], "timeout_s": 120 } }
+    {
+      "id": "deps",
+      "title": "Ensure Python tooling",
+      "run": "step_pkg_install",
+      "args": {
+        "packages": [
+          "python",
+          "python-pip"
+        ]
+      },
+      "optional": true,
+      "idempotent": true
+    },
+    {
+      "id": "install",
+      "title": "pip install nanobot-ai",
+      "run": "step_pip_install",
+      "args": {
+        "spec": "nanobot-ai",
+        "no_build_isolation": true,
+        "build_backends": [
+          "hatchling",
+          "setuptools",
+          "wheel",
+          "maturin",
+          "pybind11",
+          "setuptools-rust"
+        ]
+      },
+      "retry_on_sigkill": 2
+    },
+    {
+      "id": "verify",
+      "title": "Verify",
+      "run": "step_verify_cmd",
+      "args": {
+        "cmd": [
+          "nanobot",
+          "--version"
+        ],
+        "timeout_s": 120
+      }
+    }
   ]
 }
