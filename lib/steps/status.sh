@@ -88,14 +88,40 @@ _st_services() {
 # whole Node/Python runtime, so a blank version used to mean "not installed" to the app's
 # Packages screen — which is how 8x came to report 0 of 8 with four tools sitting on disk.
 # A stat costs nothing and keeps working under `--fast`.
+#
+# _st_legacy_has <bin> <path-under-node_modules>... -- is the tool runnable from the
+# pre-migration global project?
+#
+# Tools used to share `global/5/node_modules`; devices that have not migrated still run
+# from there. Statting it (no pnpm spawn) keeps the Packages screen honest: ignoring the
+# legacy layout reported every migrated-only tool as "Disappeared — its files are gone"
+# while the gateway was serving traffic (y6, 2026-11-24; 8x has no tools/ dir at all).
+#
+# The bin on PATH is part of the test, not a nicety: uninstalling a migrated tool leaves
+# its old copy in the legacy store while deleting the shim, and "directory exists" then
+# claims an installed tool that nothing can run. Conversely the shim alone is not evidence
+# either (it survives a deleted package), so this requires both.
+_st_legacy_has() {
+    local bin="${1:-}" rel f
+    [ "$#" -gt 0 ] && shift
+    [ -n "$bin" ] || return 1
+    command -v "$bin" >/dev/null 2>&1 || return 1
+    for rel in "$@"; do
+        for f in "$HOME"/.local/share/pnpm/global/*/node_modules/"$rel"; do
+            [ -e "$f" ] && return 0
+        done
+    done
+    return 1
+}
+
 _st_installed_json() {
     local root="$HOME/.local/share/pnpm/tools"
     local openclaw=false pi=false gemini=false n8n=false paperclip=false
     local hermes=false nanobot=false ollama=false
-    if [ -d "$root/openclaw" ]; then openclaw=true; fi
-    if [ -d "$root/pi" ]; then pi=true; fi
-    if [ -d "$root/gemini" ]; then gemini=true; fi
-    if [ -d "$root/n8n" ]; then n8n=true; fi
+    if [ -d "$root/openclaw" ] || _st_legacy_has openclaw openclaw; then openclaw=true; fi
+    if [ -d "$root/pi" ] || _st_legacy_has pi pi @earendil-works/pi-coding-agent; then pi=true; fi
+    if [ -d "$root/gemini" ] || _st_legacy_has gemini gemini @google/gemini-cli; then gemini=true; fi
+    if [ -d "$root/n8n" ] || _st_legacy_has n8n n8n; then n8n=true; fi
     if [ -d "$root/paperclip" ]; then paperclip=true; fi
     # Hermes keeps its own checkout, and nanobot/ollama are not pnpm tools at all.
     if [ -d "$HOME/.hermes/hermes-agent" ]; then hermes=true; fi

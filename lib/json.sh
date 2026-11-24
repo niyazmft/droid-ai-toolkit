@@ -20,11 +20,15 @@ ev_start() {
         '{t:"start", schema:1, action:$a, run_id:$r}'
 }
 
-# ev_preflight <ok:true|false> <arch> <mem_mb> <disk_mb>
+# ev_preflight <ok:true|false> <arch> <mem_mb> <disk_mb> [forced:true|false]
 # <ok> is passed as pre-encoded JSON (true/false) so callers do not build JSON.
+# `forced` is present only when the caller overrode a capacity gate with --force, so a
+# consumer can tell "it fits" apart from "the user insisted".
 ev_preflight() {
-    jq -cn --argjson ok "$1" --arg arch "$2" --argjson mem "${3:-0}" --argjson disk "${4:-0}" \
-        '{t:"preflight", ok:$ok, arch:$arch, mem_mb:$mem, disk_mb:$disk}'
+    local ok="$1" arch="$2" mem="${3:-0}" disk="${4:-0}" forced="${5:-false}"
+    local prog='{t:"preflight", ok:$ok, arch:$arch, mem_mb:$mem, disk_mb:$disk}'
+    [ "$forced" = "true" ] && prog='{t:"preflight", ok:$ok, arch:$arch, mem_mb:$mem, disk_mb:$disk, forced:true}'
+    jq -cn --argjson ok "$ok" --arg arch "$arch" --argjson mem "$mem" --argjson disk "$disk" "$prog"
 }
 
 # ev_step <id> <state> <title> [ms]

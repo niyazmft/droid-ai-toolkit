@@ -69,6 +69,8 @@ object Protocol {
         val destructive: Boolean,
         val minMemMb: Int,
         val minDiskMb: Int,
+        /** Arches this action can run on; empty means "no restriction declared". */
+        val arch: List<String>,
     )
 
     /** Every JSON line in the stream, in order. Non-JSON lines are dropped. */
@@ -167,8 +169,20 @@ object Protocol {
                 destructive = a.optBoolean("destructive"),
                 minMemMb = a.optJSONObject("requires")?.optInt("min_mem_mb") ?: 0,
                 minDiskMb = a.optJSONObject("requires")?.optInt("min_disk_mb") ?: 0,
+                arch = archList(a.optJSONObject("requires")),
             )
         }
+    }
+
+    /**
+     * `requires.arch`, or an empty list when the spec declares no restriction.
+     *
+     * The catalog has always carried this; the app ignored it, so a 32-bit device was
+     * offered Install for tools that only ship aarch64 builds and got a bare exit 3.
+     */
+    private fun archList(requires: JSONObject?): List<String> {
+        val arr = requires?.optJSONArray("arch") ?: return emptyList()
+        return (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
     }
 
     data class Step(

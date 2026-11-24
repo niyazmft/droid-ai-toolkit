@@ -613,6 +613,75 @@ removed automatically once `/rest/settings` reports
 `N8N_NODES_INCLUDE=[executeCommand,manualTrigger]` lines are removed. PM2 env
 handling still requires delete+start, not `pm2 restart`.
 
+## APK on a 32-bit device: --force, checkpoints, legacy detection (unreleased)
+
+Testing the client end-to-end on y6 (Android 9 / API 28, `armeabi-v7a`,
+`uname -m` = **armv8l**, 1.8 GB) found four defects that no earlier 8x pass could see,
+because 8x is aarch64 with 3.6 GB and its tools were installed by the *older* engine.
+
+**1. "Install anyway" did nothing.** The capacity dialog dispatched `--api run <id>` with
+no flag, and the engine had no override, so the promised bypass ended at
+`Command failed (exit 3)` (y6, 2026-11-24: Pi at 344 MB with `min_mem_mb: 384`).
+
+`--force` now exists end-to-end and overrides **capacity only**:
+
+- `runner_preflight <spec> [force]` keeps `requires.arch` and `requires.predicates` hard.
+  No intent makes armv8l run an aarch64 build, or makes `pkg install` find a package the
+  repo does not carry. A preflight that proceeds under `--force` emits `forced: true`.
+- The app sends `--force` from that dialog. Documented in `docs/CONTRACT.md`.
+- Verified on y6: Gemini Update (512 MB needed, 430 MB free) → dialog → `Install anyway`
+  → `deps/install/patch/verify` all ok, `0.71.1`.
+
+**2. Uninstall did not invalidate the install checkpoint.** `step_uninstall_tool` deleted
+`tools/<tool>`, but `state/<tool>.install.json` still said `install: ok` with an unchanged
+fingerprint, so the next Install was **skipped in 0 s** and the run died at verify
+(`not on PATH: pi`) — twice, before the cause was obvious. Both `step_uninstall_tool` and
+`step_hermes_uninstall` now delete `state/<tool>.*.json`. Verified on y6: after Remove,
+Install runs `phase 1/2: resolve` … `Done in 23 s`, shim written, verify `1.6.0`.
+
+**3. `ollama.install` claimed `armv8l` but Termux ships no 32-bit package.**
+`pkg install -y ollama` → `E: Unable to locate package ollama`, surfaced only as
+"Step failed: Install package" (the apt line lives in `~/.droid_ai_toolkit/log/`). The spec
+is now `arch: [aarch64, x86_64]` **and** `predicates: [pkg_available:ollama]`; the new
+`pred_pkg_available` reads `apt-cache policy` and is a hard preflight gate, so the refusal
+happens before any work.
+
+**4. The app ignored `requires.arch`.** It parsed `min_mem_mb`/`min_disk_mb` only, so
+Hermes, Nanobot, Paperclip and Ollama offered Install on a CPU that cannot run them, and
+the dialog blamed memory. `Protocol.Action.arch` now carries the list, and a row whose arch
+excludes this device reads "No build for armv8l" with a disabled "Not on this CPU" pill
+(the destructive pill stays usable). Verified on y6 for Hermes, Nanobot and Ollama.
+
+**Detection now means runnable.** `tools.installed` was `tools/<tool>` only, so y6 showed
+OpenClaw as "Disappeared — its files are gone" while 2026.9.3 served Telegram from the
+legacy `global/5` shim (y6 still has `@earendil-works/pi-coding-agent`,
+`@google/gemini-cli` and `openclaw` there; it has no `tools/` for any of them). It is now
+`tools/<tool>` **or** (legacy package **and** its bin on PATH). Both halves are
+load-bearing: the legacy directory alone still reports a tool after its shim was deleted
+(y6, right after Remove), and the shim alone survives a deleted package. Scoped names are
+checked too, because the old installer linked the scoped directory. Result: y6 2 of 8.
+8x was already migrated on 2026-11-22 (`tools/` only, no `global/`), so it was never
+affected by this one — do not cite it as a reproduction.
+
+**5. `postgres_running` accepted a supervisor as a database (8x).** The predicate fell
+back to `pgrep -f postgres` when `pg_isready` failed, and on 8x that matched
+**`runsv postgres`** — the Termux service wrapper — so Paperclip's gate passed while 5432
+answered nothing. With `--force` overriding the memory gate on top, the app started the
+full ~2 GB install (the interrupted clone left 61 MB in `~/paperclip`, removed by hand).
+`pg_isready` is now authoritative when present, and the fallback accepts only a
+postmaster (`pgrep -x postgres` or `postgres -D`). Re-ran on 8x:
+`preflight ok:false … unmet: postgres_running [--force does not override arch or
+predicates]`, exit 3, no work done.
+
+Known and deliberately **not** fixed in that pass: the client does not refresh after a run
+finishes (the count stays stale until the header refresh, ~11 s), and failures surface as a
+sticky "Command failed (exit N)" / "Step failed: <title>" with no reason — the actionable
+line is only in the run log.
+
+Note for anyone running the gate on this branch: `pnpm run lint:all` fails at **HEAD**
+(221 ktlint findings, 194 in `MainActivity.kt`), so a red ktlint is not evidence that a
+change broke something. Every other lint is clean.
+
 ## License Note
 
 `ATTRIBUTIONS.md` governs third-party redistribution rules. **n8n** is under the *Sustainable Use License*; commercial resale or embedding as a paid service requires an Enterprise license. Do not remove or alter `ATTRIBUTIONS.md` without legal review.

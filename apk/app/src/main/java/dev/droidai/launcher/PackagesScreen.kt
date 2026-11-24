@@ -75,6 +75,17 @@ private data class ToolRow(
     val installed: Boolean,
     val issue: String?,
     val actions: List<Protocol.Action>,
+    /** Device cpu, so an unsupported row can say which cpu it has. */
+    val cpu: String = "",
+    /**
+     * False when the action's own `requires.arch` excludes this device.
+     *
+     * The engine refuses such a run at preflight with exit 3, so offering the button
+     * only produces "Command failed (exit 3)" with no explanation — on y6 that was the
+     * whole Hermes/Nanobot/Paperclip experience. The catalog already carries the list;
+     * the app just has to read it.
+     */
+    val supported: Boolean = true,
 ) {
     val group: Group
         get() =
@@ -179,6 +190,11 @@ private fun rows(
         val mine = actions.filter { it.id.startsWith("$key.") }.sortedBy { it.id }
         if (mine.isEmpty()) return@mapNotNull null
         val installed = isInstalled(snapshot, key)
+        // The install action carries the arch restriction; its uninstall sibling is
+        // deliberately unrestricted (removing something must work on any cpu).
+        val archs = mine.firstOrNull { it.id.endsWith(".install") }?.arch.orEmpty()
+        val cpu = snapshot?.device?.arch.orEmpty()
+        val supported = archs.isEmpty() || cpu.isBlank() || archs.any { it.equals(cpu, ignoreCase = true) }
         ToolRow(
             key = key,
             title = title,
@@ -187,6 +203,8 @@ private fun rows(
             installed = installed,
             issue = issueFor(key, installed, snapshot, knownInstalled, failedTools),
             actions = mine,
+            cpu = cpu,
+            supported = supported,
         )
     }
 
@@ -469,7 +487,17 @@ private fun ToolRow(
                     if (row.version.isNotBlank()) "Installed · v${row.version}" else "Installed",
                     StateTone.OK,
                 )
-            Group.AVAILABLE -> UiState("Not installed", StateTone.PLAIN)
+            Group.AVAILABLE ->
+                if (row.supported) {
+                    UiState("Not installed", StateTone.PLAIN)
+                } else {
+                    // Said plainly, and before the user taps: this is not a device fault,
+                    // the tool has no build for this cpu.
+                    UiState(
+                        if (row.cpu.isBlank()) "Not available for this device" else "No build for ${row.cpu}",
+                        StateTone.PLAIN,
+                    )
+                }
         }
 
         Text(
@@ -486,10 +514,11 @@ private fun ToolRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             row.actions.forEach { action ->
+                val usable = row.supported || action.destructive
                 UiPill(
-                    label = actionLabel(action, row.installed),
+                    label = if (usable) actionLabel(action, row.installed) else "Not on this CPU",
                     onClick = { onRun(action) },
-                    enabled = !running,
+                    enabled = !running && usable,
                     ghost = action.destructive,
                 )
             }

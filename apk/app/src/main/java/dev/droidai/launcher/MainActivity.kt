@@ -1046,7 +1046,12 @@ private fun Home() {
             confirmButton = {
                 TextButton(onClick = {
                     capacity = null
-                    dispatch(listOf("--api", "run", a.id), a.title)
+                    // --force is what makes this button mean something: the engine
+                    // overrides its own memory/disk gates on request, and still refuses
+                    // an action whose architecture this device cannot run. Without it the
+                    // dialog promised a bypass and the run died with exit 3 (y6,
+                    // 2026-11-24).
+                    dispatch(listOf("--api", "run", a.id, "--force"), a.title)
                 }) { Text("Install anyway") }
             },
             dismissButton = {

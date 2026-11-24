@@ -88,5 +88,12 @@ step_hermes_uninstall() {
     else
         echo "already absent: $HOME/.hermes"
     fi
+
+    # Same reason as step_uninstall_tool: a stale "install: ok" checkpoint would skip the
+    # reinstall and fail at verify.
+    if command -v state_dir >/dev/null 2>&1; then
+        rm -f "$(state_dir)"/state/hermes.*.json 2>/dev/null || true
+        echo "cleared install checkpoints for hermes"
+    fi
     return 0
 }

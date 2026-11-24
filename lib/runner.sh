@@ -48,9 +48,14 @@ EOF
     return 1
 }
 
-# runner_preflight <spec> -- emits the preflight event; 0 ok, 3 refused.
+# runner_preflight <spec> [force] -- emits the preflight event; 0 ok, 3 refused.
+#
+# `force` (from --force) overrides the *capacity* gates only. Architecture and named
+# predicates are hard: no flag makes a 32-bit device run an aarch64-only tool, and
+# pretending otherwise would turn a clear refusal into a confusing failure later. The
+# event carries `forced:true` so the app can say the user insisted.
 runner_preflight() {
-    local spec="$1" arch allowed mem disk min_mem min_disk ok=1
+    local spec="$1" force="${2:-0}" arch allowed mem disk min_mem min_disk ok=1 short=0
     arch=$(pf_arch)
     mem=$(pf_mem_available_mb)
     disk=$(pf_disk_free_mb)
@@ -62,27 +67,44 @@ runner_preflight() {
         # shellcheck disable=SC2086  # word splitting is the point: a list of arches
         pf_arch_allowed $allowed || ok=0
     fi
-    [ "${mem:-0}" -lt "${min_mem:-0}" ] && ok=0
-    [ "${disk:-0}" -lt "${min_disk:-0}" ] && ok=0
 
     # Named preconditions a spec can require (probe.sh predicates). Used for things a
     # numeric threshold cannot express, e.g. "a warm wheel cache exists" — without one,
     # pip would compile cryptography for 30-90 minutes and probably be OOM-killed.
-    local preds p failed=""
+    # `name:arg` is split the same way a step's `when` is, so a predicate that needs an
+    # argument (pkg_available:ollama) can be used as a hard precondition.
+    local preds p pname parg failed=""
     preds=$(printf '%s' "$spec" | jq -r '(.requires.predicates // []) | join(" ")')
     for p in $preds; do
-        if ! pred_apply "$p"; then
+        case "$p" in
+            *:*) pname="${p%%:*}"; parg="${p#*:}" ;;
+            *)   pname="$p"; parg="" ;;
+        esac
+        if ! pred_apply "$pname" "$parg"; then
             failed="$failed $p"
             ok=0
         fi
     done
+
+    # Capacity is advice, not a prohibition: the user can see the numbers and decide.
+    [ "${mem:-0}" -lt "${min_mem:-0}" ] && short=1
+    [ "${disk:-0}" -lt "${min_disk:-0}" ] && short=1
+
+    if [ "$ok" -eq 1 ] && [ "$short" -eq 1 ] && [ "$force" -eq 1 ]; then
+        ev_preflight true "$arch" "${mem:-0}" "${disk:-0}" true
+        ev_log preflight "capacity overridden (--force): mem=${mem}MB (need ${min_mem}MB) disk=${disk}MB (need ${min_disk}MB)"
+        return 0
+    fi
+    [ "$short" -eq 1 ] && ok=0
 
     if [ "$ok" -eq 1 ]; then
         ev_preflight true "$arch" "${mem:-0}" "${disk:-0}"
         return 0
     fi
     ev_preflight false "$arch" "${mem:-0}" "${disk:-0}"
-    ev_log preflight "refused: arch=$arch (allowed: ${allowed:-any}) mem=${mem}MB (need ${min_mem}MB) disk=${disk}MB (need ${min_disk}MB)${failed:+ unmet:${failed}}"
+    local hint=""
+    [ "$force" -eq 1 ] && hint=" [--force does not override arch or predicates]"
+    ev_log preflight "refused: arch=$arch (allowed: ${allowed:-any}) mem=${mem}MB (need ${min_mem}MB) disk=${disk}MB (need ${min_disk}MB)${failed:+ unmet:${failed}}${hint}"
     return 3
 }
 
@@ -110,7 +132,7 @@ runner_run() {
     run_id="${API_RUN_ID:-$(date +%s)-$$}"
     ev_start "$id" "$run_id"
 
-    runner_preflight "$spec" || { ev_done 3 "[]"; return 3; }
+    runner_preflight "$spec" "${API_FORCE:-0}" || { ev_done 3 "[]"; return 3; }
 
     # A destructive spec must be confirmed explicitly. The TUI asks a human; the API
     # has no human, so --yes is the only acceptable proof of intent.

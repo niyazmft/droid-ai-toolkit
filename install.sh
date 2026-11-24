@@ -43,6 +43,11 @@ API_FRESH=0
 # the APK's supervisor, which polls status on a timer and cannot afford 19 s of CPU.
 API_FAST=0
 ASSUME_YES=0
+# --force: the user has seen the "may not fit" warning and wants to try anyway. It
+# overrides the capacity gates (memory, disk) and nothing else: a spec whose arch or
+# predicate is unsatisfied is refused regardless, because no amount of intent makes
+# armv8l run an aarch64-only tool.
+API_FORCE=0
 # Parameters for an action (--arg key=value), passed to steps as JSON.
 API_PARAMS='{}'
 while [ $# -gt 0 ]; do
@@ -52,6 +57,7 @@ while [ $# -gt 0 ]; do
         --yes|-y)       ASSUME_YES=1 ;;
         --fresh)        API_FRESH=1 ;;
         --fast)         API_FAST=1 ;;
+        --force)        API_FORCE=1 ;;
         --answers)      shift; API_ANSWERS="${1:-}" ;;
         --arg)
             # key=value, repeatable. Kept as JSON so a step can read it without the
@@ -6602,6 +6608,8 @@ if [ "$API_MODE" -eq 1 ]; then
     # Read by lib/steps/status.sh. Exported rather than passed as an arg so the step
     # contract (see actions/status.json) does not change shape for a caller-side wish.
     export DROIDAI_STATUS_FAST="$API_FAST"
+    # Read by lib/runner.sh: capacity gates are advisory when the caller says so.
+    export API_FORCE
     api_dispatch
     exit $?
 fi

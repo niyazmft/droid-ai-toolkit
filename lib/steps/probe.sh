@@ -86,11 +86,35 @@ pred_apply() {
     "pred_$name" "$@"
 }
 
+# pred_pkg_available <name> -- does the Termux repo carry this package for THIS cpu?
+#
+# A missing package is a preflight fact, not a runtime failure: without this the app
+# downloads nothing, runs `pkg install`, and reports "Step failed: Install package" with
+# the real reason (E: Unable to locate package) buried in a log (y6, 2026-11-24).
+#
+# Only answers on a device with apt-cache; elsewhere it returns 0 ("do not block"), since
+# a non-Termux host is not something this predicate can judge.
+pred_pkg_available() {
+    local name="${1:-}" candidate
+    [ -n "$name" ] || return 1
+    command -v apt-cache >/dev/null 2>&1 || return 0
+    candidate=$(apt-cache policy "$name" 2>/dev/null | awk '/Candidate:/ {print $2; exit}')
+    [ -n "$candidate" ] && [ "$candidate" != "(none)" ]
+}
+
 # pred_postgres_running -- Paperclip needs PostgreSQL up before it starts; it has no
 # way to bring the cluster up itself.
+#
+# The two halves must not be alternatives. On 8x `pg_isready` exists and reports the
+# server down, but the old fallback `pgrep -f postgres` then matched **`runsv postgres`**
+# — the Termux service supervisor, not the database — so the gate passed and a ~2 GB
+# Paperclip install started against a dead cluster (2026-11-24, with --force overriding
+# the memory gate on top). A supervisor says nothing about whether 5432 answers.
 pred_postgres_running() {
     if command -v pg_isready >/dev/null 2>&1; then
-        pg_isready -q -h 127.0.0.1 -p 5432 2>/dev/null && return 0
+        pg_isready -q -h 127.0.0.1 -p 5432 2>/dev/null
+        return
     fi
-    pgrep -f "postgres" >/dev/null 2>&1
+    # No pg_isready to ask: accept only a postmaster, never a wrapper around it.
+    pgrep -x postgres >/dev/null 2>&1 || pgrep -f "postgres -D" >/dev/null 2>&1
 }

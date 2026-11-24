@@ -15,11 +15,23 @@ matters for anyone who does not want to install the APK. They must agree because
 ```bash
 bash install.sh --api list
 bash install.sh --api status [--fast]
-bash install.sh --api run <action-id> [--answers FILE] [--fresh] [--yes]
+bash install.sh --api run <action-id> [--answers FILE] [--fresh] [--yes] [--force]
 ```
 
 `--api` runs headless: no menu, no TUI, no TTY required. The TUI is a separate frontend
 over the same actions.
+
+### `--force`
+
+`--force` lets the caller override the **capacity** gates (`min_mem_mb`, `min_disk_mb`)
+after showing the numbers to a human: it is the "install anyway" button, and without it
+that button cannot keep its promise. The preflight event then reports `ok: true` with
+`forced: true`.
+
+It does **not** override `requires.arch` or `requires.predicates`. No amount of intent
+makes a 32-bit device run an aarch64-only tool, or makes `pkg install` find a package the
+repo does not carry; those still return exit 3. A caller that disables the button instead
+of relying on the refusal is showing the user the truth earlier.
 
 ### `--fast`
 
@@ -37,7 +49,7 @@ Use `--fast` for polling, and the full form when a screen is about to display ve
 | `t` | Meaning | Fields |
 |---|---|---|
 | `start` | run begins | `schema`, `action`, `run_id` |
-| `preflight` | device gates evaluated | `ok`, `arch`, `mem_mb`, `disk_mb` |
+| `preflight` | device gates evaluated | `ok`, `arch`, `mem_mb`, `disk_mb`, `forced` (only when `--force` overrode a capacity gate) |
 | `step` | a step changed state | `id`, `state` (`running`/`ok`/`failed`/`skipped`), `title`, `ms` |
 | `ask` | engine needs an answer | `id`, `kind` (`confirm`/`text`/`choice`), `title`, `default`/`options` |
 | `log` | a line of detail | `step`, `line` |
@@ -55,7 +67,7 @@ under `~/.droid_ai_toolkit/log/`.
 | 0 | success |
 | 1 | a step failed |
 | 2 | usage error |
-| 3 | preflight refused (arch, RAM, disk, missing tool, not Termux) |
+| 3 | preflight refused (arch, RAM/disk without `--force`, unmet predicate, not Termux) |
 | 4 | cancelled — including a destructive action without `--yes` |
 | 5 | an `ask` was not answered |
 | 137 | a step was SIGKILLed and retries were exhausted |
@@ -68,6 +80,15 @@ under `~/.droid_ai_toolkit/log/`.
 - **Queries always run.** `status`'s snapshot step is not idempotent, so it re-reads the
   device every time. Skipping it produced a stream with no `data` event, which every
   consumer reads as failure.
+- **Uninstalling invalidates the install checkpoint.** A tool's install step is
+  idempotent, so its `ok` record would otherwise survive the removal and make the next
+  Install a no-op that fails at verify. `step_uninstall_tool` and `step_hermes_uninstall`
+  delete `state/<tool>.*.json` for exactly this reason.
+- **Presence means either layout.** `tools.installed` is true when the per-tool project
+  exists **or** the pre-migration `global/<n>/node_modules/<pkg>` exists *and* the tool's
+  bin is on PATH. Devices that never migrated (y6 still serves OpenClaw from `global/5`)
+  would otherwise be reported as "Disappeared — its files are gone" while the gateway is
+  running; the PATH half is what keeps a removed tool from still counting as installed.
 - **Destructive needs `--yes`.** A spec with `"destructive": true` returns exit 4
   without it. The app confirms in a dialog and passes the flag.
 - **No answer, no default.** An unanswered `ask` aborts (exit 5). Silence is never

@@ -161,6 +161,18 @@ step_uninstall_tool() {
         echo "already absent: $dir"
     fi
 
+    # Removing the tool invalidates every checkpoint that says it is installed. Without
+    # this, "already done" is keyed to the step definition, which has not changed — so the
+    # next Install is skipped, the tool is never put back, and the run dies at verify
+    # (observed on y6, 2026-11-24: install ok in 0 s, then `not on PATH: pi`).
+    if command -v state_dir >/dev/null 2>&1; then
+        local st
+        st=$(state_dir)
+        # shellcheck disable=SC2086  # the glob is the point: every action for this tool
+        rm -f "$st"/state/$tool.*.json 2>/dev/null || true
+        echo "cleared install checkpoints for $tool"
+    fi
+
     # Shims written by _pnpm_link_bins exec a path inside the removed project.
     for bin in "$TERMUX_BIN"/*; do
         [ -f "$bin" ] || continue
