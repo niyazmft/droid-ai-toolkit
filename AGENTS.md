@@ -720,6 +720,42 @@ in `MainActivity.kt`, which made a red gate meaningless. `ktlint --format` plus 
 KDoc blocks fixed it; the gate now passes end to end, so a failure there is a failure
 again.
 
+### APK state model — do not reintroduce composition-local state
+
+The client follows the platform model now, and each rule exists because its absence caused a
+real defect. Before adding a screen, read this list:
+
+- **State lives in `HomeViewModel` + `HomeState`, not in `remember`.** `remember` inside a
+  composable loses its value on rotation (that is how the step list, raw output and the
+  failure banner used to vanish), and `LaunchedEffect(result)` re-ran on the *stale* result,
+  queueing a second status run per rotate. `rememberSaveable` is only for view position: tab,
+  sub-screen, search query, collapse flags.
+- **Results are events: `Runner.completions` (buffered `SharedFlow`).** `Runner.result` stays a
+  `StateFlow` **only** for the supervisor's `withTimeoutOrNull { … first() }` await, which
+  depends on replay. Routing UI through it again reintroduces conflation (a poll and a tap
+  landing together drops one) and cancellation of a half-applied handler.
+- **Collect with `collectAsStateWithLifecycle`, and put timers inside
+  `repeatOnLifecycle(STARTED)`.** A Composition outlives STOP: the old 30 s "age" ticker kept
+  recomposing `Home` in the background, and a foreground-service start from a backgrounded
+  composition is not allowed (`runCatching` used to hide that).
+- **`Runner.send` is serialised on one lock** and safe from any thread. The check-then-act on
+  `_running` could dispatch two RUN_COMMANDs through one `REQUEST_CODE`, losing a result and
+  clearing `running` mid-install.
+- **`SupervisorService` runs on `Dispatchers.Main.immediate`**, so its fields are
+  single-threaded by construction. Do not move it back to `Default` without making them
+  atomic.
+- **Flags in `Prefs` (`SharedPreferences`), documents in a file.** The last status document is
+  `StatusStore` (IO); it used to be a multi-KB JSON string inside the XML that every startup
+  parses whole. `Prefs.lastStatusAt` stays a `Long` because `onResume` needs it synchronously.
+- **Parse once.** `Protocol.parse(stdout)` returns a `Parsed` holder; deriving snapshot,
+  catalogue, steps and failure from it is an O(1) view. Calling the old per-view functions
+  re-parses the whole stream each time — five times per result, on the main thread.
+- **Foreground service types are declared, not guessed.** `specialUse` +
+  `FOREGROUND_SERVICE_SPECIAL_USE`, and `POST_NOTIFICATIONS` is requested in context. With
+  `dataSync` and no type permission, `startForeground()` throws `SecurityException` on
+  Android 14+, and an ungranted notification permission makes the supervisor invisible —
+  both silently, which is why neither test device (API 28 / pre-14) ever caught it.
+
 ## License Note
 
 `ATTRIBUTIONS.md` governs third-party redistribution rules. **n8n** is under the *Sustainable Use License*; commercial resale or embedding as a paid service requires an Enterprise license. Do not remove or alter `ATTRIBUTIONS.md` without legal review.

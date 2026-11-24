@@ -24,6 +24,7 @@ object Prefs {
     private const val KEY_LAST_STATUS_AT = "last_status_at"
     private const val KEY_RESTART_ATTEMPTS = "restart_attempts"
     private const val KEY_THEME = "theme_mode"
+    private const val KEY_NOTIFICATION_ASKED = "notification_asked"
 
     /** Theme overrides. Both palettes are designed, so this is a real choice, not a fallback. */
     const val THEME_SYSTEM = "system"
@@ -72,13 +73,13 @@ object Prefs {
     val failedTools = MutableStateFlow<Set<String>>(emptySet())
 
     /**
-     * The last status document, and when it was taken.
+     * When the status document was last taken.
      *
-     * With no clock-driven polling, the first frame after opening the app has nothing to
-     * show. Rendering the previous answer with its age is honest; rendering an empty screen
-     * or silently showing old numbers as if they were live is not.
+     * The document itself lives in [StatusStore] — a multi-KB JSON blob does not belong in
+     * an XML file that is parsed whole on the main thread at startup (D14). This `Long`
+     * stays here because `onResume` needs it synchronously to decide whether a refresh is
+     * due.
      */
-    val lastStatus = MutableStateFlow("")
     val lastStatusAt = MutableStateFlow(0L)
 
     /**
@@ -98,6 +99,16 @@ object Prefs {
      */
     val themeMode = MutableStateFlow(THEME_SYSTEM)
 
+    /**
+     * The system notification permission has been asked for at least once.
+     *
+     * On API 33+ the supervisor's notification is invisible without that grant, which
+     * silently defeats the one thing the supervisor exists for. It is asked in context
+     * (when the supervisor is on) and exactly once — a permission dialog on every launch
+     * is how an app gets its notification channel turned off for good.
+     */
+    val notificationAsked = MutableStateFlow(false)
+
     fun init(context: Context) {
         val prefs = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         store = prefs
@@ -108,10 +119,13 @@ object Prefs {
         supervisorEnabled.value = prefs.getBoolean(KEY_SUPERVISOR, true)
         installedTools.value = prefs.getStringSet(KEY_INSTALLED, emptySet())?.toSet() ?: emptySet()
         failedTools.value = prefs.getStringSet(KEY_FAILED, emptySet())?.toSet() ?: emptySet()
-        lastStatus.value = prefs.getString(KEY_LAST_STATUS, "").orEmpty()
         lastStatusAt.value = prefs.getLong(KEY_LAST_STATUS_AT, 0L)
+        // The status document moved to StatusStore. Remove the leftover payload so the XML
+        // file (and therefore every startup read) goes back to being tiny.
+        if (prefs.contains(KEY_LAST_STATUS)) prefs.edit().remove(KEY_LAST_STATUS).apply()
         restartAttempts.value = prefs.getInt(KEY_RESTART_ATTEMPTS, 0)
         themeMode.value = prefs.getString(KEY_THEME, THEME_SYSTEM) ?: THEME_SYSTEM
+        notificationAsked.value = prefs.getBoolean(KEY_NOTIFICATION_ASKED, false)
     }
 
     fun setRestartAttempts(value: Int) {
@@ -120,15 +134,9 @@ object Prefs {
         store?.edit()?.putInt(KEY_RESTART_ATTEMPTS, value)?.apply()
     }
 
-    fun saveLastStatus(stdout: String) {
-        val at = System.currentTimeMillis()
-        lastStatus.value = stdout
+    fun setLastStatusAt(at: Long) {
         lastStatusAt.value = at
-        store
-            ?.edit()
-            ?.putString(KEY_LAST_STATUS, stdout)
-            ?.putLong(KEY_LAST_STATUS_AT, at)
-            ?.apply()
+        store?.edit()?.putLong(KEY_LAST_STATUS_AT, at)?.apply()
     }
 
     fun setInstalledTools(value: Set<String>) {
@@ -178,5 +186,11 @@ object Prefs {
         if (themeMode.value == value) return
         themeMode.value = value
         store?.edit()?.putString(KEY_THEME, value)?.apply()
+    }
+
+    fun setNotificationAsked() {
+        if (notificationAsked.value) return
+        notificationAsked.value = true
+        store?.edit()?.putBoolean(KEY_NOTIFICATION_ASKED, true)?.apply()
     }
 }

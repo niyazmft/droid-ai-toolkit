@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -51,7 +52,19 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 class SupervisorService : Service() {
     private val job = SupervisorJob()
-    private val scope = CoroutineScope(job + Dispatchers.Default)
+
+    /**
+     * Main-confined on purpose.
+     *
+     * The receiver callbacks arrive on the main thread and [Runner] serialises its own state
+     * under a lock, so running the checks on `Dispatchers.Main.immediate` makes every field
+     * below single-threaded by construction. The work that used to justify a background
+     * dispatcher is a suspending command, not a blocking call: `tick()` waits on a flow, and
+     * the metric write hops to IO itself.
+     */
+    private val scope = CoroutineScope(job + Dispatchers.Main.immediate)
+
+    // Touched only from the main thread (see [scope]).
     private var lastCheckAt = 0L
     private var lastHealthy = true
     private var checkInFlight = false
@@ -77,7 +90,18 @@ class SupervisorService : Service() {
         super.onCreate()
         Prefs.init(this)
         createChannel()
-        startForeground(NOTIFICATION_ID, notification("Starting…", "watching the toolkit"))
+        // The type is passed explicitly on API 34+: the platform verifies it against the
+        // manifest declaration *and* the FOREGROUND_SERVICE_SPECIAL_USE grant, which is the
+        // check that a `dataSync` declaration without FOREGROUND_SERVICE_DATA_SYNC was failing.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification("Starting…", "watching the toolkit"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification("Starting…", "watching the toolkit"))
+        }
         postedTitle = "Starting…"
         postedText = "watching the toolkit"
 

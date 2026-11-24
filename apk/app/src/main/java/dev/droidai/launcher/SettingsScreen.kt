@@ -17,7 +17,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,6 +27,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 private const val APP_VERSION = "0.1.0"
 
@@ -42,19 +42,21 @@ private const val APP_VERSION = "0.1.0"
 fun SettingsScreen(
     snapshot: Protocol.Snapshot?,
     running: Boolean,
+    notificationsGranted: Boolean = true,
     onRefresh: () -> Unit,
     onRecheckPermission: () -> Unit,
+    onRequestNotifications: () -> Unit = {},
     onRunAction: (String) -> Unit,
 ) {
     val context = LocalContext.current
-    val autoStart by Prefs.autoStartGateway.collectAsState()
-    val supervisorOn by Prefs.supervisorEnabled.collectAsState()
-    val confirmRemove by Prefs.confirmRemove.collectAsState()
-    val retainRaw by Prefs.retainRaw.collectAsState()
-    val themeMode by Prefs.themeMode.collectAsState()
+    val autoStart by Prefs.autoStartGateway.collectAsStateWithLifecycle()
+    val supervisorOn by Prefs.supervisorEnabled.collectAsStateWithLifecycle()
+    val confirmRemove by Prefs.confirmRemove.collectAsStateWithLifecycle()
+    val retainRaw by Prefs.retainRaw.collectAsStateWithLifecycle()
+    val themeMode by Prefs.themeMode.collectAsStateWithLifecycle()
     // collectAsState, not .value: the row used to keep showing the old answer after
     // "Re-check" succeeded, because reading a StateFlow value is not observable.
-    val permission by Gate.permissionGranted.collectAsState()
+    val permission by Gate.permissionGranted.collectAsStateWithLifecycle()
     var confirmCleanup by remember { mutableStateOf(false) }
 
     // No verticalScroll here: this screen is rendered inside the tab content's scroller,
@@ -106,6 +108,17 @@ fun SettingsScreen(
                         "and nothing restarts services by itself.",
                 checked = supervisorOn,
             ) { Prefs.setSupervisorEnabled(it) }
+            // The grant is not optional: without it Android hides the notification while the
+            // service keeps running, which is the one failure mode with no visible symptom.
+            if (supervisorOn && !notificationsGranted) {
+                Text(
+                    "Android is blocking this app's notifications, so the supervisor cannot " +
+                        "tell you when a service stops.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                UiPill(label = "Turn on notifications", ghost = true, onClick = onRequestNotifications)
+            }
             SwitchRow(
                 title = "Restart the gateway automatically",
                 subtitle =

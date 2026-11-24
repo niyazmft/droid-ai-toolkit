@@ -12,9 +12,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -26,8 +26,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.max
 
@@ -44,14 +45,17 @@ private const val HOUR_MS = 60L * 60 * 1000
 fun MetricsScreen(snapshot: Protocol.Snapshot?) {
     val context = LocalContext.current
     var windowHours by remember { mutableStateOf(24) }
-    var samples by remember { mutableStateOf<List<Metrics.Sample>>(emptyList()) }
 
     // Canvas draw scope is not composable, so colours are resolved here.
     val barColor = MaterialTheme.colorScheme.primary
 
-    LaunchedEffect(windowHours, snapshot) {
-        samples = Metrics.load(context, windowHours * HOUR_MS)
-    }
+    // Keyed on the window only, and read off the main thread: this used to be keyed on
+    // `snapshot` as well, so every status refresh re-read and re-parsed the entire file on
+    // the Compose main dispatcher.
+    val samples by
+        produceState<List<Metrics.Sample>>(initialValue = emptyList(), windowHours) {
+            value = Metrics.load(context, windowHours * HOUR_MS)
+        }
 
     Column(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -169,7 +173,11 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
     }
 }
 
-private fun formatTime(ts: Long): String = SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(ts))
+// Immutable and thread-safe; the old per-row SimpleDateFormat allocated an object per label
+// per recomposition, and java.time is native at minSdk 28.
+private val TIME_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm", Locale.US)
+
+private fun formatTime(ts: Long): String = TIME_FMT.format(Instant.ofEpochMilli(ts).atZone(ZoneId.systemDefault()))
 
 /** Service-count changes, which is what a restart or an LMK kill looks like in the data. */
 private fun transitions(samples: List<Metrics.Sample>): List<Pair<Long, String>> {

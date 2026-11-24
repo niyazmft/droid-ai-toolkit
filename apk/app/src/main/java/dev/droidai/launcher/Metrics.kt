@@ -1,6 +1,8 @@
 package dev.droidai.launcher
 
 import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 
@@ -29,50 +31,65 @@ object Metrics {
 
     private fun file(context: Context): File = File(context.filesDir, FILE)
 
-    @Synchronized
-    fun record(
+    /** Serialises the file work; the annotation cannot be used on a suspend function. */
+    private val fileLock = Any()
+
+    suspend fun record(
         context: Context,
         sample: Sample,
     ) {
-        runCatching {
-            val f = file(context)
-            f.appendText(
-                JSONObject()
-                    .put("ts", sample.ts)
-                    .put("mem", sample.memMb)
-                    .put("swap", sample.swapMb)
-                    .put("svc", sample.services)
-                    .put("rss", sample.rssMb)
-                    .toString() + "\n",
-            )
-            if (f.length() > PRUNE_ABOVE_BYTES) prune(f)
+        withContext(Dispatchers.IO) {
+            synchronized(fileLock) {
+                runCatching {
+                    val f = file(context)
+                    f.appendText(
+                        JSONObject()
+                            .put("ts", sample.ts)
+                            .put("mem", sample.memMb)
+                            .put("swap", sample.swapMb)
+                            .put("svc", sample.services)
+                            .put("rss", sample.rssMb)
+                            .toString() + "\n",
+                    )
+                    if (f.length() > PRUNE_ABOVE_BYTES) prune(f)
+                }
+            }
         }
     }
 
-    @Synchronized
-    fun load(
+    /**
+     * Samples inside the window, newest last.
+     *
+     * Suspending and IO-dispatched on purpose: this reads and JSON-parses up to a few thousand
+     * lines, and it used to do that on whatever thread called it — which was the Compose main
+     * dispatcher, once per status snapshot.
+     */
+    suspend fun load(
         context: Context,
         windowMs: Long,
-    ): List<Sample> {
-        val f = file(context)
-        if (!f.exists()) return emptyList()
-        val since = System.currentTimeMillis() - windowMs
-        return runCatching {
-            f.readLines().mapNotNull { line ->
-                if (line.isBlank()) return@mapNotNull null
-                val o = runCatching { JSONObject(line) }.getOrNull() ?: return@mapNotNull null
-                val ts = o.optLong("ts")
-                if (ts < since) return@mapNotNull null
-                Sample(
-                    ts = ts,
-                    memMb = o.optInt("mem"),
-                    swapMb = o.optInt("swap"),
-                    services = o.optInt("svc"),
-                    rssMb = o.optInt("rss"),
-                )
+    ): List<Sample> =
+        withContext(Dispatchers.IO) {
+            synchronized(fileLock) {
+                val f = file(context)
+                if (!f.exists()) return@synchronized emptyList<Sample>()
+                val since = System.currentTimeMillis() - windowMs
+                runCatching {
+                    f.readLines().mapNotNull { line ->
+                        if (line.isBlank()) return@mapNotNull null
+                        val o = runCatching { JSONObject(line) }.getOrNull() ?: return@mapNotNull null
+                        val ts = o.optLong("ts")
+                        if (ts < since) return@mapNotNull null
+                        Sample(
+                            ts = ts,
+                            memMb = o.optInt("mem"),
+                            swapMb = o.optInt("swap"),
+                            services = o.optInt("svc"),
+                            rssMb = o.optInt("rss"),
+                        )
+                    }
+                }.getOrDefault(emptyList())
             }
-        }.getOrDefault(emptyList())
-    }
+        }
 
     private fun prune(f: File) {
         runCatching {

@@ -1,0 +1,371 @@
+package dev.droidai.launcher
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/**
+ * Everything a run produces, as one immutable value.
+ *
+ * This used to live in a dozen `remember` slots inside `Home()`, which meant a rotation
+ * silently dropped the step list, the raw output and the pinned failure banner — and, worse,
+ * re-ran `LaunchedEffect(result)` on the *stale* result, queueing a second status run and
+ * re-showing a completion message for work that had happened before the rotate. A ViewModel
+ * is the platform's answer to exactly that, and it survives configuration change by design
+ * (D13).
+ *
+ * What deliberately stays in the composable: which tab is open, whether the raw sub-screen
+ * is showing, the search query, collapse state, dialog visibility, and the "now" used to age
+ * the last check. Those are view position, not application state.
+ */
+data class HomeState(
+    /** The last full status document, parsed. `null` until one exists. */
+    val snapshot: Protocol.Snapshot? = null,
+    val checkedAt: Long = 0L,
+    val actions: List<Protocol.Action> = emptyList(),
+    /** Final state of each step in the last run the *user* started. */
+    val steps: List<Protocol.Step> = emptyList(),
+    val raw: String = "",
+    /** The pinned failure banner, with the evidence behind it. */
+    val failure: Protocol.Failure? = null,
+    val running: Boolean = false,
+    val runLabel: String = "",
+    val elapsedSeconds: Long = 0L,
+    /** A destructive action awaiting confirmation. */
+    val pending: Protocol.Action? = null,
+    /** An action whose `min_mem_mb`/`min_disk_mb` this device does not meet. */
+    val capacity: Protocol.Action? = null,
+    /** Packages other than this app that can run commands in Termux. */
+    val foreign: List<String> = emptyList(),
+)
+
+/**
+ * The state machine behind the Overview and Packages screens.
+ *
+ * ## Why results are collected here, once
+ *
+ * `Runner.completions` is a buffered `SharedFlow`, collected in `viewModelScope`: sequential,
+ * never cancelled half-way by a recomposition, and never conflated (D15). The previous shape
+ * — `collectAsState()` plus `LaunchedEffect(result)` — had all three failure modes at once.
+ *
+ * ## Why the clock lives here
+ *
+ * The elapsed-time readout is a property of the run, not of the screen, so it ticks while a
+ * run is in flight even if the user switches tabs. It also calls [Runner.checkCeiling] every
+ * second: that is the safety net that clears a run whose result never arrived, and it must
+ * not depend on anything being on screen.
+ */
+class HomeViewModel(
+    application: Application,
+) : AndroidViewModel(application) {
+    private val app = application
+    private val _state = MutableStateFlow(HomeState())
+    val state: StateFlow<HomeState> = _state.asStateFlow()
+
+    /**
+     * One-shot messages for the snackbar.
+     *
+     * A `Channel`, not a value in [state]: a completion message must be shown once, not
+     * re-shown every time the screen is recreated.
+     */
+    private val _notices = Channel<String>(Channel.BUFFERED)
+    val notices: Flow<String> = _notices.receiveAsFlow()
+
+    /** At most one `--api list` per process, so a device with no catalog does not loop. */
+    private var catalogRequested = false
+
+    private var clock: Job? = null
+
+    init {
+        // The previous answer, so the first frame is not empty. Read on IO (it is a file), and
+        // parsed off the main thread (it is NDJSON).
+        viewModelScope.launch {
+            val saved = StatusStore.load(app)
+            if (saved.isNotBlank()) {
+                val parsed = withContext(Dispatchers.Default) { Protocol.parse(saved) }
+                parsed.snapshot?.let { snap ->
+                    _state.update { it.copy(snapshot = snap, checkedAt = Prefs.lastStatusAt.value) }
+                }
+            }
+            maybeRequestCatalog()
+        }
+
+        // A PackageManager query is a Binder call; not on the main thread for a first frame.
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(foreign = Security.foreignHolders(app)) }
+        }
+
+        viewModelScope.launch { Runner.completions.collect { handle(it) } }
+
+        viewModelScope.launch {
+            Runner.running.collect { running ->
+                _state.update { it.copy(running = running) }
+                if (running) startClock() else stopClock()
+                // No catalog request here on purpose: this block can resume inside the
+                // transport's critical section (a StateFlow write runs a Main.immediate
+                // collector inline), and the catalogue decision needs the parsed result,
+                // which [handle] has and this does not.
+            }
+        }
+
+        viewModelScope.launch {
+            Runner.label.collect { label -> _state.update { it.copy(runLabel = label) } }
+        }
+    }
+
+    // ---- callers -------------------------------------------------------------------------
+
+    /** A full, non-`--fast` read: this is what fills versions in Packages. */
+    fun refresh() = dispatch(listOf("--api", "status"), "Read device status")
+
+    /**
+     * Run a catalog action, after the two dialogs the catalog can demand.
+     *
+     * The order matters and is the engine's: a destructive action asks for confirmation, a
+     * device that does not meet the declared budget asks before starting, and everything
+     * else goes straight through.
+     */
+    fun onRun(action: Protocol.Action) {
+        val snap = _state.value.snapshot
+        val short =
+            snap != null &&
+                (
+                    (action.minMemMb > 0 && snap.device.memAvailableMb < action.minMemMb) ||
+                        (action.minDiskMb > 0 && snap.device.diskFreeMb < action.minDiskMb)
+                )
+
+        when {
+            action.destructive && Prefs.confirmRemove.value -> _state.update { it.copy(pending = action) }
+            action.destructive -> dispatch(listOf("--api", "run", action.id, "--yes"), action.title)
+            short -> _state.update { it.copy(capacity = action) }
+            else -> dispatch(listOf("--api", "run", action.id), action.title)
+        }
+    }
+
+    fun confirmPending() {
+        val action = _state.value.pending ?: return
+        _state.update { it.copy(pending = null) }
+        // The engine refuses a destructive spec without this flag.
+        dispatch(listOf("--api", "run", action.id, "--yes"), action.title)
+    }
+
+    fun cancelPending() = _state.update { it.copy(pending = null) }
+
+    fun confirmCapacity() {
+        val action = _state.value.capacity ?: return
+        _state.update { it.copy(capacity = null) }
+        // `--force` overrides capacity only; arch and predicates stay hard in the engine.
+        dispatch(listOf("--api", "run", action.id, "--force"), action.title)
+    }
+
+    fun cancelCapacity() = _state.update { it.copy(capacity = null) }
+
+    fun dismissFailure() = _state.update { it.copy(failure = null) }
+
+    /**
+     * A service row action (`service.stop`, `service.restart`, `service.resurrect`).
+     *
+     * The target travels as `--arg service=<name>`, which is the engine's argument
+     * primitive — the app never interpolates a name into a shell string.
+     */
+    fun runService(
+        actionId: String,
+        service: String?,
+        label: String,
+    ) {
+        val args =
+            buildList {
+                add("--api")
+                add("run")
+                add(actionId)
+                if (service != null) {
+                    add("--arg")
+                    add("service=$service")
+                }
+            }
+        dispatch(args, label)
+    }
+
+    /** Run an action a screen has already confirmed (Settings → legacy-folder cleanup). */
+    fun runConfirmed(
+        id: String,
+        label: String,
+    ) = dispatch(listOf("--api", "run", id, "--yes"), label)
+
+    fun refreshForeign() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(foreign = Security.foreignHolders(app)) }
+        }
+    }
+
+    /** Say something in the app's voice, once. */
+    fun say(message: String) {
+        _notices.trySend(message)
+    }
+
+    /**
+     * Android is short on memory: drop what can be re-read.
+     *
+     * The raw buffer is the only large thing this screen holds, and it is a debugging aid —
+     * losing it is always better than losing the process that is watching Termux.
+     */
+    fun trimMemory() {
+        _state.update { it.copy(raw = "") }
+    }
+
+    override fun onCleared() {
+        stopClock()
+        super.onCleared()
+    }
+
+    // ---- internals -----------------------------------------------------------------------
+
+    private fun dispatch(
+        args: List<String>,
+        label: String,
+    ) {
+        // Starting an action is a retry, so the previous verdict goes. Re-reading the device
+        // is not: Refresh is a USER run too, and tapping it to ask "is it fixed now?" must not
+        // delete the sentence that says what was broken.
+        if (args.getOrNull(1) == "run") _state.update { it.copy(failure = null) }
+        when (Runner.send(app, args, Origin.USER, label)) {
+            Dispatch.QUEUED -> say("Starting $label as soon as the current run finishes.")
+            Dispatch.FAILED -> say("Could not reach Termux. Tap Refresh.")
+            else -> Unit
+        }
+    }
+
+    private suspend fun handle(completion: Completion) {
+        val result = completion.result
+        // One parse of one stream, off the main thread. Every view below is derived from it.
+        val parsed = withContext(Dispatchers.Default) { Protocol.parse(result.stdout) }
+        val fromUser = completion.origin == Origin.USER
+
+        // The supervisor polls through the same transport; its result must not overwrite the
+        // record of what the user actually just did.
+        if (fromUser) {
+            _state.update { it.copy(raw = result.stdout, steps = parsed.steps) }
+        }
+
+        if (result.exitCode != 0 || result.errmsg.isNotBlank()) {
+            val failure =
+                withContext(Dispatchers.Default) {
+                    parsed.failure(result.exitCode, result.stderr, result.errmsg)
+                } ?: Protocol.Failure("It did not finish (exit ${result.exitCode})")
+            _state.update { it.copy(failure = failure) }
+            if (fromUser) {
+                say(if (completion.label.isBlank()) "That did not finish" else "${completion.label} did not finish")
+                refreshAfterRun()
+            }
+            // This is the only place a tool can be marked as needing attention. The old code
+            // returned from the error branch *before* this line, so `failedTools` was never
+            // populated and the "Last attempt failed" group could not appear at all.
+            markFailed(completion, failed = true)
+            maybeRequestCatalog()
+            return
+        }
+
+        // Only a successful *action* clears a failure. A status read proves the device
+        // answers, not that the failed step now works — the first version of the post-run
+        // refresh erased the banner it existed to show.
+        if (fromUser && completion.actionId.isNotBlank()) _state.update { it.copy(failure = null) }
+        if (fromUser) say(if (completion.label.isBlank()) "Done" else "${completion.label} — done")
+        markFailed(completion, failed = false)
+
+        // Route on the payload, not on which button was pressed: a probe result is still in
+        // flight state when the screen first composes, so responses can overlap.
+        if (parsed.actions.isNotEmpty()) {
+            _state.update { it.copy(actions = parsed.actions) }
+            return
+        }
+
+        // Only a full snapshot may fill the screens. The supervisor polls `status --fast`,
+        // which leaves version strings blank, and Packages reads "installed" from those
+        // versions — accepting a fast snapshot is exactly how the app came to report
+        // "0 of 8 installed" on a device with four tools installed.
+        if (completion.origin != Origin.SYSTEM) {
+            parsed.snapshot?.let { snap ->
+                val at = System.currentTimeMillis()
+                _state.update { it.copy(snapshot = snap, checkedAt = at) }
+                Prefs.setLastStatusAt(at)
+                viewModelScope.launch { StatusStore.save(app, result.stdout) }
+                Prefs.setInstalledTools(
+                    listOf("openclaw", "hermes", "n8n", "ollama")
+                        .filter { key ->
+                            when (key) {
+                                "openclaw" -> snap.tools.openclaw.isNotBlank()
+                                "hermes" -> snap.tools.hermes.isNotBlank()
+                                "n8n" -> snap.tools.n8n.isNotBlank()
+                                "ollama" -> snap.tools.ollama.isNotBlank()
+                                else -> false
+                            }
+                        }.toSet(),
+                )
+            }
+        }
+
+        // A finished run makes every screen stale. Refresh by itself, with a distinct origin
+        // so this neither clears the banner nor overwrites the run's raw stream.
+        if (fromUser) refreshAfterRun()
+
+        // Last: the catalogue only makes sense once an idle status has been parsed. If the
+        // refresh above took the transport slot, [maybeRequestCatalog] skips and the
+        // completion handler for *that* run will ask instead.
+        maybeRequestCatalog()
+    }
+
+    private fun markFailed(
+        completion: Completion,
+        failed: Boolean,
+    ) {
+        if (completion.origin != Origin.USER || completion.actionId.isBlank()) return
+        Prefs.markFailed(completion.actionId.substringBefore('.'), failed)
+    }
+
+    private fun refreshAfterRun() {
+        if (Runner.running.value) return
+        Runner.send(app, listOf("--api", "status"), Origin.REFRESH, "Refresh")
+    }
+
+    private fun maybeRequestCatalog() {
+        val current = _state.value
+        if (catalogRequested || current.snapshot == null || current.actions.isNotEmpty()) return
+        if (Runner.running.value) return
+        catalogRequested = true
+        Runner.send(app, listOf("--api", "list"), Origin.SYSTEM, "Read the tool list")
+    }
+
+    private fun startClock() {
+        if (clock?.isActive == true) return
+        clock =
+            viewModelScope.launch {
+                while (isActive) {
+                    val elapsed = ((System.currentTimeMillis() - Runner.startedAt.value) / 1000).coerceAtLeast(0)
+                    _state.update { it.copy(elapsedSeconds = elapsed) }
+                    // The ceiling is per caller, so a 40-minute install is not mistaken for a
+                    // dead one — but a genuinely wedged run still gets cleared.
+                    Runner.checkCeiling()
+                    delay(1000)
+                }
+            }
+    }
+
+    private fun stopClock() {
+        clock?.cancel()
+        clock = null
+        _state.update { it.copy(elapsedSeconds = 0L) }
+    }
+}

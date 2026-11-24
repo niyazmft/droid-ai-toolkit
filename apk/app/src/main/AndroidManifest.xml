@@ -5,8 +5,17 @@
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
     <!-- Supervisor: keeps a low oom_score_adj while watching the toolkit, and shows
-         Termux's death in the notification shade instead of leaving it silent. -->
+         Termux's death in the notification shade instead of leaving it silent.
+
+         FOREGROUND_SERVICE_SPECIAL_USE is not optional. Since targetSdk 34 a declared
+         service type requires its own permission, and startForeground() throws
+         SecurityException without it — which is exactly what a "dataSync" declaration
+         without FOREGROUND_SERVICE_DATA_SYNC was doing on any Android 14 phone. The type
+         is specialUse rather than dataSync because this service transfers nothing: it
+         holds SCREEN_ON / USER_PRESENT receivers and runs one status command when the
+         user unlocks. dataSync would also be capped at 6 h out of 24 at targetSdk 35. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Required when targetSdk >= 30 so the app can see com.termux. -->
@@ -48,6 +57,12 @@
         <service
             android:name=".SupervisorService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <!-- Required justification for specialUse (Play review reads this; sideloading
+                 ignores it). Say what the service does, not what it is. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Watches a local Termux runtime: on unlock it runs one status command and posts whether the user's services are still running. No data is transferred." />
+        </service>
     </application>
 </manifest>

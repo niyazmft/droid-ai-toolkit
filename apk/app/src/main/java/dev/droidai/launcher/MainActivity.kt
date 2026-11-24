@@ -1,13 +1,19 @@
 package dev.droidai.launcher
 
+import android.Manifest
+import android.content.ComponentCallbacks2
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -52,7 +58,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,6 +68,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
@@ -74,29 +80,57 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
+    /**
+     * The screen state holder. Survives a rotation, which is what stopped the step list,
+     * the raw output and the failure banner from being dropped on every config change.
+     */
+    private val vm: HomeViewModel by viewModels()
+
+    /**
+     * Whether the supervisor may post its notification.
+     *
+     * On API 33+ this is a runtime grant, and without it a foreground-service notification is
+     * invisible — the supervisor would keep working and telling nobody. Held here so the
+     * permission result and `onResume` both refresh the same value the screens read.
+     */
+    private val notificationsGranted = MutableStateFlow(false)
+
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
             Gate.refresh(this)
             Termux.probe(this)
         }
 
+    private val notificationLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            // Asked once: Prefs.setNotificationAsked() ran before the dialog opened, so a
+            // denial is respected and the user can still turn it on from Settings → Apps.
+            refreshNotifications()
+        }
+
     /** Set once a probe has failed, so returning from Termux re-checks by itself. */
     private var recheckOnResume = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
         // Edge-to-edge: the design draws its own header rule against the status bar rather
         // than leaving a grey system strip above a page that is not grey.
         enableEdgeToEdge()
-        super.onCreate(savedInstanceState)
         Prefs.init(this)
         Runner.attach(this)
         Gate.refresh(this)
+        refreshNotifications()
         setContent {
-            val mode by Prefs.themeMode.collectAsState()
+            val mode by Prefs.themeMode.collectAsStateWithLifecycle()
             val dark =
                 when (mode) {
                     Prefs.THEME_LIGHT -> false
@@ -122,6 +156,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         Gate.refresh(this)
+        refreshNotifications()
 
         // Coming back from Termux, or from the system permission dialog, is the moment the
         // user has just done what we asked. Re-check automatically instead of making them
@@ -151,6 +186,26 @@ class MainActivity : ComponentActivity() {
 
     private fun requestPermission() = permissionLauncher.launch(Termux.PERMISSION)
 
+    private fun requestNotifications() = notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+
+    private fun refreshNotifications() {
+        notificationsGranted.value =
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * Android is short on memory and this process is the only thing watching Termux.
+     *
+     * The raw log is the one large buffer the screens keep, and it can always be re-read; the
+     * process cannot be resurrected. `TRIM_MEMORY_RUNNING_LOW` is the level at which the
+     * system is telling us to give something back now.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) vm.trimMemory()
+    }
+
     private fun openUrl(url: String) {
         runCatching {
             startActivity(
@@ -162,11 +217,12 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun Root() {
-        val termux by Gate.termuxInstalled.collectAsState()
-        val permission by Gate.permissionGranted.collectAsState()
-        val probe by Gate.probe.collectAsState()
-        val detail by Gate.detail.collectAsState()
-        val readyBefore by Prefs.termuxReady.collectAsState()
+        val termux by Gate.termuxInstalled.collectAsStateWithLifecycle()
+        val permission by Gate.permissionGranted.collectAsStateWithLifecycle()
+        val probe by Gate.probe.collectAsStateWithLifecycle()
+        val detail by Gate.detail.collectAsStateWithLifecycle()
+        val readyBefore by Prefs.termuxReady.collectAsStateWithLifecycle()
+        val notifGranted by notificationsGranted.collectAsStateWithLifecycle()
 
         // Retry until the probe resolves.
         //
@@ -212,10 +268,9 @@ class MainActivity : ComponentActivity() {
                 // probe runs — the gate screens are for first-time setup, not for every
                 // launch. Anything that is genuinely wrong demotes the flag in
                 // Runner.classify() and the gate reappears during this same run.
-                if (readyBefore) Home() else Checking()
+                if (readyBefore) Home(vm, notifGranted, ::requestNotifications) else Checking()
 
-            probe == Probe.READY -> Home()
-
+            probe == Probe.READY -> Home(vm, notifGranted, ::requestNotifications)
             probe == Probe.DENIED ->
                 Setup(
                     title = "One-time setup in Termux",
@@ -604,202 +659,89 @@ private fun SoftTabBar(
 /** Don't re-read on every resume; a minute is enough to be useful without becoming a timer. */
 private const val RESUME_REFRESH_MS = 60_000L
 
+/** Log tags are cheap; a swallowed exception with no trace is what cost us the API 34 bug. */
+private const val TAG = "DroidAI"
+
 /** "1m 20s" — a phone install is measured in minutes, so seconds alone are not enough. */
 private fun elapsedText(seconds: Long): String =
     if (seconds < 60) "${seconds}s" else "${seconds / 60}m ${seconds % 60}s"
 
 @Composable
-private fun Home() {
+private fun Home(
+    vm: HomeViewModel,
+    notificationsGranted: Boolean,
+    onRequestNotifications: () -> Unit,
+) {
     val context = LocalContext.current
-    val result by Runner.result.collectAsState()
-    val running by Runner.running.collectAsState()
-    val startedAt by Runner.startedAt.collectAsState()
-    val runLabel by Runner.label.collectAsState()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val s by vm.state.collectAsStateWithLifecycle()
+    val retainRaw by Prefs.retainRaw.collectAsStateWithLifecycle()
+    val supervisorOn by Prefs.supervisorEnabled.collectAsStateWithLifecycle()
+    val installedKnown by Prefs.installedTools.collectAsStateWithLifecycle()
+    val failedTools by Prefs.failedTools.collectAsStateWithLifecycle()
+    val notificationAsked by Prefs.notificationAsked.collectAsStateWithLifecycle()
+    // Home is composed during a warm start while the probe is still running, so it needs
+    // the gate's state too — to know when it is safe to start the supervisor.
+    val probeState by Gate.probe.collectAsStateWithLifecycle()
 
-    // Seeded from the last saved document: with no timer, the first frame would otherwise
-    // be empty. The age label below is what keeps that honest.
-    var snapshot by remember { mutableStateOf(Protocol.snapshot(Prefs.lastStatus.value)) }
-    var checkedAt by remember { mutableStateOf(Prefs.lastStatusAt.value) }
     var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
-    var actions by remember { mutableStateOf<List<Protocol.Action>>(emptyList()) }
-    var failure by remember { mutableStateOf<Protocol.Failure?>(null) }
-    var showFailureDetails by remember { mutableStateOf(false) }
-    var askedForActions by remember { mutableStateOf(false) }
     // rememberSaveable: a rotation or a process death used to drop the user back on
     // Overview with the sub-screen closed and the scroll position lost.
     var showRawScreen by rememberSaveable { mutableStateOf(false) }
     var tabName by rememberSaveable { mutableStateOf(Tab.OVERVIEW.name) }
-    var raw by remember { mutableStateOf("") }
-    var steps by remember { mutableStateOf<List<Protocol.Step>>(emptyList()) }
-    var pending by remember { mutableStateOf<Protocol.Action?>(null) }
-    var capacity by remember { mutableStateOf<Protocol.Action?>(null) }
-    var foreign by remember { mutableStateOf(Security.foreignHolders(context)) }
-    var notice by remember { mutableStateOf<String?>(null) }
-    var elapsed by remember { mutableStateOf(0L) }
-
-    val tab = Tab.valueOf(tabName)
-    val confirmRemove by Prefs.confirmRemove.collectAsState()
-    val retainRaw by Prefs.retainRaw.collectAsState()
-    val supervisorOn by Prefs.supervisorEnabled.collectAsState()
-    val installedKnown by Prefs.installedTools.collectAsState()
-    val failedTools by Prefs.failedTools.collectAsState()
-    // Home is composed during a warm start while the probe is still running, so it needs
-    // the gate's state too — to know when it is safe to start the supervisor.
-    val probeState by Gate.probe.collectAsState()
+    var showFailureDetails by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
+    val tab = Tab.valueOf(tabName)
 
-    // No status request here: Root() owns the startup probe, and that probe *is* a
-    // status run whose result fills this screen. Sending a second one only fought it
-    // for the single transport slot.
-    LaunchedEffect(supervisorOn, probeState) {
-        // The supervisor is what puts a permanent notification in the shade, so it is the
-        // user's call (Settings → Startup & Services). Off must also remove the
-        // notification, not just stop polling.
-        //
-        // Gated on the probe having resolved: starting it during CHECKING let its
-        // `status --fast` poll win the transport slot ahead of the startup probe.
-        runCatching {
-            when {
-                !supervisorOn -> SupervisorService.stop(context)
-                probeState != Probe.CHECKING -> SupervisorService.start(context)
+    // The supervisor is what puts a permanent notification in the shade, so it is the user's
+    // call (Settings → Startup & Services). Off must also remove the notification, not just
+    // stop polling.
+    //
+    // Bound to STARTED, not to composition: a Composition outlives STOP, and starting a
+    // foreground service while the app is in the background is not allowed (and used to be
+    // swallowed by a bare runCatching). Gated on the probe having resolved, because starting
+    // it during CHECKING let its `status --fast` poll win the transport slot ahead of the
+    // startup probe.
+    LaunchedEffect(supervisorOn, probeState, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            try {
+                when {
+                    !supervisorOn -> SupervisorService.stop(context)
+                    probeState != Probe.CHECKING -> SupervisorService.start(context)
+                }
+            } catch (e: Exception) {
+                // ForegroundServiceStartNotAllowedException, chiefly. Say so instead of
+                // pretending the notification is being maintained.
+                Log.w(TAG, "could not start the status service", e)
+                vm.say("Android would not start the status service. Try again with the app open.")
             }
         }
     }
 
-    // Tick once a second while something runs: this drives the elapsed-time readout
-    // (proof that a long install is still alive) and enforces the per-caller ceiling.
-    // The old screen gave a 30 s deadline to everything, including a 40-minute install.
-    LaunchedEffect(running, startedAt) {
-        while (running) {
-            elapsed = ((System.currentTimeMillis() - startedAt) / 1000).coerceAtLeast(0)
-            Runner.checkCeiling()
-            delay(1000)
+    // On API 33+ the supervisor's notification is invisible without this grant, which
+    // silently defeats the only thing it exists for. Asked in context, once.
+    LaunchedEffect(supervisorOn, notificationsGranted, notificationAsked) {
+        if (supervisorOn && !notificationsGranted && Build.VERSION.SDK_INT >= 33 && !notificationAsked) {
+            Prefs.setNotificationAsked()
+            onRequestNotifications()
         }
     }
 
-    // Ages are recomputed while the screen is open, so "checked 1 min ago" does not sit
-    // there saying "just now" for an hour.
-    LaunchedEffect(checkedAt) {
-        while (true) {
-            nowTick = System.currentTimeMillis()
-            delay(30_000)
-        }
-    }
-
-    LaunchedEffect(notice) {
-        val n = notice ?: return@LaunchedEffect
-        notice = null
-        snackbar.showSnackbar(n)
-    }
-
-    /**
-     * Re-read the device after a run, without touching the record of that run.
-     *
-     * The screen used to keep the state from before the tap until somebody pressed the
-     * header refresh — after removing Pi it still listed Pi as installed, which reads as
-     * "nothing happened". A full (non `--fast`) read is deliberate: Packages shows
-     * versions, and the supervisor's fast polls leave those blank.
-     */
-    fun refreshAfterRun(ctx: android.content.Context) {
-        if (Runner.running.value) return
-        Runner.send(ctx, listOf("--api", "status"), Origin.REFRESH, "Refresh")
-    }
-
-    LaunchedEffect(result) {
-        val r = result ?: return@LaunchedEffect
-        val origin = Runner.lastOrigin()
-        val fromUser = origin == Origin.USER
-
-        // The supervisor polls once a minute through the same transport. Its status
-        // run must not overwrite the record of what the user actually just did.
-        if (fromUser) {
-            raw = r.stdout
-            steps = Protocol.finalSteps(r.stdout)
-        }
-
-        if (r.exitCode != 0 || r.errmsg.isNotBlank()) {
-            failure = Protocol.failure(r.exitCode, r.stdout, r.stderr, r.errmsg)
-                ?: Protocol.Failure("It did not finish (exit ${r.exitCode})")
-            if (fromUser) {
-                notice = if (runLabel.isBlank()) "That did not finish" else "$runLabel did not finish"
-            }
-            if (fromUser) refreshAfterRun(context)
-            return@LaunchedEffect
-        }
-        // Only a successful *action* clears a failure. A status read proves the device
-        // answers, not that the failed step now works: the first version of the
-        // post-run refresh erased the banner it existed to show, and a manual Refresh
-        // would have done the same.
-        val wasAction = Runner.lastActionId().isNotBlank()
-        if (fromUser && wasAction) failure = null
-        if (fromUser) notice = if (runLabel.isBlank()) "Done" else "$runLabel — done"
-
-        // Route on the payload, not on which button was pressed: a probe result is still
-        // in the StateFlow when the screen first composes, so responses can overlap.
-        val catalog = Protocol.actions(r.stdout)
-        if (catalog.isNotEmpty()) {
-            actions = catalog
-            return@LaunchedEffect
-        }
-
-        // Only a full snapshot may fill this screen. The supervisor polls `status --fast`,
-        // which leaves version strings blank, and Packages reads "installed" from those
-        // versions — accepting a fast snapshot is exactly how the app came to report
-        // "0 of 8 installed" on a device with four tools installed.
-        if (origin != Origin.SYSTEM) {
-            Protocol.snapshot(r.stdout)?.let { snap ->
-                snapshot = snap
-                checkedAt = System.currentTimeMillis()
-                Prefs.saveLastStatus(r.stdout)
-                Prefs.setInstalledTools(
-                    listOf("openclaw", "hermes", "n8n", "ollama")
-                        .filter { key ->
-                            when (key) {
-                                "openclaw" -> snap.tools.openclaw.isNotBlank()
-                                "hermes" -> snap.tools.hermes.isNotBlank()
-                                "n8n" -> snap.tools.n8n.isNotBlank()
-                                "ollama" -> snap.tools.ollama.isNotBlank()
-                                else -> false
-                            }
-                        }.toSet(),
-                )
+    // Ages are recomputed while the screen is visible, so "checked 1 min ago" does not sit
+    // there saying "just now" for an hour — but nothing ticks while the app is stopped.
+    LaunchedEffect(lifecycle, s.checkedAt) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                nowTick = System.currentTimeMillis()
+                delay(30_000)
             }
         }
-
-        // A finished run makes every screen stale. Refresh by itself, with a distinct
-        // origin so this does not clear the banner or overwrite the run's raw stream.
-        if (fromUser) refreshAfterRun(context)
-
-        // Remember per-tool failure, so Packages can offer a "Needs attention" group
-        // instead of leaving the user to remember which repair did not work.
-        if (fromUser && Runner.lastActionId().isNotBlank()) {
-            val tool = Runner.lastActionId().substringBefore('.')
-            Prefs.markFailed(tool, failed = r.exitCode != 0 || r.errmsg.isNotBlank())
-        }
     }
 
-    // Fetch the catalog once the device is idle. Keyed on `running` so the retry happens
-    // after the previous command finishes, and only when the send really dispatched.
-    LaunchedEffect(running, snapshot) {
-        if (!running && snapshot != null && actions.isEmpty() && !askedForActions) {
-            askedForActions = true
-            Runner.send(context, listOf("--api", "list"), Origin.SYSTEM, "Read the tool list")
-        }
-    }
-
-    /** Dispatch a user action and always say what happened to it. */
-    fun dispatch(
-        args: List<String>,
-        label: String,
-    ) {
-        // Starting an action is a retry, so the previous verdict goes. Re-reading the
-        // device is not: the header Refresh is a USER run too, and tapping it to check
-        // "is it fixed now?" must not delete the sentence that says what was broken.
-        if (args.getOrNull(1) == "run") failure = null
-        when (Runner.send(context, args, Origin.USER, label)) {
-            Dispatch.QUEUED -> notice = "Starting $label as soon as the current run finishes."
-            Dispatch.FAILED -> notice = "Could not reach Termux. Tap Refresh."
-            else -> Unit
+    // One-shot messages: a completion must be shown once, not re-shown after a rotation.
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            vm.notices.collect { snackbar.showSnackbar(it) }
         }
     }
 
@@ -813,7 +755,7 @@ private fun Home() {
         if (showRawScreen) {
             Box(Modifier.padding(pad)) {
                 RawOutputScreen(
-                    raw = if (retainRaw) raw else "",
+                    raw = if (retainRaw) s.raw else "",
                     retained = retainRaw,
                     onBack = { showRawScreen = false },
                 )
@@ -823,22 +765,22 @@ private fun Home() {
         Column(Modifier.padding(pad).fillMaxSize()) {
             AppHeader(
                 detail =
-                    snapshot?.let { "${it.device.model} · ${it.device.arch}" }
+                    s.snapshot?.let { "${it.device.model} · ${it.device.arch}" }
                         ?: "Termux is ready.",
-                age = if (snapshot != null && checkedAt > 0L) ageShort(nowTick - checkedAt) else null,
-                onRefresh = { dispatch(listOf("--api", "status"), "Read device status") },
+                age = if (s.snapshot != null && s.checkedAt > 0L) ageShort(nowTick - s.checkedAt) else null,
+                onRefresh = { vm.refresh() },
             )
 
             // Pinned above the list, not inside it: a failure that has scrolled out of
             // view is the same as no failure at all, and that is how "Step failed" went
             // unnoticed during the device runs.
-            if (running) {
+            if (s.running) {
                 Box(Modifier.padding(horizontal = 16.dp)) {
-                    WorkingBanner(label = runLabel, elapsedSeconds = elapsed)
+                    WorkingBanner(label = s.runLabel, elapsedSeconds = s.elapsedSeconds)
                 }
             }
 
-            failure?.let { f ->
+            s.failure?.let { f ->
                 Box(Modifier.padding(horizontal = 16.dp)) {
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -881,16 +823,16 @@ private fun Home() {
             ) {
                 when (tab) {
                     Tab.OVERVIEW -> {
-                        if (steps.isNotEmpty()) {
+                        if (s.steps.isNotEmpty()) {
                             Section("Last run")
                             Panel {
-                                steps.forEach { s ->
-                                    StepRow(s)
+                                s.steps.forEach { step ->
+                                    StepRow(step)
                                 }
                             }
                         }
 
-                        if (snapshot == null) {
+                        if (s.snapshot == null) {
                             // A warm launch renders this screen immediately while the probe runs,
                             // so there is a window with no Device panel at all. Say what is
                             // happening instead of leaving the page looking half-built.
@@ -907,40 +849,42 @@ private fun Home() {
                             }
                         }
 
-                        snapshot?.let { s ->
+                        s.snapshot?.let { snap ->
                             Section("Device")
                             Panel {
-                                Fact("Model", s.device.model)
-                                Fact("Android", "${s.device.android} · API ${s.device.api}")
+                                Fact("Model", snap.device.model)
+                                Fact("Android", "${snap.device.android} · API ${snap.device.api}")
                                 // Arch lives in the header subtitle, once, next to the model.
                                 // Repeating it here was noise on every screen.
-                                Fact("Memory", "${s.device.memAvailableMb} MB free of ${s.device.memTotalMb} MB")
-                                Fact("Swap free", "${s.device.swapFreeMb} MB")
-                                Fact("Disk free", "${s.device.diskFreeMb / 1024} GB")
-                                Fact("Termux", s.termux.version)
-                                Fact("Boot restore", if (s.termux.bootInstalled) "installed" else "missing")
-                                Fact("Node", Format.toolVersion(s.tools.node))
-                                Fact("Python", Format.toolVersion(s.tools.python))
-                                Fact("PM2", if (s.tools.pm2Installed) "installed" else "missing")
-                                if (s.tools.openclaw.isNotBlank()) {
+                                Fact("Memory", "${snap.device.memAvailableMb} MB free of ${snap.device.memTotalMb} MB")
+                                Fact("Swap free", "${snap.device.swapFreeMb} MB")
+                                Fact("Disk free", "${snap.device.diskFreeMb / 1024} GB")
+                                Fact("Termux", snap.termux.version)
+                                Fact("Boot restore", if (snap.termux.bootInstalled) "installed" else "missing")
+                                Fact("Node", Format.toolVersion(snap.tools.node))
+                                Fact("Python", Format.toolVersion(snap.tools.python))
+                                Fact("PM2", if (snap.tools.pm2Installed) "installed" else "missing")
+                                if (snap.tools.openclaw.isNotBlank()) {
+                                    Fact("OpenClaw", Format.toolVersion(snap.tools.openclaw))
+                                }
+                                if (snap.tools.hermes.isNotBlank()) {
                                     Fact(
-                                        "OpenClaw",
-                                        Format.toolVersion(s.tools.openclaw),
+                                        "Hermes",
+                                        Format.toolVersion(snap.tools.hermes),
                                     )
                                 }
-                                if (s.tools.hermes.isNotBlank()) Fact("Hermes", Format.toolVersion(s.tools.hermes))
-                                if (s.tools.n8n.isNotBlank()) Fact("n8n", Format.toolVersion(s.tools.n8n))
+                                if (snap.tools.n8n.isNotBlank()) Fact("n8n", Format.toolVersion(snap.tools.n8n))
                             }
 
                             Section("Services")
                             Panel {
-                                if (s.services.isEmpty()) {
+                                if (snap.services.isEmpty()) {
                                     Text(
                                         "Nothing is running yet. Open Packages to install a tool.",
                                         style = MaterialTheme.typography.bodySmall,
                                     )
                                 }
-                                s.services.forEach { sv ->
+                                snap.services.forEach { sv ->
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(
                                             sv.name,
@@ -957,34 +901,18 @@ private fun Home() {
                                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)) {
                                         UiPill(
                                             label = "Stop",
-                                            enabled = !running,
+                                            enabled = !s.running,
                                             ghost = true,
-                                            onClick = {
-                                                dispatch(
-                                                    listOf(
-                                                        "--api",
-                                                        "run",
-                                                        "service.stop",
-                                                        "--arg",
-                                                        "service=${sv.name}",
-                                                    ),
-                                                    "Stopping ${sv.name}",
-                                                )
-                                            },
+                                            onClick = { vm.runService("service.stop", sv.name, "Stopping ${sv.name}") },
                                         )
                                         UiPill(
                                             label = "Restart",
-                                            enabled = !running,
+                                            enabled = !s.running,
                                             ghost = true,
                                             onClick = {
-                                                dispatch(
-                                                    listOf(
-                                                        "--api",
-                                                        "run",
-                                                        "service.restart",
-                                                        "--arg",
-                                                        "service=${sv.name}",
-                                                    ),
+                                                vm.runService(
+                                                    "service.restart",
+                                                    sv.name,
                                                     "Restarting ${sv.name}",
                                                 )
                                             },
@@ -993,28 +921,26 @@ private fun Home() {
                                 }
                                 UiPill(
                                     label = "Restart services",
-                                    enabled = !running,
-                                    onClick = {
-                                        dispatch(listOf("--api", "run", "service.resurrect"), "Restarting services")
-                                    },
+                                    enabled = !s.running,
+                                    onClick = { vm.runService("service.resurrect", null, "Restarting services") },
                                 )
                             }
                         }
 
                         Section("Security")
                         Panel {
-                            if (foreign.isEmpty()) {
+                            if (s.foreign.isEmpty()) {
                                 Text(
                                     "Only this app can run commands in Termux.",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             } else {
                                 Text(
-                                    "${foreign.size} other app(s) can also run commands in Termux:",
+                                    "${s.foreign.size} other app(s) can also run commands in Termux:",
                                     color = MaterialTheme.colorScheme.error,
                                     style = MaterialTheme.typography.bodySmall,
                                 )
-                                UiCodeBlock(foreign.joinToString("\n"))
+                                UiCodeBlock(s.foreign.joinToString("\n"))
                                 // The adb command is the remedy for an advanced user; it is not
                                 // the message. A non-technical reader needs the plain sentence:
                                 // if you did not install these, remove them.
@@ -1024,12 +950,12 @@ private fun Home() {
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                                UiCodeBlock(foreign.joinToString("\n") { Security.revokeCommand(it) })
+                                UiCodeBlock(s.foreign.joinToString("\n") { Security.revokeCommand(it) })
                             }
                             UiPill(
                                 label = "Check again",
                                 ghost = true,
-                                onClick = { foreign = Security.foreignHolders(context) },
+                                onClick = { vm.refreshForeign() },
                             )
                         }
 
@@ -1038,54 +964,35 @@ private fun Home() {
 
                     Tab.PACKAGES ->
                         PackagesScreen(
-                            snapshot = snapshot,
-                            actions = actions,
-                            running = running,
+                            snapshot = s.snapshot,
+                            actions = s.actions,
+                            running = s.running,
                             knownInstalled = installedKnown,
                             failedTools = failedTools,
-                            onRun = { action ->
-                                val short =
-                                    snapshot?.let {
-                                        (action.minMemMb > 0 && it.device.memAvailableMb < action.minMemMb) ||
-                                            (action.minDiskMb > 0 && it.device.diskFreeMb < action.minDiskMb)
-                                    } ?: false
-
-                                when {
-                                    action.destructive && confirmRemove -> pending = action
-                                    action.destructive ->
-                                        dispatch(
-                                            listOf("--api", "run", action.id, "--yes"),
-                                            action.title,
-                                        )
-                                    short -> capacity = action
-                                    else -> dispatch(listOf("--api", "run", action.id), action.title)
-                                }
-                            },
+                            onRun = { action -> vm.onRun(action) },
                         )
 
-                    Tab.METRICS -> MetricsScreen(snapshot = snapshot)
+                    Tab.METRICS -> MetricsScreen(snapshot = s.snapshot)
 
                     Tab.SETTINGS ->
                         SettingsScreen(
-                            snapshot = snapshot,
-                            running = running,
-                            onRefresh = {
-                                dispatch(listOf("--api", "status"), "Read device status")
-                            },
+                            snapshot = s.snapshot,
+                            running = s.running,
+                            notificationsGranted = notificationsGranted,
+                            onRefresh = { vm.refresh() },
                             onRecheckPermission = {
                                 Gate.refresh(context)
                                 Termux.probe(context)
                             },
-                            onRunAction = { id ->
-                                dispatch(listOf("--api", "run", id, "--yes"), "Removing the old pnpm project")
-                            },
+                            onRequestNotifications = onRequestNotifications,
+                            onRunAction = { id -> vm.runConfirmed(id, "Removing the old pnpm project") },
                         )
                 }
             }
         }
     }
 
-    failure?.takeIf { showFailureDetails && it.details.isNotEmpty() }?.let { f ->
+    s.failure?.takeIf { showFailureDetails && it.details.isNotEmpty() }?.let { f ->
         AlertDialog(
             onDismissRequest = { showFailureDetails = false },
             title = { Text(f.headline) },
@@ -1112,17 +1019,16 @@ private fun Home() {
         )
     }
 
-    capacity?.let { a ->
-        val snap = snapshot
+    s.capacity?.let { a ->
         AlertDialog(
-            onDismissRequest = { capacity = null },
+            onDismissRequest = { vm.cancelCapacity() },
             title = { Text("This device may not fit ${a.title}") },
             text = {
                 Text(
                     (
                         if (a.minMemMb > 0) {
                             "${a.title} asks for ${a.minMemMb} MB free memory; this device has " +
-                                "${snap?.device?.memAvailableMb ?: 0} MB.\n\n"
+                                "${s.snapshot?.device?.memAvailableMb ?: 0} MB.\n\n"
                         } else {
                             ""
                         }
@@ -1130,7 +1036,7 @@ private fun Home() {
                         (
                             if (a.minDiskMb > 0) {
                                 "It asks for ${a.minDiskMb} MB free storage; this device has " +
-                                    "${snap?.device?.diskFreeMb ?: 0} MB.\n\n"
+                                    "${s.snapshot?.device?.diskFreeMb ?: 0} MB.\n\n"
                             } else {
                                 ""
                             }
@@ -1140,36 +1046,24 @@ private fun Home() {
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    capacity = null
-                    // --force is what makes this button mean something: the engine
-                    // overrides its own memory/disk gates on request, and still refuses
-                    // an action whose architecture this device cannot run. Without it the
-                    // dialog promised a bypass and the run died with exit 3 (y6,
-                    // 2026-11-24).
-                    dispatch(listOf("--api", "run", a.id, "--force"), a.title)
-                }) { Text("Install anyway") }
+                TextButton(onClick = { vm.confirmCapacity() }) { Text("Install anyway") }
             },
             dismissButton = {
-                TextButton(onClick = { capacity = null }) { Text("Cancel") }
+                TextButton(onClick = { vm.cancelCapacity() }) { Text("Cancel") }
             },
         )
     }
 
-    pending?.let { a ->
+    s.pending?.let { a ->
         AlertDialog(
-            onDismissRequest = { pending = null },
+            onDismissRequest = { vm.cancelPending() },
             title = { Text(a.title) },
             text = { Text(a.summary + "\n\nThis cannot be undone.") },
             confirmButton = {
-                TextButton(onClick = {
-                    pending = null
-                    // The engine refuses destructive specs without this flag.
-                    dispatch(listOf("--api", "run", a.id, "--yes"), a.title)
-                }) { Text("Confirm") }
+                TextButton(onClick = { vm.confirmPending() }) { Text("Confirm") }
             },
             dismissButton = {
-                TextButton(onClick = { pending = null }) { Text("Cancel") }
+                TextButton(onClick = { vm.cancelPending() }) { Text("Cancel") }
             },
         )
     }

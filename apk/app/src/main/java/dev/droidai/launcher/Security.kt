@@ -15,9 +15,12 @@ import android.content.Context
  * in App info. But a user can be talked into that by the wrong app, and nothing
  * on the Termux side would notice — hence this check.
  *
- * `getPackagesHoldingPermissions` is subject to package-visibility filtering on
- * API 30+, which is why the manifest declares
- * `<queries><permission android:name="com.termux.permission.RUN_COMMAND"/></queries>`.
+ * `getPackagesHoldingPermissions` is subject to package-visibility filtering on API 30+, and
+ * there is no `<queries><permission>` element to declare against — the `<queries>` element
+ * accepts only `package`, `intent` and `provider`. (An earlier comment in this file claimed
+ * otherwise; the manifest says it explicitly.) So on API < 30 this list is complete, and on
+ * API 30+ it can be partial: the check is a diagnostic, not a guarantee. Completing it would
+ * mean requesting QUERY_ALL_PACKAGES, which is not worth it for a warning line.
  */
 object Security {
     /** Every package currently holding the Termux RUN_COMMAND permission. */

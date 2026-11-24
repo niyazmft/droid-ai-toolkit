@@ -84,6 +84,36 @@ object Protocol {
         val predicates: List<String> = emptyList(),
     )
 
+    /**
+     * One parse of one stream, with every view derived from the same event list.
+     *
+     * The client used to re-parse the same stdout up to five times per result — snapshot,
+     * the catalogue twice, the step list twice, the failure — on the main thread, for a
+     * string that reaches hundreds of KB after a long install. [events] is now the only
+     * pass; everything else is a view computed once.
+     */
+    class Parsed internal constructor(
+        val events: List<JSONObject>,
+    ) {
+        /** The `data` payload of a status run, if present. */
+        val snapshot: Snapshot? by lazy { snapshotOf(events) }
+
+        /** The action catalog (`--api list`), or empty when the stream carries none. */
+        val actions: List<Action> by lazy { actionsOf(events) }
+
+        /** One entry per step, in first-seen order, showing its final state. */
+        val steps: List<Step> by lazy { finalStepsOf(events) }
+
+        /** A failure in two parts: a sentence to act on, and the evidence. */
+        fun failure(
+            exitCode: Int,
+            stderr: String,
+            errmsg: String,
+        ): Failure? = failureOf(exitCode, events, stderr, errmsg)
+    }
+
+    fun parse(stdout: String): Parsed = Parsed(events(stdout))
+
     /** Every JSON line in the stream, in order. Non-JSON lines are dropped. */
     fun events(stdout: String): List<JSONObject> =
         stdout
@@ -95,9 +125,11 @@ object Protocol {
             }.toList()
 
     /** The `data` payload of a status run, if present. */
-    fun snapshot(stdout: String): Snapshot? {
+    fun snapshot(stdout: String): Snapshot? = snapshotOf(events(stdout))
+
+    private fun snapshotOf(evs: List<JSONObject>): Snapshot? {
         val payload =
-            events(stdout)
+            evs
                 .firstOrNull { it.optString("t") == "data" }
                 ?.optJSONObject("payload") ?: return null
         return runCatching {
@@ -162,10 +194,12 @@ object Protocol {
     }
 
     /** The action catalog (`--api list`). */
-    fun actions(stdout: String): List<Action> {
+    fun actions(stdout: String): List<Action> = actionsOf(events(stdout))
+
+    private fun actionsOf(evs: List<JSONObject>): List<Action> {
         val doc =
-            events(stdout).firstOrNull { it.optJSONArray("actions") != null }
-                ?: events(stdout).firstOrNull {
+            evs.firstOrNull { it.optJSONArray("actions") != null }
+                ?: evs.firstOrNull {
                     it.optString("t") == "data" &&
                         it.optJSONObject("payload")?.optJSONArray("actions") != null
                 }
@@ -219,8 +253,10 @@ object Protocol {
      * so this is the post-run record rather than a live feed — but "which step
      * failed" is the question a user actually asks, and prose logs do not answer it.
      */
-    fun steps(stdout: String): List<Step> =
-        events(stdout).filter { it.optString("t") == "step" }.mapNotNull { e ->
+    fun steps(stdout: String): List<Step> = stepsOf(events(stdout))
+
+    private fun stepsOf(evs: List<JSONObject>): List<Step> =
+        evs.filter { it.optString("t") == "step" }.mapNotNull { e ->
             val title = e.optString("title").ifBlank { e.optString("id") }
             if (title.isBlank()) {
                 null
@@ -240,9 +276,11 @@ object Protocol {
      * The stream emits `running` and then `ok` for the same step, so the raw list shows
      * every step twice. What a reader wants is the outcome, not the transitions.
      */
-    fun finalSteps(stdout: String): List<Step> {
+    fun finalSteps(stdout: String): List<Step> = finalStepsOf(events(stdout))
+
+    private fun finalStepsOf(evs: List<JSONObject>): List<Step> {
         val order = LinkedHashMap<String, Step>()
-        steps(stdout).forEach { step ->
+        stepsOf(evs).forEach { step ->
             val key = step.id.ifBlank { step.title }
             val previous = order[key]
             // A terminal state wins; a later `running` must not overwrite it.
@@ -288,9 +326,15 @@ object Protocol {
         stdout: String,
         stderr: String,
         errmsg: String,
+    ): Failure? = failureOf(exitCode, events(stdout), stderr, errmsg)
+
+    private fun failureOf(
+        exitCode: Int,
+        evs: List<JSONObject>,
+        stderr: String,
+        errmsg: String,
     ): Failure? {
         if (errmsg.isNotBlank()) return Failure(errmsg)
-        val evs = events(stdout)
         evs
             .firstOrNull { it.optString("t") == "error" }
             ?.optString("msg")
