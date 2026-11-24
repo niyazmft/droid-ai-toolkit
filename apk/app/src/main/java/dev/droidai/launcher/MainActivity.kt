@@ -62,6 +62,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -224,6 +225,13 @@ class MainActivity : ComponentActivity() {
         val readyBefore by Prefs.termuxReady.collectAsStateWithLifecycle()
         val notifGranted by notificationsGranted.collectAsStateWithLifecycle()
 
+        // Home() is a sibling of the gate screens in the `when` below, so a transient
+        // READY -> CHECKING -> UNREACHABLE probe makes it leave composition — and its
+        // rememberSaveable state (tab, raw sub-screen, search, collapse flags) went with it.
+        // That is the "the tab jumps back to Overview after unlocking the phone" report from
+        // both test devices. A holder keeps the state keyed by screen, not by composition.
+        val screens = rememberSaveableStateHolder()
+
         // Retry until the probe resolves.
         //
         // One send was not enough: the supervisor polls through the same single transport
@@ -268,9 +276,14 @@ class MainActivity : ComponentActivity() {
                 // probe runs — the gate screens are for first-time setup, not for every
                 // launch. Anything that is genuinely wrong demotes the flag in
                 // Runner.classify() and the gate reappears during this same run.
-                if (readyBefore) Home(vm, notifGranted, ::requestNotifications) else Checking()
+                if (readyBefore) {
+                    screens.SaveableStateProvider(SCREEN_HOME) { Home(vm, notifGranted, ::requestNotifications) }
+                } else {
+                    Checking()
+                }
 
-            probe == Probe.READY -> Home(vm, notifGranted, ::requestNotifications)
+            probe == Probe.READY ->
+                screens.SaveableStateProvider(SCREEN_HOME) { Home(vm, notifGranted, ::requestNotifications) }
             probe == Probe.DENIED ->
                 Setup(
                     title = "One-time setup in Termux",
@@ -662,6 +675,9 @@ private const val RESUME_REFRESH_MS = 60_000L
 /** Log tags are cheap; a swallowed exception with no trace is what cost us the API 34 bug. */
 private const val TAG = "DroidAI"
 
+/** Key for the screens' saved state; one screen owns it today, and the name says which. */
+private const val SCREEN_HOME = "home"
+
 /** "1m 20s" — a phone install is measured in minutes, so seconds alone are not enough. */
 private fun elapsedText(seconds: Long): String =
     if (seconds < 60) "${seconds}s" else "${seconds / 60}m ${seconds % 60}s"
@@ -810,6 +826,17 @@ private fun Home(
                                         .padding(vertical = 4.dp, horizontal = 4.dp),
                             )
                         }
+                        // A verdict that can only be cleared by running something else is a
+                        // banner the user cannot get rid of once they have read it.
+                        Text(
+                            "Dismiss",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier =
+                                Modifier
+                                    .clickable(onClickLabel = "Dismiss the failure") { vm.dismissFailure() }
+                                    .padding(vertical = 4.dp, horizontal = 4.dp),
+                        )
                     }
                 }
             }

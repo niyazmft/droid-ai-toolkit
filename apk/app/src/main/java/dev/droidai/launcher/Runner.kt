@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -91,8 +92,16 @@ data class Completion(
  * Android 10+, and we cannot write into Termux's).
  */
 object Runner {
+    private const val TAG = "DroidAI"
     private const val ACTION_RESULT = "dev.droidai.launcher.RESULT"
     private const val REQUEST_CODE = 1001
+
+    /** Base of the per-run PendingIntent request codes, so two runs cannot share a PI. */
+    private const val REQUEST_CODE_RUNS = 2000
+    private const val MAX_RUN_SLOTS = 900
+
+    /** Which run a delivered result belongs to. Carried in the base Intent's action *and* extras. */
+    private const val EXTRA_RUN_SLOT = "dev.droidai.launcher.RUN_SLOT"
 
     /** How long each caller may stay silent before we call it dead. */
     private const val PROBE_CEILING_MS = 25_000L
@@ -172,6 +181,15 @@ object Runner {
      */
     private val lock = Any()
 
+    /**
+     * Identity of the in-flight run (0 = this process dispatched nothing).
+     *
+     * Only meaningful for results: a result whose slot is not this one is a run that outlived
+     * the process, and folding it into the current run is how "Last run" could show an install
+     * log under a status refresh.
+     */
+    private var runSlot = 0
+
     fun ceilingFor(o: Origin): Long =
         when (o) {
             Origin.PROBE -> PROBE_CEILING_MS
@@ -216,11 +234,23 @@ object Runner {
         _running.value = true
         _result.value = null
 
-        val receiver = Intent(context, TermuxResultReceiver::class.java).setAction(ACTION_RESULT)
+        // A distinct PendingIntent per run.
+        //
+        // With one shared request code, `FLAG_UPDATE_CURRENT` rewrote the base Intent every
+        // dispatch, so a result from a run that outlived the process (an install finishing after
+        // Android killed the app) arrived looking exactly like the *current* run's result and was
+        // attributed to it. Now the base Intent names the run, and [deliver] refuses a result that
+        // belongs to a run this process no longer owns.
+        runSlot = (runSlot % MAX_RUN_SLOTS) + 1
+        val slot = runSlot
+        val receiver =
+            Intent(context, TermuxResultReceiver::class.java)
+                .setAction("$ACTION_RESULT.$slot")
+                .putExtra(EXTRA_RUN_SLOT, slot)
         val flags =
             PendingIntent.FLAG_UPDATE_CURRENT or
                 (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0)
-        val pending = PendingIntent.getBroadcast(context, REQUEST_CODE, receiver, flags)
+        val pending = PendingIntent.getBroadcast(context, REQUEST_CODE_RUNS + slot, receiver, flags)
         val intent = Termux.buildIntent(args, pending)
 
         val started =
@@ -286,11 +316,26 @@ object Runner {
                 errmsg = bundle?.getString(Termux.R_ERRMSG) ?: "",
             )
 
+        val deliveredFrom = deliveredSlot(intent)
+
         // State settles under the lock; the completion is published *outside* it, so no
         // collector can resume inside a critical section — `Dispatchers.Main.immediate` may
         // run a resumed coroutine on the emitting thread.
         val done =
             synchronized(lock) {
+                // A result for a run this process no longer owns is dropped, not attributed: the
+                // app may have been killed mid-install, and the run that arrives later is not the
+                // one the UI is showing. A result arriving with nothing in flight is the same
+                // case (the ceiling already abandoned it).
+                if (deliveredFrom > 0 && deliveredFrom != runSlot) {
+                    Log.w(TAG, "ignoring a result from run $deliveredFrom (current: $runSlot)")
+                    return
+                }
+                if (!_running.value) {
+                    Log.w(TAG, "ignoring a result with nothing in flight")
+                    return
+                }
+
                 val completion = Completion(result, origin, actionId, _label.value, _startedAt.value)
                 _result.value = result
                 _running.value = false
@@ -299,6 +344,21 @@ object Runner {
             }
         _completions.tryEmit(done)
         synchronized(lock) { flushQueueLocked() }
+    }
+
+    /**
+     * The run slot a broadcast carries, or 0 when it cannot be told.
+     *
+     * Termux sends the result by `pendingIntent.send(..., intent)`, and how much of the base
+     * Intent survives that merge is platform detail — so the slot travels in both the action and
+     * an extra, and 0 means "unknown", which is treated as current rather than dropped.
+     */
+    private fun deliveredSlot(intent: Intent): Int {
+        val extra = intent.getIntExtra(EXTRA_RUN_SLOT, 0)
+        if (extra > 0) return extra
+        val fromAction = intent.action?.substringAfterLast('.')?.toIntOrNull() ?: return 0
+        // The legacy action (no slot) ends in RESULT, so a non-numeric suffix is "unknown".
+        return if (fromAction > 0) fromAction else 0
     }
 
     /**

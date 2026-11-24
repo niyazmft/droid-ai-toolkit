@@ -2,6 +2,7 @@ package dev.droidai.launcher
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -70,6 +71,7 @@ data class HomeState(
  */
 class HomeViewModel(
     application: Application,
+    private val saved: SavedStateHandle,
 ) : AndroidViewModel(application) {
     private val app = application
     private val _state = MutableStateFlow(HomeState())
@@ -90,6 +92,8 @@ class HomeViewModel(
     private var clock: Job? = null
 
     init {
+        restoreAfterProcessDeath()
+
         // The previous answer, so the first frame is not empty. Read on IO (it is a file), and
         // parsed off the main thread (it is NDJSON).
         viewModelScope.launch {
@@ -173,7 +177,10 @@ class HomeViewModel(
 
     fun cancelCapacity() = _state.update { it.copy(capacity = null) }
 
-    fun dismissFailure() = _state.update { it.copy(failure = null) }
+    fun dismissFailure() {
+        _state.update { it.copy(failure = null) }
+        persistFailure(null)
+    }
 
     /**
      * A service row action (`service.stop`, `service.restart`, `service.resurrect`).
@@ -240,7 +247,10 @@ class HomeViewModel(
         // Starting an action is a retry, so the previous verdict goes. Re-reading the device
         // is not: Refresh is a USER run too, and tapping it to ask "is it fixed now?" must not
         // delete the sentence that says what was broken.
-        if (args.getOrNull(1) == "run") _state.update { it.copy(failure = null) }
+        if (args.getOrNull(1) == "run") {
+            _state.update { it.copy(failure = null) }
+            persistFailure(null)
+        }
         when (Runner.send(app, args, Origin.USER, label)) {
             Dispatch.QUEUED -> say("Starting $label as soon as the current run finishes.")
             Dispatch.FAILED -> say("Could not reach Termux. Tap Refresh.")
@@ -258,6 +268,7 @@ class HomeViewModel(
         // record of what the user actually just did.
         if (fromUser) {
             _state.update { it.copy(raw = result.stdout, steps = parsed.steps) }
+            persistSteps(parsed.steps)
         }
 
         if (result.exitCode != 0 || result.errmsg.isNotBlank()) {
@@ -266,6 +277,7 @@ class HomeViewModel(
                     parsed.failure(result.exitCode, result.stderr, result.errmsg)
                 } ?: Protocol.Failure("It did not finish (exit ${result.exitCode})")
             _state.update { it.copy(failure = failure) }
+            persistFailure(failure)
             if (fromUser) {
                 say(if (completion.label.isBlank()) "That did not finish" else "${completion.label} did not finish")
                 refreshAfterRun()
@@ -281,7 +293,10 @@ class HomeViewModel(
         // Only a successful *action* clears a failure. A status read proves the device
         // answers, not that the failed step now works — the first version of the post-run
         // refresh erased the banner it existed to show.
-        if (fromUser && completion.actionId.isNotBlank()) _state.update { it.copy(failure = null) }
+        if (fromUser && completion.actionId.isNotBlank()) {
+            _state.update { it.copy(failure = null) }
+            persistFailure(null)
+        }
         if (fromUser) say(if (completion.label.isBlank()) "Done" else "${completion.label} — done")
         markFailed(completion, failed = false)
 
@@ -367,5 +382,56 @@ class HomeViewModel(
         clock?.cancel()
         clock = null
         _state.update { it.copy(elapsedSeconds = 0L) }
+    }
+
+    // ---- process death ------------------------------------------------------------------
+
+    /**
+     * The two things worth restoring after the process is killed.
+     *
+     * A rotation is handled by the ViewModel itself. Process death is not: the app is exactly
+     * the kind of process Android kills on a 1.8 GB phone, and coming back to a screen that has
+     * forgotten *why* it was showing a red banner (or which steps ran) is how a user re-runs an
+     * install that had already failed for a known reason.
+     *
+     * Deliberately **not** restored: the raw stream (capped at 512 KB and re-derivable from the
+     * next run) and the snapshot (a file, re-read on IO by [StatusStore]).
+     */
+    private fun restoreAfterProcessDeath() {
+        saved.get<String>(K_FAILURE_HEADLINE)?.let { headline ->
+            val details = saved.get<Array<String>>(K_FAILURE_DETAILS)?.toList().orEmpty()
+            _state.update { it.copy(failure = Protocol.Failure(headline, details)) }
+        }
+
+        saved.get<Array<String>>(K_STEPS)?.let { rows ->
+            val steps =
+                rows.mapNotNull { row ->
+                    val f = row.split(SEP)
+                    if (f.size != 4) {
+                        null
+                    } else {
+                        Protocol.Step(id = f[0], title = f[1], state = f[2], ms = f[3].toLongOrNull() ?: 0L)
+                    }
+                }
+            if (steps.isNotEmpty()) _state.update { it.copy(steps = steps) }
+        }
+    }
+
+    private fun persistFailure(failure: Protocol.Failure?) {
+        saved[K_FAILURE_HEADLINE] = failure?.headline
+        saved[K_FAILURE_DETAILS] = failure?.details?.toTypedArray()
+    }
+
+    private fun persistSteps(steps: List<Protocol.Step>) {
+        saved[K_STEPS] = steps.map { "${it.id}$SEP${it.title}$SEP${it.state}$SEP${it.ms}" }.toTypedArray()
+    }
+
+    private companion object {
+        const val K_FAILURE_HEADLINE = "failure.headline"
+        const val K_FAILURE_DETAILS = "failure.details"
+        const val K_STEPS = "run.steps"
+
+        /** Unit separator: can never appear in a step title or id. */
+        const val SEP = "\u001F"
     }
 }
