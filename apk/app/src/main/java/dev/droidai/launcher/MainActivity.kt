@@ -726,10 +726,12 @@ private fun Home() {
             if (fromUser) refreshAfterRun(context)
             return@LaunchedEffect
         }
-        // Only a run the user asked for may clear a failure. The post-run refresh is a
-        // successful status read, and treating that as "all clear" erased the message of
-        // the run it was refreshing for — the banner appeared for a moment and vanished.
-        if (fromUser) failure = null
+        // Only a successful *action* clears a failure. A status read proves the device
+        // answers, not that the failed step now works: the first version of the
+        // post-run refresh erased the banner it existed to show, and a manual Refresh
+        // would have done the same.
+        val wasAction = Runner.lastActionId().isNotBlank()
+        if (fromUser && wasAction) failure = null
         if (fromUser) notice = if (runLabel.isBlank()) "Done" else "$runLabel — done"
 
         // Route on the payload, not on which button was pressed: a probe result is still
@@ -790,7 +792,10 @@ private fun Home() {
         args: List<String>,
         label: String,
     ) {
-        failure = null
+        // Starting an action is a retry, so the previous verdict goes. Re-reading the
+        // device is not: the header Refresh is a USER run too, and tapping it to check
+        // "is it fixed now?" must not delete the sentence that says what was broken.
+        if (args.getOrNull(1) == "run") failure = null
         when (Runner.send(context, args, Origin.USER, label)) {
             Dispatch.QUEUED -> notice = "Starting $label as soon as the current run finishes."
             Dispatch.FAILED -> notice = "Could not reach Termux. Tap Refresh."

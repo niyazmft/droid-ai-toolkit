@@ -687,6 +687,11 @@ message about the run). A successful refresh must not clear a failure notice —
 separate, deliberate line, because the first version of this change erased the banner it
 had just shown.
 
+The rule is narrower than "the user asked for it": only a successful **action** clears a
+failure. The header Refresh is a `USER` run too, so the first fix still deleted the
+explanation whenever somebody tapped it to check whether the tool worked now. Clearing now
+requires an `--api run`, the only thing that counts as a retry.
+
 **A pinned failure line with evidence.** The banner used to be a verdict with no reason
 ("Step failed: Install package"), and it lived *inside* the scroll view, so a user who had
 scrolled the list never saw it. It is now pinned under the header (as is the working
