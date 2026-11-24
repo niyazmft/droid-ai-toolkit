@@ -60,6 +60,31 @@ Use `--fast` for polling, and the full form when a screen is about to display ve
 Only these objects appear on stdout. Everything a step prints goes to its own log file
 under `~/.droid_ai_toolkit/log/`.
 
+Two things travel as `log` events because a client cannot read those files (Termux's home
+is app-private):
+
+- **A refusal says why.** The `preflight` event carries `ok:false`; the sentence after it
+  names the arch, memory and disk numbers and any `unmet:` predicates. A client should
+  show that line rather than the exit code.
+- **A failed step says why.** Before `done`, the last 12 non-empty, ANSI-stripped lines of
+  that step's own output are replayed as `log` events with `step` set to the failing step
+  id. Without this the stream can only say "that step failed", and the reason
+  (`E: Unable to locate package ollama`, `not on PATH: pi`) is invisible to the app.
+
+## Status payload: `checks`
+
+`status` evaluates every predicate the catalog names in `requires.predicates` and reports
+the result:
+
+```json
+"checks": { "postgres_running": false, "pkg_available:ollama": true }
+```
+
+This is the client-side half of the preflight. Memory and disk are warnings a user may
+override with `--force`; an unmet predicate is a refusal, so showing it before the tap is
+the difference between a disabled button with a reason and a bare exit 3. A predicate that
+cannot be evaluated is reported `false`, which matches the engine's fail-closed behaviour.
+
 ## Exit codes
 
 | Code | Meaning |

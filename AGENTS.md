@@ -673,14 +673,47 @@ postmaster (`pgrep -x postgres` or `postgres -D`). Re-ran on 8x:
 `preflight ok:false … unmet: postgres_running [--force does not override arch or
 predicates]`, exit 3, no work done.
 
-Known and deliberately **not** fixed in that pass: the client does not refresh after a run
-finishes (the count stays stale until the header refresh, ~11 s), and failures surface as a
-sticky "Command failed (exit N)" / "Step failed: <title>" with no reason — the actionable
-line is only in the run log.
+### What the client now does with that information
 
-Note for anyone running the gate on this branch: `pnpm run lint:all` fails at **HEAD**
-(221 ktlint findings, 194 in `MainActivity.kt`), so a red ktlint is not evidence that a
-change broke something. Every other lint is clean.
+The engine grew three things in the same pass, because each failure above was survivable
+but *unexplainable* from the phone:
+
+**A post-run refresh.** A finished run used to leave every screen showing the state from
+before the tap — removing Pi still listed Pi as installed, which reads as "nothing
+happened". The app now sends its own `status` when a user run completes, under a distinct
+`REFRESH` origin: not `SYSTEM` (only a full read may fill the screens, the supervisor polls
+`--fast`) and not `USER` (it must not overwrite the raw stream, the step list or the
+message about the run). A successful refresh must not clear a failure notice — that is a
+separate, deliberate line, because the first version of this change erased the banner it
+had just shown.
+
+**A pinned failure line with evidence.** The banner used to be a verdict with no reason
+("Step failed: Install package"), and it lived *inside* the scroll view, so a user who had
+scrolled the list never saw it. It is now pinned under the header (as is the working
+banner) and reads in the app's voice — "That step failed: …", "This CPU can't run it",
+"Not enough memory right now", "PostgreSQL isn't running", "Android killed it — too little
+memory". A **Details** button opens the lines that explain it, in monospace.
+
+**`checks` in the status payload.** `status` evaluates every predicate the catalog names
+under `requires.predicates` and reports `{"postgres_running": false, …}`. That is what lets
+the Packages screen say "PostgreSQL isn't running" and disable the button *before* the tap,
+instead of offering Install and handing back exit 3. Memory and disk stay warnings a user
+may override with `--force`; predicates do not.
+
+Two engine additions make the above possible, both documented in `CONTRACT.md`:
+
+- On a failed step the runner replays the last 12 non-empty lines of **that step's own
+  output** as `log` events before `done`. Steps write to a log file the app cannot read
+  (different UID, app-private home), so this is the only channel.
+- A preflight refusal's one-line reason is already a `log` event; the app now shows it
+  instead of the exit code.
+
+### The quality gate is green again
+
+`pnpm run lint:all` failed for a long time on this branch: 221 ktlint findings, 194 of them
+in `MainActivity.kt`, which made a red gate meaningless. `ktlint --format` plus two merged
+KDoc blocks fixed it; the gate now passes end to end, so a failure there is a failure
+again.
 
 ## License Note
 

@@ -10,13 +10,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,9 +36,9 @@ import androidx.compose.ui.unit.dp
  *
  * Everything is a tinted surface with a whisper border and a generous radius; nothing is
  * elevated, and the only saturated colour in the whole vocabulary is a state dot.
+ *
+ * A group of rows is white (or graphite) on the tinted page: 16 dp radius, 1 dp hairline.
  */
-
-/** A group of rows: white (or graphite) on the tinted page, 16 dp radius, 1 dp hairline. */
 @Composable
 fun UiCard(
     modifier: Modifier = Modifier,
@@ -197,8 +195,8 @@ fun UiChoice(
 fun UiCodeBlock(
     text: String,
     modifier: Modifier = Modifier,
-    /// Logs keep their line length: wrapping cuts a run id in half ("1795466327-7 / 013")
-    /// and makes a stack trace unreadable. Diagnostics wrap, because they are prose.
+    // / Logs keep their line length: wrapping cuts a run id in half ("1795466327-7 / 013")
+    // / and makes a stack trace unreadable. Diagnostics wrap, because they are prose.
     scrollHorizontally: Boolean = false,
 ) {
     val scroll = if (scrollHorizontally) Modifier.horizontalScroll(rememberScrollState()) else Modifier

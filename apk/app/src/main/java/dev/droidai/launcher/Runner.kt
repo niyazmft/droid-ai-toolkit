@@ -33,6 +33,16 @@ enum class Origin {
     PROBE,
     USER,
     SYSTEM,
+
+    /**
+     * A status read the app issued by itself, after a run finished.
+     *
+     * It is not SYSTEM, because only a full snapshot may update the screens and the
+     * supervisor polls `--fast` (blank versions). It is not USER either: it must not
+     * overwrite the raw stream, the step list or the failure notice of the run the user
+     * just watched.
+     */
+    REFRESH,
 }
 
 sealed interface Dispatch {
@@ -64,6 +74,9 @@ object Runner {
     /** How long each caller may stay silent before we call it dead. */
     private const val PROBE_CEILING_MS = 25_000L
     private const val SYSTEM_CEILING_MS = 90_000L
+
+    /** A post-run status refresh is a full read (versions included), so allow the slow one. */
+    private const val REFRESH_CEILING_MS = 120_000L
 
     /**
      * A user action is never timed out on a budget short enough to interrupt real
@@ -104,6 +117,7 @@ object Runner {
             Origin.PROBE -> PROBE_CEILING_MS
             Origin.SYSTEM -> SYSTEM_CEILING_MS
             Origin.USER -> USER_CEILING_MS
+            Origin.REFRESH -> REFRESH_CEILING_MS
         }
 
     /** Who the last dispatched run belonged to. The UI uses it to ignore supervisor polls. */

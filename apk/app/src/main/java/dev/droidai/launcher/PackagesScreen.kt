@@ -6,9 +6,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -86,6 +86,13 @@ private data class ToolRow(
      * the app just has to read it.
      */
     val supported: Boolean = true,
+    /**
+     * A precondition the engine reports as unmet (PostgreSQL down, no matching wheel).
+     *
+     * Unlike memory, these are not advisory: the engine refuses, and `--force` does not
+     * override them. Naming it on the card replaces a bare exit 3 with a reason.
+     */
+    val blocked: String? = null,
 ) {
     val group: Group
         get() =
@@ -192,9 +199,18 @@ private fun rows(
         val installed = isInstalled(snapshot, key)
         // The install action carries the arch restriction; its uninstall sibling is
         // deliberately unrestricted (removing something must work on any cpu).
-        val archs = mine.firstOrNull { it.id.endsWith(".install") }?.arch.orEmpty()
+        val install = mine.firstOrNull { it.id.endsWith(".install") }
+        val archs = install?.arch.orEmpty()
         val cpu = snapshot?.device?.arch.orEmpty()
         val supported = archs.isEmpty() || cpu.isBlank() || archs.any { it.equals(cpu, ignoreCase = true) }
+        // Only the engine's negative answers matter; an older engine sends no `checks`
+        // at all, and then nothing is claimed about the precondition.
+        val unmet =
+            install
+                ?.predicates
+                .orEmpty()
+                .filter { snapshot?.checks?.get(it) == false }
+        val blocked = unmet.firstOrNull()?.let { Protocol.checkLabel(it) }
         ToolRow(
             key = key,
             title = title,
@@ -205,6 +221,7 @@ private fun rows(
             actions = mine,
             cpu = cpu,
             supported = supported,
+            blocked = blocked,
         )
     }
 
@@ -218,7 +235,6 @@ private fun actionLabel(
         installed -> "Update"
         else -> "Install"
     }
-
 
 @Composable
 fun PackagesScreen(
@@ -357,8 +373,7 @@ private fun GroupHeader(
                 onClickLabel = if (expanded) "Collapse" else "Expand",
                 role = Role.Button,
                 onClick = onToggle,
-            )
-            .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
+            ).semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -488,15 +503,16 @@ private fun ToolRow(
                     StateTone.OK,
                 )
             Group.AVAILABLE ->
-                if (row.supported) {
-                    UiState("Not installed", StateTone.PLAIN)
-                } else {
-                    // Said plainly, and before the user taps: this is not a device fault,
-                    // the tool has no build for this cpu.
-                    UiState(
-                        if (row.cpu.isBlank()) "Not available for this device" else "No build for ${row.cpu}",
-                        StateTone.PLAIN,
-                    )
+                when {
+                    !row.supported ->
+                        // Said plainly, and before the user taps: this is not a device
+                        // fault, the tool has no build for this cpu.
+                        UiState(
+                            if (row.cpu.isBlank()) "Not available for this device" else "No build for ${row.cpu}",
+                            StateTone.PLAIN,
+                        )
+                    row.blocked != null -> UiState(row.blocked, StateTone.PLAIN)
+                    else -> UiState("Not installed", StateTone.PLAIN)
                 }
         }
 
@@ -514,9 +530,15 @@ private fun ToolRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             row.actions.forEach { action ->
-                val usable = row.supported || action.destructive
+                val runnable = row.supported && row.blocked == null
+                val usable = runnable || action.destructive
                 UiPill(
-                    label = if (usable) actionLabel(action, row.installed) else "Not on this CPU",
+                    label =
+                        when {
+                            usable -> actionLabel(action, row.installed)
+                            !row.supported -> "Not on this CPU"
+                            else -> "Unavailable"
+                        },
                     onClick = { onRun(action) },
                     enabled = !running && usable,
                     ghost = action.destructive,

@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -59,6 +60,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -66,14 +68,12 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.delay
 
@@ -622,7 +622,8 @@ private fun Home() {
     var checkedAt by remember { mutableStateOf(Prefs.lastStatusAt.value) }
     var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
     var actions by remember { mutableStateOf<List<Protocol.Action>>(emptyList()) }
-    var failure by remember { mutableStateOf<String?>(null) }
+    var failure by remember { mutableStateOf<Protocol.Failure?>(null) }
+    var showFailureDetails by remember { mutableStateOf(false) }
     var askedForActions by remember { mutableStateOf(false) }
     // rememberSaveable: a rotation or a process death used to drop the user back on
     // Overview with the sub-screen closed and the scroll position lost.
@@ -691,6 +692,19 @@ private fun Home() {
         snackbar.showSnackbar(n)
     }
 
+    /**
+     * Re-read the device after a run, without touching the record of that run.
+     *
+     * The screen used to keep the state from before the tap until somebody pressed the
+     * header refresh — after removing Pi it still listed Pi as installed, which reads as
+     * "nothing happened". A full (non `--fast`) read is deliberate: Packages shows
+     * versions, and the supervisor's fast polls leave those blank.
+     */
+    fun refreshAfterRun(ctx: android.content.Context) {
+        if (Runner.running.value) return
+        Runner.send(ctx, listOf("--api", "status"), Origin.REFRESH, "Refresh")
+    }
+
     LaunchedEffect(result) {
         val r = result ?: return@LaunchedEffect
         val origin = Runner.lastOrigin()
@@ -704,14 +718,18 @@ private fun Home() {
         }
 
         if (r.exitCode != 0 || r.errmsg.isNotBlank()) {
-            failure = Protocol.error(r.stdout, r.stderr, r.errmsg)
-                ?: "Command failed (exit ${r.exitCode})"
+            failure = Protocol.failure(r.exitCode, r.stdout, r.stderr, r.errmsg)
+                ?: Protocol.Failure("It did not finish (exit ${r.exitCode})")
             if (fromUser) {
                 notice = if (runLabel.isBlank()) "That did not finish" else "$runLabel did not finish"
             }
+            if (fromUser) refreshAfterRun(context)
             return@LaunchedEffect
         }
-        failure = null
+        // Only a run the user asked for may clear a failure. The post-run refresh is a
+        // successful status read, and treating that as "all clear" erased the message of
+        // the run it was refreshing for — the banner appeared for a moment and vanished.
+        if (fromUser) failure = null
         if (fromUser) notice = if (runLabel.isBlank()) "Done" else "$runLabel — done"
 
         // Route on the payload, not on which button was pressed: a probe result is still
@@ -745,6 +763,10 @@ private fun Home() {
                 )
             }
         }
+
+        // A finished run makes every screen stale. Refresh by itself, with a distinct
+        // origin so this does not clear the banner or overwrite the run's raw stream.
+        if (fromUser) refreshAfterRun(context)
 
         // Remember per-tool failure, so Packages can offer a "Needs attention" group
         // instead of leaving the user to remember which repair did not work.
@@ -802,6 +824,49 @@ private fun Home() {
                 onRefresh = { dispatch(listOf("--api", "status"), "Read device status") },
             )
 
+            // Pinned above the list, not inside it: a failure that has scrolled out of
+            // view is the same as no failure at all, and that is how "Step failed" went
+            // unnoticed during the device runs.
+            if (running) {
+                Box(Modifier.padding(horizontal = 16.dp)) {
+                    WorkingBanner(label = runLabel, elapsedSeconds = elapsed)
+                }
+            }
+
+            failure?.let { f ->
+                Box(Modifier.padding(horizontal = 16.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            f.headline,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier =
+                                Modifier
+                                    .weight(1f)
+                                    .semantics { liveRegion = LiveRegionMode.Polite },
+                        )
+                        // The reason is in the detail lines; without this the banner is a
+                        // verdict with no evidence, which is what made failures so hard to
+                        // act on during testing.
+                        if (f.details.isNotEmpty()) {
+                            Text(
+                                "Details",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier =
+                                    Modifier
+                                        .clickable(onClickLabel = "Show what failed") { showFailureDetails = true }
+                                        .padding(vertical = 4.dp, horizontal = 4.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
             Column(
                 Modifier
                     .weight(1f)
@@ -809,211 +874,237 @@ private fun Home() {
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                if (running) {
-                WorkingBanner(label = runLabel, elapsedSeconds = elapsed)
-            }
-
-            failure?.let {
-                Text(
-                    it,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier =
-                        Modifier
-                            .padding(vertical = 4.dp)
-                            .semantics { liveRegion = LiveRegionMode.Polite },
-                )
-            }
-
-            when (tab) {
-                Tab.OVERVIEW -> {
-                    if (steps.isNotEmpty()) {
-                        Section("Last run")
-                        Panel {
-                            steps.forEach { s ->
-                                StepRow(s)
-                            }
-                        }
-                    }
-
-                    if (snapshot == null) {
-                        // A warm launch renders this screen immediately while the probe runs,
-                        // so there is a window with no Device panel at all. Say what is
-                        // happening instead of leaving the page looking half-built.
-                        Section("Device")
-                        Panel {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                                Text(
-                                    "Reading device status…",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.padding(start = 8.dp),
-                                )
-                            }
-                        }
-                    }
-
-                    snapshot?.let { s ->
-                        Section("Device")
-                        Panel {
-                            Fact("Model", s.device.model)
-                            Fact("Android", "${s.device.android} · API ${s.device.api}")
-                            // Arch lives in the header subtitle, once, next to the model.
-                            // Repeating it here was noise on every screen.
-                            Fact("Memory", "${s.device.memAvailableMb} MB free of ${s.device.memTotalMb} MB")
-                            Fact("Swap free", "${s.device.swapFreeMb} MB")
-                            Fact("Disk free", "${s.device.diskFreeMb / 1024} GB")
-                            Fact("Termux", s.termux.version)
-                            Fact("Boot restore", if (s.termux.bootInstalled) "installed" else "missing")
-                            Fact("Node", Format.toolVersion(s.tools.node))
-                            Fact("Python", Format.toolVersion(s.tools.python))
-                            Fact("PM2", if (s.tools.pm2Installed) "installed" else "missing")
-                            if (s.tools.openclaw.isNotBlank()) Fact("OpenClaw", Format.toolVersion(s.tools.openclaw))
-                            if (s.tools.hermes.isNotBlank()) Fact("Hermes", Format.toolVersion(s.tools.hermes))
-                            if (s.tools.n8n.isNotBlank()) Fact("n8n", Format.toolVersion(s.tools.n8n))
-                        }
-
-                        Section("Services")
-                        Panel {
-                            if (s.services.isEmpty()) {
-                                Text(
-                                    "Nothing is running yet. Open Packages to install a tool.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                            s.services.forEach { sv ->
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        sv.name,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    StatusChip(sv.status == "online")
+                when (tab) {
+                    Tab.OVERVIEW -> {
+                        if (steps.isNotEmpty()) {
+                            Section("Last run")
+                            Panel {
+                                steps.forEach { s ->
+                                    StepRow(s)
                                 }
+                            }
+                        }
+
+                        if (snapshot == null) {
+                            // A warm launch renders this screen immediately while the probe runs,
+                            // so there is a window with no Device panel at all. Say what is
+                            // happening instead of leaving the page looking half-built.
+                            Section("Device")
+                            Panel {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                                    Text(
+                                        "Reading device status…",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(start = 8.dp),
+                                    )
+                                }
+                            }
+                        }
+
+                        snapshot?.let { s ->
+                            Section("Device")
+                            Panel {
+                                Fact("Model", s.device.model)
+                                Fact("Android", "${s.device.android} · API ${s.device.api}")
+                                // Arch lives in the header subtitle, once, next to the model.
+                                // Repeating it here was noise on every screen.
+                                Fact("Memory", "${s.device.memAvailableMb} MB free of ${s.device.memTotalMb} MB")
+                                Fact("Swap free", "${s.device.swapFreeMb} MB")
+                                Fact("Disk free", "${s.device.diskFreeMb / 1024} GB")
+                                Fact("Termux", s.termux.version)
+                                Fact("Boot restore", if (s.termux.bootInstalled) "installed" else "missing")
+                                Fact("Node", Format.toolVersion(s.tools.node))
+                                Fact("Python", Format.toolVersion(s.tools.python))
+                                Fact("PM2", if (s.tools.pm2Installed) "installed" else "missing")
+                                if (s.tools.openclaw.isNotBlank()) {
+                                    Fact(
+                                        "OpenClaw",
+                                        Format.toolVersion(s.tools.openclaw),
+                                    )
+                                }
+                                if (s.tools.hermes.isNotBlank()) Fact("Hermes", Format.toolVersion(s.tools.hermes))
+                                if (s.tools.n8n.isNotBlank()) Fact("n8n", Format.toolVersion(s.tools.n8n))
+                            }
+
+                            Section("Services")
+                            Panel {
+                                if (s.services.isEmpty()) {
+                                    Text(
+                                        "Nothing is running yet. Open Packages to install a tool.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                s.services.forEach { sv ->
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            sv.name,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        StatusChip(sv.status == "online")
+                                    }
+                                    Text(
+                                        "${sv.memMb} MB · ${sv.restarts} restarts",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)) {
+                                        UiPill(
+                                            label = "Stop",
+                                            enabled = !running,
+                                            ghost = true,
+                                            onClick = {
+                                                dispatch(
+                                                    listOf(
+                                                        "--api",
+                                                        "run",
+                                                        "service.stop",
+                                                        "--arg",
+                                                        "service=${sv.name}",
+                                                    ),
+                                                    "Stopping ${sv.name}",
+                                                )
+                                            },
+                                        )
+                                        UiPill(
+                                            label = "Restart",
+                                            enabled = !running,
+                                            ghost = true,
+                                            onClick = {
+                                                dispatch(
+                                                    listOf(
+                                                        "--api",
+                                                        "run",
+                                                        "service.restart",
+                                                        "--arg",
+                                                        "service=${sv.name}",
+                                                    ),
+                                                    "Restarting ${sv.name}",
+                                                )
+                                            },
+                                        )
+                                    }
+                                }
+                                UiPill(
+                                    label = "Restart services",
+                                    enabled = !running,
+                                    onClick = {
+                                        dispatch(listOf("--api", "run", "service.resurrect"), "Restarting services")
+                                    },
+                                )
+                            }
+                        }
+
+                        Section("Security")
+                        Panel {
+                            if (foreign.isEmpty()) {
                                 Text(
-                                    "${sv.memMb} MB · ${sv.restarts} restarts",
+                                    "Only this app can run commands in Termux.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            } else {
+                                Text(
+                                    "${foreign.size} other app(s) can also run commands in Termux:",
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                UiCodeBlock(foreign.joinToString("\n"))
+                                // The adb command is the remedy for an advanced user; it is not
+                                // the message. A non-technical reader needs the plain sentence:
+                                // if you did not install these, remove them.
+                                Text(
+                                    "If you did not install one of these, uninstall it from Android " +
+                                        "Settings → Apps.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)) {
-                                    UiPill(
-                                        label = "Stop",
-                                        enabled = !running,
-                                        ghost = true,
-                                        onClick = {
-                                            dispatch(
-                                                listOf("--api", "run", "service.stop", "--arg", "service=${sv.name}"),
-                                                "Stopping ${sv.name}",
-                                            )
-                                        },
-                                    )
-                                    UiPill(
-                                        label = "Restart",
-                                        enabled = !running,
-                                        ghost = true,
-                                        onClick = {
-                                            dispatch(
-                                                listOf(
-                                                    "--api",
-                                                    "run",
-                                                    "service.restart",
-                                                    "--arg",
-                                                    "service=${sv.name}",
-                                                ),
-                                                "Restarting ${sv.name}",
-                                            )
-                                        },
-                                    )
-                                }
+                                UiCodeBlock(foreign.joinToString("\n") { Security.revokeCommand(it) })
                             }
                             UiPill(
-                                label = "Restart services",
-                                enabled = !running,
-                                onClick = {
-                                    dispatch(listOf("--api", "run", "service.resurrect"), "Restarting services")
-                                },
+                                label = "Check again",
+                                ghost = true,
+                                onClick = { foreign = Security.foreignHolders(context) },
                             )
                         }
+
+                        UiPill(label = "Show raw output", ghost = true, onClick = { showRawScreen = true })
                     }
 
-                    Section("Security")
-                    Panel {
-                        if (foreign.isEmpty()) {
-                            Text(
-                                "Only this app can run commands in Termux.",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        } else {
-                            Text(
-                                "${foreign.size} other app(s) can also run commands in Termux:",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            UiCodeBlock(foreign.joinToString("\n"))
-                            // The adb command is the remedy for an advanced user; it is not
-                            // the message. A non-technical reader needs the plain sentence:
-                            // if you did not install these, remove them.
-                            Text(
-                                "If you did not install one of these, uninstall it from Android " +
-                                    "Settings → Apps.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            UiCodeBlock(foreign.joinToString("\n") { Security.revokeCommand(it) })
-                        }
-                        UiPill(
-                            label = "Check again",
-                            ghost = true,
-                            onClick = { foreign = Security.foreignHolders(context) },
+                    Tab.PACKAGES ->
+                        PackagesScreen(
+                            snapshot = snapshot,
+                            actions = actions,
+                            running = running,
+                            knownInstalled = installedKnown,
+                            failedTools = failedTools,
+                            onRun = { action ->
+                                val short =
+                                    snapshot?.let {
+                                        (action.minMemMb > 0 && it.device.memAvailableMb < action.minMemMb) ||
+                                            (action.minDiskMb > 0 && it.device.diskFreeMb < action.minDiskMb)
+                                    } ?: false
+
+                                when {
+                                    action.destructive && confirmRemove -> pending = action
+                                    action.destructive ->
+                                        dispatch(
+                                            listOf("--api", "run", action.id, "--yes"),
+                                            action.title,
+                                        )
+                                    short -> capacity = action
+                                    else -> dispatch(listOf("--api", "run", action.id), action.title)
+                                }
+                            },
                         )
-                    }
 
-                    UiPill(label = "Show raw output", ghost = true, onClick = { showRawScreen = true })
+                    Tab.METRICS -> MetricsScreen(snapshot = snapshot)
+
+                    Tab.SETTINGS ->
+                        SettingsScreen(
+                            snapshot = snapshot,
+                            running = running,
+                            onRefresh = {
+                                dispatch(listOf("--api", "status"), "Read device status")
+                            },
+                            onRecheckPermission = {
+                                Gate.refresh(context)
+                                Termux.probe(context)
+                            },
+                            onRunAction = { id ->
+                                dispatch(listOf("--api", "run", id, "--yes"), "Removing the old pnpm project")
+                            },
+                        )
                 }
-
-                Tab.PACKAGES ->
-                    PackagesScreen(
-                        snapshot = snapshot,
-                        actions = actions,
-                        running = running,
-                        knownInstalled = installedKnown,
-                        failedTools = failedTools,
-                        onRun = { action ->
-                            val short =
-                                snapshot?.let {
-                                    (action.minMemMb > 0 && it.device.memAvailableMb < action.minMemMb) ||
-                                        (action.minDiskMb > 0 && it.device.diskFreeMb < action.minDiskMb)
-                                } ?: false
-
-                            when {
-                                action.destructive && confirmRemove -> pending = action
-                                action.destructive -> dispatch(listOf("--api", "run", action.id, "--yes"), action.title)
-                                short -> capacity = action
-                                else -> dispatch(listOf("--api", "run", action.id), action.title)
-                            }
-                        },
-                    )
-
-                Tab.METRICS -> MetricsScreen(snapshot = snapshot)
-
-                Tab.SETTINGS ->
-                    SettingsScreen(
-                        snapshot = snapshot,
-                        running = running,
-                        onRefresh = {
-                            dispatch(listOf("--api", "status"), "Read device status")
-                        },
-                        onRecheckPermission = {
-                            Gate.refresh(context)
-                            Termux.probe(context)
-                        },
-                        onRunAction = { id ->
-                            dispatch(listOf("--api", "run", id, "--yes"), "Removing the old pnpm project")
-                        },
-                    )
-            }
             }
         }
+    }
+
+    failure?.takeIf { showFailureDetails && it.details.isNotEmpty() }?.let { f ->
+        AlertDialog(
+            onDismissRequest = { showFailureDetails = false },
+            title = { Text(f.headline) },
+            text = {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    f.details.forEach { line ->
+                        Text(
+                            line,
+                            style = MaterialTheme.typography.bodySmall,
+                            // Monospace: these are command lines and paths, and the
+                            // alignment carries information (the apt "E:" prefix, the
+                            // pnpm progress columns).
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showFailureDetails = false }) { Text("Close") }
+            },
+        )
     }
 
     capacity?.let { a ->

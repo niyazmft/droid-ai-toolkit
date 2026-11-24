@@ -82,6 +82,37 @@ _st_services() {
         else [] end' 2>/dev/null || printf '[]'
 }
 
+# _st_required_checks -- every predicate name the catalog asks for, one per line.
+#
+# The catalog already carries `requires.predicates`, but until now nothing evaluated them
+# for the client: it offered Install for Paperclip on a phone with no PostgreSQL, and the
+# refusal arrived as a bare exit 3. Enumerating the specs keeps the set honest — a new
+# action adds its own precondition and the status document grows with it.
+_st_required_checks() {
+    local dir="${TOOLKIT_DIR:-}"
+    [ -n "$dir" ] && [ -d "$dir/actions" ] || return 0
+    find "$dir/actions" -name '*.json' -print0 2>/dev/null \
+        | xargs -0 jq -r '.requires.predicates[]? // empty' 2>/dev/null \
+        | sort -u
+}
+
+# _st_checks_json -- { "<predicate>": true|false } for the predicates the catalog names.
+#
+# `name:arg` is split the same way a step's `when` is. Everything here is a few
+# milliseconds except the package probe, which shells out to apt-cache once.
+_st_checks_json() {
+    local p name arg ok out='{}'
+    for p in $(_st_required_checks); do
+        case "$p" in
+            *:*) name="${p%%:*}"; arg="${p#*:}" ;;
+            *)   name="$p"; arg="" ;;
+        esac
+        if pred_apply "$name" "$arg" >/dev/null 2>&1; then ok=true; else ok=false; fi
+        out=$(printf '%s' "$out" | jq -c --arg k "$p" --argjson v "$ok" '. + {($k): $v}' 2>/dev/null) || out='{}'
+    done
+    printf '%s' "$out"
+}
+
 # _st_installed_json -- presence per catalog tool, as a JSON object of booleans.
 #
 # Presence is a directory (or a PATH entry), never a version string. `--version` starts a
@@ -142,7 +173,7 @@ status_collect() {
     local mem_total mem_avail swap_total swap_free disk_free
     local termux_ver allow_ext boot_installed doze hl
     local node pnpm py openclaw hermes n8n ollama pm2_inst
-    local services services_installed
+    local services services_installed checks
 
     model=$(_st_getprop ro.product.model)
     android=$(_st_getprop ro.build.version.release)
@@ -191,6 +222,8 @@ status_collect() {
     # second `}`, which produced `{...}}` and made jq reject the whole document.
     services_installed=$(_st_installed_json)
     if [ -z "$services_installed" ]; then services_installed='{}'; fi
+    checks=$(_st_checks_json)
+    if [ -z "$checks" ]; then checks='{}'; fi
 
     jq -n \
         --arg model "$model" --arg android "$android" --arg api "$api" \
@@ -204,6 +237,7 @@ status_collect() {
         --arg openclaw "$openclaw" --arg hermes "$hermes" --arg n8n "$n8n" --arg ollama "$ollama" \
         --argjson services "${services:-[]}" \
         --argjson installed "$services_installed" \
+        --argjson checks "$checks" \
         '{
             device: {
                 model: $model, android: $android, api: ($api | tonumber? // 0),
@@ -223,6 +257,7 @@ status_collect() {
                 openclaw: $openclaw, hermes: $hermes, n8n: $n8n, ollama: $ollama,
                 installed: $installed
             },
-            services: $services
+            services: $services,
+            checks: $checks
         }' > "$out" 2>/dev/null
 }

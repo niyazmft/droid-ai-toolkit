@@ -108,6 +108,31 @@ runner_preflight() {
     return 3
 }
 
+# runner_replay_tail <step-id> <log> <byte-offset> [max-lines] -- echo the end of one
+# step's output into the event stream.
+#
+# Steps print to their own log file on disk, which the app cannot read: it runs in a
+# different UID and Termux's home is app-private. Without this the client could only say
+# "Step failed: Install package" while the reason (`E: Unable to locate package ollama`,
+# `not on PATH: pi`) sat in a file nobody on the phone would open.
+#
+# The offset is the log size before the step ran, so a retry does not replay the previous
+# attempt. Lines are truncated and ANSI-stripped: apt and pnpm colour their output, and a
+# progress bar is 200 characters of carriage returns, not information.
+runner_replay_tail() {
+    local s_id="$1" file="$2" offset="${3:-1}" max="${4:-12}" out line
+    [ -s "$file" ] || return 0
+    out=$(tail -c +"$offset" "$file" 2>/dev/null | tail -n "$max" \
+        | sed $'s/\033\\[[0-9;]*[A-Za-z]//g' 2>/dev/null)
+    [ -n "$out" ] || return 0
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        ev_log "$s_id" "$(printf '%.240s' "$line")"
+    done <<LOG
+$out
+LOG
+}
+
 # runner_when <when-value> -- evaluate a spec guard (predicate name, optional ":arg")
 runner_when() {
     local when="$1" name arg=""
@@ -153,7 +178,7 @@ runner_run() {
     RUNNER_RESULT=$(mktemp 2>/dev/null) || RUNNER_RESULT=""
     export RUNNER_RESULT
 
-    local step s_id s_title s_run s_when s_optional s_idem s_fp s_retry t0 t1 ms attempt max
+    local step s_id s_title s_run s_when s_optional s_idem s_fp s_retry t0 t1 ms attempt max log_from
     while IFS= read -r step; do
         [ -n "$step" ] || continue
         s_id=$(printf '%s' "$step" | jq -r '.id // empty')
@@ -195,6 +220,7 @@ runner_run() {
         while :; do
             ev_step "$s_id" "running" "$s_title" 0
             [ -n "$RUNNER_RESULT" ] && : > "$RUNNER_RESULT"
+            log_from=$(( $(wc -c < "$log" 2>/dev/null || echo 0) + 1 ))
             t0=$(date +%s)
             "$s_run" "$step" "$spec" "${API_PARAMS:-{}}" >> "$log" 2>&1
             rc=$?
@@ -221,6 +247,8 @@ runner_run() {
 
             state_mark "$id" "$s_id" failed "$ms" "$s_fp" >/dev/null 2>&1 || true
             ev_step "$s_id" "failed" "$s_title" "$ms"
+            # Why it failed, for a client that cannot read the log file.
+            runner_replay_tail "$s_id" "$log" "$log_from" 12
             if [ "$s_optional" = "true" ]; then
                 ev_log "$s_id" "optional step failed (code $rc) — continuing"
                 break

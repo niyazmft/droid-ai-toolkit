@@ -59,6 +59,15 @@ object Protocol {
         val termux: TermuxInfo,
         val tools: Tools,
         val services: List<Service>,
+        /**
+         * Preconditions the catalog names (`postgres_running`, `pkg_available:ollama`, …)
+         * and whether the engine found them satisfied right now.
+         *
+         * These are not advisory: the engine refuses to run the action when one is
+         * unmet, and `--force` does not override them. Showing them up front is the
+         * difference between a disabled button with a reason and a bare exit 3.
+         */
+        val checks: Map<String, Boolean> = emptyMap(),
     )
 
     data class Action(
@@ -71,6 +80,8 @@ object Protocol {
         val minDiskMb: Int,
         /** Arches this action can run on; empty means "no restriction declared". */
         val arch: List<String>,
+        /** Named preconditions (`postgres_running`, `pkg_available:ollama`, …). */
+        val predicates: List<String> = emptyList(),
     )
 
     /** Every JSON line in the stream, in order. Non-JSON lines are dropped. */
@@ -132,6 +143,10 @@ object Protocol {
                                     .associateWith { k -> obj.optBoolean(k) }
                             } ?: emptyMap(),
                     ),
+                checks =
+                    payload.optJSONObject("checks")?.let { obj ->
+                        obj.keys().asSequence().associateWith { k -> obj.optBoolean(k) }
+                    } ?: emptyMap(),
                 services =
                     (0 until services.length()).map { i ->
                         val s = services.getJSONObject(i)
@@ -170,6 +185,7 @@ object Protocol {
                 minMemMb = a.optJSONObject("requires")?.optInt("min_mem_mb") ?: 0,
                 minDiskMb = a.optJSONObject("requires")?.optInt("min_disk_mb") ?: 0,
                 arch = archList(a.optJSONObject("requires")),
+                predicates = stringList(a.optJSONObject("requires"), "predicates"),
             )
         }
     }
@@ -180,8 +196,14 @@ object Protocol {
      * The catalog has always carried this; the app ignored it, so a 32-bit device was
      * offered Install for tools that only ship aarch64 builds and got a bare exit 3.
      */
-    private fun archList(requires: JSONObject?): List<String> {
-        val arr = requires?.optJSONArray("arch") ?: return emptyList()
+    private fun archList(requires: JSONObject?): List<String> = stringList(requires, "arch")
+
+    /** A string array under `requires`, e.g. `arch` or `predicates`. */
+    private fun stringList(
+        requires: JSONObject?,
+        key: String,
+    ): List<String> {
+        val arr = requires?.optJSONArray(key) ?: return emptyList()
         return (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
     }
 
@@ -238,20 +260,103 @@ object Protocol {
             ?.takeIf { it.optString("state") == "running" }
             ?.optString("title")
 
-    /** A human-readable failure from the stream or the Termux-level error. */
-    fun error(
+    /**
+     * A failure in two parts: one sentence a person can act on, and the evidence.
+     *
+     * The banner used to read "Step failed: Install package" — the title of the step, not
+     * the reason. The engine now replays the tail of a failed step's log as `log` events
+     * (see CONTRACT.md), which is the only way the app can see it: Termux's home is
+     * app-private, so the log file on disk is unreadable from here.
+     */
+    data class Failure(
+        val headline: String,
+        val details: List<String> = emptyList(),
+    )
+
+    /** Phrases for the preconditions the catalog can name, in the app's voice. */
+    fun checkLabel(key: String): String =
+        when {
+            key == "postgres_running" -> "PostgreSQL isn't running"
+            key == "has_matching_jiter_wheel" -> "No Python wheel matches this interpreter"
+            key == "has_warm_pnpm_store" -> "No warm package cache yet"
+            key.startsWith("pkg_available:") -> "Not in the Termux repo for this CPU"
+            else -> "A requirement isn't met ($key)"
+        }
+
+    fun failure(
+        exitCode: Int,
         stdout: String,
         stderr: String,
         errmsg: String,
-    ): String? {
-        if (errmsg.isNotBlank()) return errmsg
-        val fromStream =
-            events(stdout)
-                .firstOrNull { it.optString("t") == "error" }
-                ?.optString("msg")
-        if (!fromStream.isNullOrBlank()) return fromStream
-        val failedStep = events(stdout).lastOrNull { it.optString("t") == "step" && it.optString("state") == "failed" }
-        if (failedStep != null) return "Step failed: ${failedStep.optString("title")}"
-        return stderr.takeIf { it.isNotBlank() }
+    ): Failure? {
+        if (errmsg.isNotBlank()) return Failure(errmsg)
+        val evs = events(stdout)
+        evs
+            .firstOrNull { it.optString("t") == "error" }
+            ?.optString("msg")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return Failure(it) }
+
+        val failed = evs.lastOrNull { it.optString("t") == "step" && it.optString("state") == "failed" }
+        val stepId = failed?.optString("id").orEmpty()
+        val stepTitle = failed?.optString("title").orEmpty()
+
+        val stepTail =
+            evs
+                .filter { it.optString("t") == "log" }
+                .filter { stepId.isNotBlank() && it.optString("step") == stepId }
+                .map { clean(it.optString("line")) }
+                .filter { it.isNotBlank() }
+                .takeLast(12)
+
+        val refused =
+            evs
+                .filter { it.optString("t") == "log" && it.optString("step") == "preflight" }
+                .map { clean(it.optString("line")) }
+                .lastOrNull()
+                .orEmpty()
+
+        val unmet = unmetPredicates(refused)
+
+        val headline =
+            when {
+                exitCode == 3 && unmet.isNotEmpty() -> unmet.map { checkLabel(it) }.first()
+                exitCode == 3 && refused.contains("arch=") -> "This CPU can't run it"
+                exitCode == 3 && refused.contains("mem=") -> "Not enough memory right now"
+                exitCode == 3 && refused.contains("disk=") -> "Not enough storage right now"
+                exitCode == 3 -> "This device is missing something it needs"
+                exitCode == 4 -> "Cancelled — it needs confirmation first"
+                exitCode == 5 -> "A question went unanswered"
+                exitCode == 137 -> "Android killed it — too little memory"
+                exitCode == 1 && stepTitle.isNotBlank() -> "That step failed: $stepTitle"
+                exitCode == 1 -> "A step failed"
+                exitCode != 0 -> "Failed (exit $exitCode)"
+                stderr.isNotBlank() -> clean(stderr).lineSequence().firstOrNull { it.isNotBlank() } ?: "Failed"
+                else -> null
+            } ?: return null
+
+        val details =
+            buildList {
+                addAll(stepTail)
+                if (stepTail.isEmpty() && refused.isNotBlank()) add(refused)
+            }
+        return Failure(headline, details)
     }
+
+    /** Predicate names the engine reported as unmet, from its preflight refusal line. */
+    private fun unmetPredicates(refused: String): List<String> {
+        val marker = "unmet:"
+        val at = refused.indexOf(marker)
+        if (at < 0) return emptyList()
+        return refused
+            .substring(at + marker.length)
+            .trim()
+            .split(" ")
+            .filter { it.isNotBlank() }
+    }
+
+    /** Strip colour codes and control characters the engine's tools like to emit. */
+    private fun clean(line: String): String = line.replace(RE_ANSI, "").replace("\r", "").trim()
+
+    private val RE_ANSI = Regex("\u001B\\[[0-9;]*[A-Za-z]")
 }

@@ -32,9 +32,9 @@ import androidx.compose.ui.unit.sp
  *   4. Inter for everything a person reads. Monospace only where the content *is*
  *      machine output — the raw log and the diagnostic panels — and there it gets a
  *      code-block surface so it reads as deliberate.
+ *
+ * Roles Material 3 does not model: dividers, tints, the accent, code blocks.
  */
-
-/** Roles Material 3 does not model: dividers, tints, the accent, code blocks. */
 data class SkinPalette(
     val divider: Color,
     val pressed: Color,
@@ -219,19 +219,41 @@ private val Type =
         bodyLarge = TextStyle(fontFamily = Inter, fontSize = 15.sp, lineHeight = 22.sp),
         bodyMedium = TextStyle(fontFamily = Inter, fontSize = 14.sp, lineHeight = 21.sp),
         bodySmall = TextStyle(fontFamily = Inter, fontSize = 13.sp, lineHeight = 19.sp),
-        labelLarge = TextStyle(fontFamily = Inter, fontWeight = FontWeight.Medium, fontSize = 13.sp, lineHeight = 18.sp),
-        labelMedium = TextStyle(fontFamily = Inter, fontWeight = FontWeight.Medium, fontSize = 12.sp, lineHeight = 16.sp),
+        labelLarge =
+            TextStyle(
+                fontFamily = Inter,
+                fontWeight = FontWeight.Medium,
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+            ),
+        labelMedium =
+            TextStyle(
+                fontFamily = Inter,
+                fontWeight = FontWeight.Medium,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+            ),
         labelSmall = TextStyle(fontFamily = Inter, fontSize = 12.sp, lineHeight = 16.sp),
     )
 
 /** 16 dp cards, full pills. Nothing here is a square corner. */
 private val Shapes =
     Shapes(
-        extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-        small = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-        medium = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-        large = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
-        extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
+        extraSmall =
+            androidx.compose.foundation.shape
+                .RoundedCornerShape(8.dp),
+        small =
+            androidx.compose.foundation.shape
+                .RoundedCornerShape(12.dp),
+        medium =
+            androidx.compose.foundation.shape
+                .RoundedCornerShape(16.dp),
+        large =
+            androidx.compose.foundation.shape
+                .RoundedCornerShape(20.dp),
+        extraLarge =
+            androidx.compose.foundation.shape
+                .RoundedCornerShape(28.dp),
     )
 
 @Composable
