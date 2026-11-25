@@ -3,9 +3,13 @@ package dev.droidai.launcher
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -196,7 +200,18 @@ fun AdvancedScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            UiPill(label = "Open raw output", ghost = true, onClick = onOpenRawOutput)
+            // The terminal glyph is the one place this icon belongs: it marks the screen that
+            // is literally a terminal's output. (It was drawn and never used — F30.)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    TerminalIcon,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(6.dp))
+                UiPill(label = "Open raw output", ghost = true, onClick = onOpenRawOutput)
+            }
         }
 
         // ---- Usage (was a top-level tab: a chart nobody asked for, on the first screen) ----

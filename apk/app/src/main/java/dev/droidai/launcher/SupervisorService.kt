@@ -134,6 +134,14 @@ class SupervisorService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // From the notification, without opening the app: the same command the supervisor
+        // would run on its own after finding nothing online.
+        if (intent?.action == ACTION_RESTART) {
+            if (!Runner.running.value) {
+                Runner.send(this, listOf("--api", "run", "service.resurrect"), Origin.SYSTEM)
+            }
+            return START_STICKY
+        }
         // Re-post on every start. On API 33+ the first post can happen before the user grants
         // POST_NOTIFICATIONS, and the notification is then invisible while the service runs;
         // an unchanged status never calls update(), so it would stay invisible until the next
@@ -245,8 +253,17 @@ class SupervisorService : Service() {
             // must not be restarted forever.
             val attempts = (Prefs.restartAttempts.value + 1).coerceAtMost(MAX_ATTEMPTS)
             Prefs.setRestartAttempts(attempts)
+            // Name what is being restored. "Restarting (attempt 1/3)" left the user to guess
+            // which apps were affected, and on a phone with several tools the answer matters.
+            val names =
+                snapshot.tools.installed
+                    .filterValues { it }
+                    .keys
+                    .map { it.replaceFirstChar { c -> c.uppercase() } }
+                    .sorted()
             update(
-                "No services online — restarting (attempt $attempts/$MAX_ATTEMPTS)",
+                "Nothing running — restarting ${if (names.isEmpty()) "services" else names.joinToString(", ")} " +
+                    "($attempts/$MAX_ATTEMPTS)",
                 "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free",
             )
             if (!Runner.running.value) {
@@ -322,6 +339,13 @@ class SupervisorService : Service() {
                 Intent(this, SupervisorService::class.java).setAction(ACTION_STOP),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
+        val restart =
+            PendingIntent.getService(
+                this,
+                2,
+                Intent(this, SupervisorService::class.java).setAction(ACTION_RESTART),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
         return NotificationCompat
             .Builder(this, CHANNEL)
             .setContentTitle(title)
@@ -331,6 +355,11 @@ class SupervisorService : Service() {
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setContentIntent(open)
+            // Three actions, each a verb a person can act on from the shade: read it (Open),
+            // repair it (Restart now), or stop watching (Stop). Before this the only action was
+            // Stop — the one thing that does not fix anything.
+            .addAction(0, "Open", open)
+            .addAction(0, "Restart now", restart)
             .addAction(0, "Stop", stop)
             .build()
     }
@@ -383,6 +412,7 @@ class SupervisorService : Service() {
         private const val RESTART_TIMEOUT_MS = 90_000L
         private const val MAX_ATTEMPTS = 3
         const val ACTION_STOP = "dev.droidai.launcher.SUPERVISOR_STOP"
+        const val ACTION_RESTART = "dev.droidai.launcher.SUPERVISOR_RESTART"
 
         fun start(context: Context) {
             val intent = Intent(context, SupervisorService::class.java)

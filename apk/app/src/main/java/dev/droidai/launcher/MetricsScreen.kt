@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -88,16 +89,40 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                LineChart(
-                    points = samples.map { it.memMb.toFloat() },
-                    modifier = Modifier.fillMaxWidth().height(64.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    // A Canvas is invisible to a screen reader. Without this, the whole
-                    // Memory panel was silent apart from its low/high caption.
-                    description =
-                        "Memory available over the last $windowHours hours: low " +
-                            "${samples.minOf { it.memMb }} MB, high ${samples.maxOf { it.memMb }} MB.",
-                )
+                // F31: the axis says what the numbers are, and which end is good. Without the
+                // high/low labels the chart was a line with no scale, and a falling line read as
+                // a fault even when 600 MB free is perfectly healthy.
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Column(Modifier.width(46.dp), horizontalAlignment = Alignment.End) {
+                        Text(
+                            "${samples.maxOf { it.memMb }} MB",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(28.dp))
+                        Text(
+                            "${samples.minOf { it.memMb }} MB",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    LineChart(
+                        points = samples.map { it.memMb.toFloat() },
+                        modifier = Modifier.weight(1f).height(64.dp),
+                        // A neutral series colour: this is a healthy measurement, and painting
+                        // it in the error colour made every phone look alarmed.
+                        color = MaterialTheme.colorScheme.primary,
+                        // A Canvas is invisible to a screen reader. Without this, the whole
+                        // Memory panel was silent apart from its low/high caption.
+                        description =
+                            "Memory available over the last $windowHours hours: low " +
+                                "${samples.minOf { it.memMb }} MB, high ${samples.maxOf { it.memMb }} MB.",
+                    )
+                }
                 Text(
                     "low ${samples.minOf { it.memMb }} MB · high ${samples.maxOf { it.memMb }} MB",
                     style = MaterialTheme.typography.labelSmall,
