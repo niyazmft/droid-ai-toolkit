@@ -18,6 +18,7 @@ npm-debug.log*
 
 # Working plan / progress log (local only)
 /PLAN.md
+/TASKS.md
 firebase-debug.log
 
 # Paperclip prebuilt UI tarballs (downloaded from GitHub releases)
