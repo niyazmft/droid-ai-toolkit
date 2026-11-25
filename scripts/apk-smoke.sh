@@ -115,6 +115,22 @@ for m in re.finditer(
   return 1
 }
 
+# scroll_to <text> [max swipes] -- scroll down until the text is on screen.
+#
+# Fixed swipe counts stopped working as the page grew (Settings gained a reboot state block
+# and a cleanup panel); a fixed count either stops short or scrolls past the target.
+scroll_to() {
+  local want="$1" max="${2:-8}" i
+  for i in $(seq 1 "$max"); do
+    if on_screen "$(dump_ui)" "$want"; then
+      return 0
+    fi
+    adb_cmd shell input swipe 360 1200 360 500 150 >/dev/null 2>&1
+    sleep 1
+  done
+  on_screen "$(dump_ui)" "$want"
+}
+
 # Tap a control by its content description (the gear icon has no text).
 tap_desc() {
   local desc="$1" ui coords try
@@ -282,19 +298,24 @@ if [ "$ready" -eq 1 ]; then
   opened=0
   if tap_desc "Settings"; then
     sleep 2
-    for _ in 1 2 3 4; do
-      adb_cmd shell input swipe 360 1200 360 500 200 >/dev/null 2>&1
-    done
-    sleep 1
-    if tap_text "Open Advanced"; then
+    if scroll_to "Open Advanced" && tap_text "Open Advanced"; then
       sleep 2
-      for _ in 1 2 3 4; do
-        adb_cmd shell input swipe 360 1200 360 500 200 >/dev/null 2>&1
-      done
-      sleep 1
-      if tap_text "Open raw output"; then
-        sleep 2
-        if on_screen "$(dump_ui)" 'Raw Output'; then
+      if scroll_to "Open raw output"; then
+        # Two attempts: the page can still be settling (the reboot block and the cleanup size
+        # both trigger a refresh on open), and a tap that lands mid-layout hits nothing.
+        opened_raw=0
+        for _ in 1 2; do
+          tap_text "Open raw output" || true
+          for _ in 1 2 3 4; do
+            sleep 1
+            if on_screen "$(dump_ui)" 'Raw Output'; then
+              opened_raw=1
+              break
+            fi
+          done
+          [ "$opened_raw" -eq 1 ] && break
+        done
+        if [ "$opened_raw" -eq 1 ]; then
           opened=1
           adb_cmd shell input keyevent KEYCODE_BACK >/dev/null 2>&1
           sleep 2
