@@ -1063,10 +1063,12 @@ private fun Home(
                             snapshot = s.snapshot,
                             steps = s.steps,
                             installedKnown = installedKnown,
+                            actions = s.actions,
                             running = s.running,
                             failedTools = failedTools,
                             onChooseTool = { tabName = Tab.TOOLS.name },
                             onRestartEverything = { vm.runService("service.resurrect", null, "Restarting services") },
+                            onRun = { action -> vm.onRun(action) },
                         )
 
                     Tab.TOOLS ->
@@ -1185,10 +1187,12 @@ private fun HomeBody(
     snapshot: Protocol.Snapshot?,
     steps: List<Protocol.Step>,
     installedKnown: Set<String>,
+    actions: List<Protocol.Action>,
     running: Boolean,
     failedTools: Set<String>,
     onChooseTool: () -> Unit,
     onRestartEverything: () -> Unit,
+    onRun: (Protocol.Action) -> Unit,
 ) {
     val servicesUp = snapshot?.services?.count { it.status == "online" } ?: 0
     val installed =
@@ -1228,6 +1232,30 @@ private fun HomeBody(
         ) { Text(HomeSummary.actionLabel(it), style = UiType.pill) }
     }
 
+    // F28: on a device with nothing installed, one recommended tool with a one-line "what
+    // this gives you". A wall of eight cards is a decision; one card is a next step. It is
+    // deliberately absent once anything is installed — the Tools tab is the list.
+    if (verdict == HomeSummary.Verdict.NOTHING_INSTALLED) {
+        val recommended =
+            actions.firstOrNull { it.id == RECOMMENDED_TOOL } ?: actions.firstOrNull { !it.destructive }
+        recommended?.let { action ->
+            Section("Recommended")
+            Panel {
+                Text(action.title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    action.summary.ifBlank { "The one most people start with." },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                UiPill(
+                    label = "Install",
+                    enabled = !running,
+                    onClick = { onRun(action) },
+                )
+            }
+        }
+    }
+
     if (steps.isNotEmpty()) {
         Section("Last run")
         Panel {
@@ -1235,6 +1263,14 @@ private fun HomeBody(
         }
     }
 }
+
+/**
+ * The one tool offered on an empty device.
+ *
+ * OpenClaw because it is what this toolkit is built around: a gateway that answers in a chat
+ * app, which is the shortest path from "I installed this app" to "something works".
+ */
+private const val RECOMMENDED_TOOL = "openclaw.install"
 
 /**
  * What is happening, and for how long.

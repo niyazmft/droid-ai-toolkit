@@ -77,6 +77,11 @@ fun AdvancedScreen(
                 )
                 Fact("Swap", "${snap.device.swapFreeMb} MB free")
                 Fact("Storage", "${snap.device.diskFreeMb / 1024} GB free")
+                Text(
+                    "Storage — space left for tools and their files.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 // The full version string: this is the screen that answers "which build?".
                 Fact("Termux", snap.termux.version)
                 Fact("Node", Format.toolVersion(snap.tools.node))
@@ -193,6 +198,18 @@ fun AdvancedScreen(
             )
             UiPill(label = "Open raw output", ghost = true, onClick = onOpenRawOutput)
         }
+
+        // ---- Usage (was a top-level tab: a chart nobody asked for, on the first screen) ----
+        Section("Usage")
+        Panel {
+            Text(
+                "Memory and swap over the last day or week, sampled every five minutes while " +
+                    "the app runs. Nothing here is needed to use a tool.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        MetricsScreen(snapshot = snapshot)
 
         TextButton(onClick = onBack, modifier = Modifier.padding(top = 8.dp)) {
             Text("Back to Settings")

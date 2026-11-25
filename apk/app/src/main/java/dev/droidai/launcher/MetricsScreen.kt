@@ -61,8 +61,8 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text("Metrics", style = MaterialTheme.typography.headlineMedium)
-
+        // No headline: this renders inside Advanced → Usage now (W8). A second "Metrics" title
+        // under the Advanced one was a page pretending to be a page.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(24, 168).forEach { hours ->
                 UiChoice(
