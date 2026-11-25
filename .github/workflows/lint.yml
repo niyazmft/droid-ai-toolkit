@@ -38,6 +38,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # The engine (`install.sh --api …`) is the contract the app is written against, so it is
+  # tested on every PR instead of only on a phone. These tests are black-box: no Termux, no
+  # device, just bash + jq — which is exactly what a wrong event or a stray `echo` on stdout
+  # would otherwise reach the app as, undetected until someone tapped the button.
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `--api` refuses to run without jq; ubuntu-latest ships it, but say so explicitly so a
+      # future image change fails here rather than as 40 confusing assertion failures.
+      - name: Check the engine's own hard requirements
+        run: command -v jq && jq --version
+
+      - name: Run engine contract tests
+        run: bash tests/run.sh
+
   # The APK is a real deliverable now, so a Kotlin/Compose error should fail the PR
   # rather than being discovered at build time on someone's machine.
   apk:
@@ -60,6 +77,13 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
 
+      # Unit tests before the build: the policy/schedule tests are pure Kotlin and fail in
+      # seconds, and a red one explains *why* a behaviour is wrong where a compile error in
+      # the build output only says that something is.
+      - name: Run app unit tests
+        working-directory: apk
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --console=plain
+
       - name: Build debug APK
         working-directory: apk
         run: ./gradlew :app:assembleDebug --no-daemon --console=plain
@@ -69,4 +93,12 @@ jobs:
         with:
           name: app-debug
           path: apk/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-test-report
+          path: apk/app/build/reports/tests/testDebugUnitTest
           retention-days: 7
