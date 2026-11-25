@@ -803,6 +803,14 @@ Onboarding copy states the split plainly: Setup downloads the toolkit and instal
 needs; the one thing it cannot do is flip `allow-external-apps`, because Android does not let one
 app change another app's settings.
 
+- **"Nothing installed" is not "services are down".** The supervisor starts at first launch, so
+  `0 online` is the normal state until the user installs something. It used to treat that as a
+  fault: it resurrected services that did not exist and, after three attempts, posted
+  *"Services are down and restarting did not help"* on a phone with nothing installed. The verdict
+  now comes from `SupervisorPolicy.classify(running, installedTools, autoStart)` (tested), which
+  reports **"Nothing installed yet"**, resets the attempt counter, and stops polling. The same
+  distinction gates the Overview's *Restart services* button and the Metrics empty state.
+  Rule of thumb: any sentence about services must be reachable only when a tool is installed.
 - **Foreground service types are declared, not guessed.** `specialUse` +
   `FOREGROUND_SERVICE_SPECIAL_USE`, and `POST_NOTIFICATIONS` is requested in context. With
   `dataSync` and no type permission, `startForeground()` throws `SecurityException` on

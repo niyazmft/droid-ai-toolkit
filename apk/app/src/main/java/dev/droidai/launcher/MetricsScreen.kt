@@ -125,7 +125,14 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
                 Section("Allocation")
                 Panel {
                     if (s.services.isEmpty()) {
-                        Text("No services running.", style = MaterialTheme.typography.bodySmall)
+                        // Same distinction as the supervisor's notification: an empty list on
+                        // a phone with nothing installed is not "none running", it is "none
+                        // installed yet".
+                        val installed = s.tools.installed.count { it.value }
+                        Text(
+                            if (installed == 0) "Nothing installed yet." else "No services running.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     val total = max(1, s.services.sumOf { it.memMb })
                     s.services.sortedByDescending { it.memMb }.forEach { sv ->

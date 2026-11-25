@@ -187,15 +187,32 @@ class SupervisorService : Service() {
         val running = snapshot.services.count { it.status == "online" }
         val mem = snapshot.services.sumOf { it.memMb }
 
-        if (running == 0 && !Prefs.autoStartGateway.value) {
+        val verdict =
+            SupervisorPolicy.classify(
+                running = running,
+                installedTools = snapshot.tools.installed.count { it.value },
+                autoStart = Prefs.autoStartGateway.value,
+            )
+
+        // Nothing installed means nothing is supposed to run. Counting that as "0 services
+        // online" made a fresh phone announce its services were down, try to resurrect them,
+        // and claim after three attempts that restarting had not helped — about tools that
+        // were never installed. Nothing to watch is healthy, and it needs no polling.
+        if (verdict == SupervisorPolicy.Verdict.NOTHING_INSTALLED) {
+            Prefs.setRestartAttempts(0)
+            update("Nothing installed yet", "pick a tool in Packages when you are ready")
+            return true
+        }
+
+        if (verdict == SupervisorPolicy.Verdict.NO_SERVICES_AUTOSTART_OFF) {
             update(
                 "No services online (auto-start is off)",
-                "turn it on in Settings to let the supervisor restart the gateway",
+                "turn it on in Settings to let the supervisor restart them",
             )
             return false
         }
 
-        if (running == 0) {
+        if (verdict == SupervisorPolicy.Verdict.NO_SERVICES) {
             // Observe-only is not enough: Termux is alive (it answered) but nothing is
             // serving. Try to bring it back, a bounded number of times — a broken install
             // must not be restarted forever.
@@ -211,7 +228,7 @@ class SupervisorService : Service() {
             }
             if (attempts >= MAX_ATTEMPTS) {
                 update(
-                    "Services are down and restarting did not help",
+                    "Services stayed down after $MAX_ATTEMPTS restarts",
                     "tap to open the app for details",
                 )
             }
@@ -359,4 +376,42 @@ class SupervisorService : Service() {
             }
         }
     }
+}
+
+/**
+ * What the supervisor should say, given what the phone is actually running.
+ *
+ * Extracted, and tested, because the empty-device case was wrong in a way that only a phone
+ * with nothing installed could show: the app reported "Services are down and restarting did
+ * not help" — twice over — to a device that had never installed a tool. The supervisor runs
+ * from first launch, so "0 online" is the *normal* state until the user installs something.
+ */
+internal object SupervisorPolicy {
+    enum class Verdict {
+        /** No tool installed: nothing is expected to run, so nothing is wrong. */
+        NOTHING_INSTALLED,
+
+        /** A tool exists, nothing is online, and auto-start is off — say so, do not restart. */
+        NO_SERVICES_AUTOSTART_OFF,
+
+        /** A tool exists and nothing is online: worth a bounded number of restarts. */
+        NO_SERVICES,
+
+        HEALTHY,
+    }
+
+    fun classify(
+        running: Int,
+        installedTools: Int,
+        autoStart: Boolean,
+    ): Verdict =
+        when {
+            // Online services decide first: a device can be serving from a package this
+            // build does not recognise as installed, and reporting "nothing installed"
+            // over a live gateway would be the same mistake in the other direction.
+            running > 0 -> Verdict.HEALTHY
+            installedTools == 0 -> Verdict.NOTHING_INSTALLED
+            !autoStart -> Verdict.NO_SERVICES_AUTOSTART_OFF
+            else -> Verdict.NO_SERVICES
+        }
 }

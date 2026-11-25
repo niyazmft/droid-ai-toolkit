@@ -996,11 +996,16 @@ private fun Home(
                                         )
                                     }
                                 }
-                                UiPill(
-                                    label = "Restart services",
-                                    enabled = !s.running,
-                                    onClick = { vm.runService("service.resurrect", null, "Restarting services") },
-                                )
+                                // Not on a phone with nothing installed: it asks the engine to
+                                // resurrect services that do not exist, which reads as the app
+                                // trying to fix something that was never broken.
+                                if (installedKnown.isNotEmpty()) {
+                                    UiPill(
+                                        label = "Restart services",
+                                        enabled = !s.running,
+                                        onClick = { vm.runService("service.resurrect", null, "Restarting services") },
+                                    )
+                                }
                             }
                         }
 
