@@ -164,6 +164,16 @@ object Runner {
     private val _startedAt = MutableStateFlow(0L)
     val startedAt: StateFlow<Long> = _startedAt
 
+    /**
+     * Wall-clock end of the last finished run (0 = none in this process).
+     *
+     * Lets another caller answer "did something just run?" without owning a timer — the
+     * supervisor uses it so its startup check does not repeat the probe that finished a second
+     * earlier.
+     */
+    private val _lastFinishedAt = MutableStateFlow(0L)
+    val lastFinishedAt: StateFlow<Long> = _lastFinishedAt
+
     /** What the in-flight run was asked to do, for a completion message. */
     private val _label = MutableStateFlow("")
     val label: StateFlow<String> = _label
@@ -311,6 +321,7 @@ object Runner {
         val finished = RunResult(stdout = "", stderr = "", exitCode = -1, err = -1, errmsg = message)
         val done = Completion(finished, origin, actionId, _label.value, _startedAt.value, fast)
         _running.value = false
+        _lastFinishedAt.value = System.currentTimeMillis()
         _result.value = finished
         if (wasProbe) {
             Gate.probe.value = Probe.UNREACHABLE
@@ -353,6 +364,7 @@ object Runner {
                 val completion = Completion(result, origin, actionId, _label.value, _startedAt.value, fast)
                 _result.value = result
                 _running.value = false
+                _lastFinishedAt.value = System.currentTimeMillis()
                 if (origin == Origin.PROBE) classify(result)
                 completion
             }

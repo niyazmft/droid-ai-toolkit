@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -66,7 +67,15 @@ class SupervisorService : Service() {
 
     // Touched only from the main thread (see [scope]).
     private var lastCheckAt = 0L
-    private var lastHealthy = true
+
+    /**
+     * Consecutive checks that found a problem (0 = the last one was fine).
+     *
+     * A counter rather than a boolean because the retry interval grows with it: a crash-looping
+     * gateway was being re-checked every 60 s for as long as the phone was being unlocked, which
+     * is real CPU and real battery for a verdict that had not changed.
+     */
+    private var unhealthyChecks = 0
     private var checkInFlight = false
     private var lastSampleAt = 0L
 
@@ -110,7 +119,9 @@ class SupervisorService : Service() {
         )
 
         // One check now, so the notification says something true from the first moment
-        // rather than "Starting…" until the user happens to unlock.
+        // rather than "Starting…" until the user happens to unlock. Skipped when the app's
+        // own startup probe is in flight or just finished (see [maybeCheck]): that check would
+        // either contend for the single command slot or duplicate work already done.
         maybeCheck(force = true)
     }
 
@@ -134,31 +145,47 @@ class SupervisorService : Service() {
     /**
      * Run a check, but not more often than the situation deserves.
      *
-     * Healthy results are re-checked at most every five minutes, and a problem at most
-     * every minute: unlocking your phone four times in a row should not mean four full
-     * status runs.
+     * Healthy results are re-checked at most every five minutes; a problem backs off from one
+     * minute to thirty (see [SupervisorPolicy.gapMs]), so unlocking your phone four times in a
+     * row never means four full status runs, and a crash-looping service is not re-measured
+     * every minute for as long as the phone is in use.
+     *
+     * A **busy** transport is not a fault. The app's launch probe and the supervisor's first
+     * check used to race for the single command slot; the loser returned `false`, which marked a
+     * healthy device unhealthy and dropped it into the fast retry cadence. Busy now leaves the
+     * verdict alone and starts nothing.
      */
     private fun maybeCheck(force: Boolean = false) {
         val now = System.currentTimeMillis()
-        val minGap = if (lastHealthy) HEALTHY_GAP_MS else TROUBLE_GAP_MS
+        val minGap = SupervisorPolicy.gapMs(unhealthyChecks)
         if (!force && now - lastCheckAt < minGap) return
-        if (checkInFlight) return
+        // Nothing to learn, and something to lose: a check that shares the transport with a
+        // user's install either loses the race or delays it.
+        if (checkInFlight || Runner.running.value) return
+        // Just finished: a forced check at startup would re-read what the probe just answered.
+        if (now - Runner.lastFinishedAt.value < SETTLE_MS) return
         checkInFlight = true
         lastCheckAt = now
         scope.launch {
             try {
-                lastHealthy = tick()
+                val result = tick()
+                unhealthyChecks = SupervisorPolicy.nextUnhealthyCount(unhealthyChecks, result)
+                // The verdict and the backoff are the two things this service exists to decide,
+                // and neither is visible from the notification when the answer is "fine". One
+                // line per check makes a field report ("it re-checks constantly") answerable.
+                val next = SupervisorPolicy.gapMs(unhealthyChecks) / 1000
+                Log.i(TAG, "check $result (consecutive problems: $unhealthyChecks, next in ${next}s)")
             } finally {
                 checkInFlight = false
             }
         }
     }
 
-    /** @return true when the device looks healthy. */
-    private suspend fun tick(): Boolean {
+    /** @return how this check ended; [CheckResult.BUSY] changes nothing. */
+    private suspend fun tick(): CheckResult {
         if (!Gate.termuxInstalled.value) {
             update("Termux is not installed", "install it from F-Droid")
-            return false
+            return CheckResult.UNHEALTHY
         }
 
         // Do not send RUN_COMMAND while the gate is closed for policy reasons: Termux
@@ -167,21 +194,21 @@ class SupervisorService : Service() {
         // day on 8x.
         if (Gate.probe.value == Probe.DENIED || Gate.probe.value == Probe.NO_TOOLKIT) {
             update("Setup is not finished", "open the app to complete the one-time step")
-            return false
+            return CheckResult.UNHEALTHY
         }
 
-        if (Runner.running.value) return false
+        if (Runner.running.value) return CheckResult.BUSY
 
         Runner.send(this, listOf("--api", "status", "--fast"), Origin.SYSTEM, "Read device status")
         val result = withTimeoutOrNull(TIMEOUT_MS) { Runner.result.filterNotNull().first() }
         if (result == null || !result.ok) {
             update("Termux is not responding", "tap to open Termux")
-            return false
+            return CheckResult.UNHEALTHY
         }
         val snapshot = Protocol.snapshot(result.stdout)
         if (snapshot == null) {
             update("Toolkit returned no status", "tap to open the app")
-            return false
+            return CheckResult.UNHEALTHY
         }
 
         val running = snapshot.services.count { it.status == "online" }
@@ -201,7 +228,7 @@ class SupervisorService : Service() {
         if (verdict == SupervisorPolicy.Verdict.NOTHING_INSTALLED) {
             Prefs.setRestartAttempts(0)
             update("Nothing installed yet", "pick a tool in Packages when you are ready")
-            return true
+            return CheckResult.HEALTHY
         }
 
         if (verdict == SupervisorPolicy.Verdict.NO_SERVICES_AUTOSTART_OFF) {
@@ -209,7 +236,7 @@ class SupervisorService : Service() {
                 "No services online (auto-start is off)",
                 "turn it on in Settings to let the supervisor restart them",
             )
-            return false
+            return CheckResult.UNHEALTHY
         }
 
         if (verdict == SupervisorPolicy.Verdict.NO_SERVICES) {
@@ -232,7 +259,7 @@ class SupervisorService : Service() {
                     "tap to open the app for details",
                 )
             }
-            return false
+            return CheckResult.UNHEALTHY
         }
 
         Prefs.setRestartAttempts(0)
@@ -258,7 +285,7 @@ class SupervisorService : Service() {
             "$running service(s) online · $mem MB",
             "${snapshot.device.model} · ${snapshot.device.memAvailableMb} MB free",
         )
-        return true
+        return CheckResult.HEALTHY
     }
 
     /**
@@ -338,14 +365,18 @@ class SupervisorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        private const val TAG = "DroidAI"
+
         private const val CHANNEL = "supervisor"
         private const val NOTIFICATION_ID = 42
 
-        /** Re-check at most this often when everything is fine. */
-        private const val HEALTHY_GAP_MS = 5 * 60_000L
-
-        /** …and this often while something is wrong, so a fix shows up quickly. */
-        private const val TROUBLE_GAP_MS = 60_000L
+        /**
+         * Leave a run that just finished alone.
+         *
+         * The startup probe and the supervisor start in the same second; a check that follows the
+         * probe by less than this would either contend for the transport or repeat its answer.
+         */
+        private const val SETTLE_MS = 10_000L
 
         /** A status run measured 22.6 s; the fast form 7.2 s. 45 s leaves room for both. */
         private const val TIMEOUT_MS = 45_000L
@@ -379,6 +410,23 @@ class SupervisorService : Service() {
 }
 
 /**
+ * How a supervisor check ended.
+ *
+ * Three states, not two, because "I could not look" is not "it is broken". The launch probe and
+ * the supervisor's first check compete for one command slot; when a check lost that race it used
+ * to return `false` and mark a working device unhealthy, dropping it into the retry cadence.
+ */
+internal enum class CheckResult {
+    HEALTHY,
+
+    /** Something is genuinely wrong: the phone answered, and the answer was bad. */
+    UNHEALTHY,
+
+    /** The transport was busy or a run had just finished. Learns nothing, changes nothing. */
+    BUSY,
+}
+
+/**
  * What the supervisor should say, given what the phone is actually running.
  *
  * Extracted, and tested, because the empty-device case was wrong in a way that only a phone
@@ -399,6 +447,53 @@ internal object SupervisorPolicy {
 
         HEALTHY,
     }
+
+    /**
+     * Consecutive unhealthy checks → the interval to wait before asking again.
+     *
+     * 1 → 5 → 15 → 30 minutes, then 30 forever. One minute is right for the first retry (a
+     * service that died because the phone was asleep comes back quickly), but a gateway in a
+     * restart loop stays broken for hours, and re-measuring it every minute costs a full status
+     * run — the most expensive thing this app does — on every unlock.
+     *
+     * A healthy check resets [unhealthyChecks] to 0, which returns [HEALTHY_GAP_MS].
+     */
+    fun gapMs(unhealthyChecks: Int): Long =
+        if (unhealthyChecks <= 0) {
+            HEALTHY_GAP_MS
+        } else {
+            RETRY_STEPS_MS[(unhealthyChecks - 1).coerceAtMost(RETRY_STEPS_MS.lastIndex)]
+        }
+
+    /**
+     * The next consecutive-unhealthy count.
+     *
+     * [CheckResult.BUSY] deliberately leaves it untouched: a busy slot is an absence of
+     * information, and treating it as a failure was the bug (and, worse, the counter drives the
+     * backoff — so a handful of unlucky races would have stretched the retry interval to 30
+     * minutes and hidden a real problem).
+     */
+    fun nextUnhealthyCount(
+        current: Int,
+        result: CheckResult,
+    ): Int =
+        when (result) {
+            CheckResult.HEALTHY -> 0
+            CheckResult.UNHEALTHY -> current + 1
+            CheckResult.BUSY -> current
+        }
+
+    /** Re-check at most this often when everything is fine. */
+    const val HEALTHY_GAP_MS = 5 * 60_000L
+
+    /** Retry intervals while something is wrong, in order. */
+    private val RETRY_STEPS_MS =
+        longArrayOf(
+            1 * 60_000L,
+            5 * 60_000L,
+            15 * 60_000L,
+            30 * 60_000L,
+        )
 
     fun classify(
         running: Int,
