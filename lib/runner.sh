@@ -290,7 +290,20 @@ EOF
 }
 
 # api_dispatch -- entry point for `install.sh --api …`
+#
+# Wrapped in the usage ledger (lib/usage.sh) so every command the app sends is counted, with its
+# wall time and the CPU it cost. The ledger is what "the app is cheaper now" is measured with;
+# without it every optimisation in this file is an assertion nobody can check.
 api_dispatch() {
+    local _api_rc=0
+    usage_begin
+    _api_impl "$@"
+    _api_rc=$?
+    usage_end "${API_CMD:-}" "${API_ACTION:-}" "${API_FAST:-0}"
+    return "$_api_rc"
+}
+
+_api_impl() {
     case "${API_CMD:-}" in
         list)
             api_catalog

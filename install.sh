@@ -6570,6 +6570,8 @@ if [ "$API_MODE" -eq 1 ]; then
     . "$TOOLKIT_DIR/lib/json.sh"
     # shellcheck source=lib/state.sh
     . "$TOOLKIT_DIR/lib/state.sh"
+    # shellcheck source=lib/usage.sh
+    . "$TOOLKIT_DIR/lib/usage.sh"
     # shellcheck source=lib/preflight.sh
     . "$TOOLKIT_DIR/lib/preflight.sh"
     # shellcheck source=lib/health.sh

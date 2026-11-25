@@ -49,9 +49,17 @@ Use `--fast` for polling, and the full form when a screen is about to display ve
 
 The cheapest question the client asks: **is the toolkit alive?** It reads
 `~/.pm2/pm2.pid`, `~/.pm2/pids/*.pid` and `/proc/<pid>` in pure bash — no `pm2 jlist`, no
-Node, no `jq`, no process spawn — so it answers in tens of milliseconds where
-`status --fast` costs ~6 s on y6 / 7.2 s on 8x (measured 90 ms vs 6065 ms on y6,
-2026-11-25).
+Node boot — and answers without a runtime:
+
+| command | y6, end to end | inside the command | user CPU |
+| --- | --- | --- | --- |
+| `health` | 1.2 s | 0.58 s | 0.35 s |
+| `status --fast` | 6.1 s | 5.6 s | 4.17 s |
+| `status` | 10.8 s | 10.6 s | 9.12 s |
+
+(Measured 2026-11-25; "inside the command" excludes the ~0.6 s bash start-up and library
+sourcing every `--api` invocation pays. The ledger that produces these numbers is
+`~/.droid_ai_toolkit/usage.ndjson`, summarised by `scripts/usage_report.sh`.)
 
 ```json
 {"t":"data","kind":"health","payload":{
@@ -112,6 +120,22 @@ This is the client-side half of the preflight. Memory and disk are warnings a us
 override with `--force`; an unmet predicate is a refusal, so showing it before the tap is
 the difference between a disabled button with a reason and a bare exit 3. A predicate that
 cannot be evaluated is reported `false`, which matches the engine's fail-closed behaviour.
+
+## Usage ledger (`~/.droid_ai_toolkit/usage.ndjson`)
+
+Every `--api` command appends one NDJSON line describing what it cost:
+
+```json
+{"ts":1795637906646,"cmd":"health","action":"","fast":0,"wall_ms":575,"user_s":0.352,"sys_s":0.244,"node_procs":3}
+```
+
+`ts` is epoch **milliseconds**; `wall_ms` is measured inside the command (it excludes the
+~0.6 s bash start-up every `--api` call pays); `user_s`/`sys_s` are the shell plus its reaped
+children, from bash's `times`; `node_procs` counts live node processes (one `readlink` over
+`/proc/*/exe`). `scripts/usage_report.sh [ssh-host]` summarises it, and it is what the
+before/after numbers in `TASKS.md` are measured with.
+
+It is a log, not part of the event stream: nothing the app sends or receives references it.
 
 ## Exit codes
 
