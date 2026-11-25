@@ -853,6 +853,15 @@ private fun Home(
     var tabName by rememberSaveable { mutableStateOf(Tab.HOME.name) }
     var showFailureDetails by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
+    // A link out of the app (Termux:Boot on F-Droid). `openUrl` is MainActivity's, and this
+    // composable is not inside it, so the same three lines live here.
+    val openExternal: (String) -> Unit = { url ->
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
     val tab = Tab.valueOf(tabName)
 
     // The supervisor is what puts a permanent notification in the shade, so it is the user's
@@ -973,9 +982,19 @@ private fun Home(
                                 Termux.probe(context)
                             },
                             onRequestNotifications = onRequestNotifications,
-                            onRunAction = { id -> vm.runConfirmed(id, "Removing the old pnpm project") },
+                            onRunAction = { id ->
+                                val label =
+                                    if (id == "service.boot") {
+                                        "Setting up after reboot"
+                                    } else {
+                                        "Removing the old pnpm project"
+                                    }
+                                vm.runConfirmed(id, label)
+                            },
                             onOpenAdvanced = { showAdvanced = true },
                             onBack = { showSettings = false },
+                            onTestBoot = { vm.runService("service.resurrect", null, "Testing the boot restore") },
+                            onOpenBootApp = { openExternal("https://f-droid.org/packages/com.termux.boot/") },
                         )
                     }
                 }

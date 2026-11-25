@@ -160,6 +160,26 @@ already clean:
 "tools_migrated"]`, so on a device where a tool still runs from the legacy folder the refusal
 happens in preflight (exit 3, `unmet: tools_migrated`) instead of after the tap.
 
+## Status payload: `termux.boot_script` and `termux.pm2_dump`
+
+```json
+"termux": { "boot_installed": true, "boot_script": true,
+            "pm2_dump": { "present": true, "count": 1 }, "doze_whitelisted": true }
+```
+
+Three separate facts, because "will my services come back after a reboot" needs all of them
+and `boot_installed` alone (the Termux:Boot *app*) can be true on a phone that returns to
+nothing:
+
+- `boot_script` — `~/.termux/boot/start-pm2.sh` exists **and** is executable (Termux:Boot
+  only runs executable files);
+- `pm2_dump` — `~/.pm2/dump.pm2` exists, and how many processes `pm2 resurrect` would restore;
+- `doze_whitelisted` — the battery-exemption check the app cannot perform itself.
+
+`service.boot` writes the script, runs `pm2 save` and re-checks all three, emitting
+`data {boot_app, boot_script, doze_whitelisted, pm2_dump, tested: false}`. `tested` is always
+`false`: the engine cannot observe a reboot, so no layer claims one has been verified.
+
 ## Exit codes
 
 | Code | Meaning |

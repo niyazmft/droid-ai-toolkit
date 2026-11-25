@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "id": "service.boot",
+  "title": "Set up after reboot",
+  "summary": "Write the boot script and save the PM2 process list, so services come back after a restart",
+  "category": "services",
+  "destructive": false,
+  "idempotent": false,
+  "requires": {},
+  "steps": [
+    { "id": "boot_write", "title": "Write the boot script", "run": "step_boot_write" },
+    { "id": "boot_save", "title": "Save the process list", "run": "step_boot_save" },
+    { "id": "boot_verify", "title": "Check what is in place", "run": "step_boot_verify" }
+  ]
+}

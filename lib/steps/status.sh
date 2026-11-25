@@ -113,6 +113,32 @@ _st_checks_json() {
     printf '%s' "$out"
 }
 
+# _st_boot_script -- is the Termux:Boot script present AND executable?
+#
+# Termux:Boot executes every executable file in ~/.termux/boot/; a file without +x is a file
+# that does nothing, which is why both halves are checked.
+_st_boot_script() {
+    local f="$HOME/.termux/boot/start-pm2.sh"
+    if [ -f "$f" ] && [ -x "$f" ]; then printf 'true'; else printf 'false'; fi
+}
+
+# _st_pm2_dump -- {"present":bool,"count":n} for ~/.pm2/dump.pm2.
+#
+# A dump that lists nothing restores nothing, so the count is part of the fact: "set up" must
+# not be said about a dump that would leave the phone empty after a reboot.
+_st_pm2_dump() {
+    local dump="$HOME/.pm2/dump.pm2" count=0
+    if [ ! -f "$dump" ]; then
+        printf '{"present":false,"count":0}'
+        return 0
+    fi
+    count=$(jq 'if type == "array" then length else 0 end' "$dump" 2>/dev/null)
+    case "$count" in
+        ''|*[!0-9]*) count=0 ;;
+    esac
+    printf '{"present":true,"count":%s}' "$count"
+}
+
 # _st_legacy_global -- the pre-migration shared pnpm project, as {"present":bool,"mb":n}.
 #
 # The app shows a Cleanup panel only when this exists, and says how big it is — "12.9 GB" is
@@ -194,7 +220,7 @@ status_collect() {
     local mem_total mem_avail swap_total swap_free disk_free
     local termux_ver allow_ext boot_installed doze hl
     local node pnpm py openclaw hermes n8n ollama pm2_inst
-    local services services_installed checks legacy_global
+    local services services_installed checks legacy_global boot_script pm2_dump
 
     model=$(_st_getprop ro.product.model)
     android=$(_st_getprop ro.build.version.release)
@@ -247,6 +273,9 @@ status_collect() {
     if [ -z "$checks" ]; then checks='{}'; fi
     legacy_global=$(_st_legacy_global)
     if [ -z "$legacy_global" ]; then legacy_global='{"present":false,"mb":0}'; fi
+    boot_script=$(_st_boot_script)
+    pm2_dump=$(_st_pm2_dump)
+    if [ -z "$pm2_dump" ]; then pm2_dump='{"present":false,"count":0}'; fi
 
     jq -n \
         --arg model "$model" --arg android "$android" --arg api "$api" \
@@ -262,6 +291,7 @@ status_collect() {
         --argjson installed "$services_installed" \
         --argjson checks "$checks" \
         --argjson legacy "$legacy_global" \
+        --argjson boot_script "$boot_script" --argjson pm2_dump "$pm2_dump" \
         '{
             device: {
                 model: $model, android: $android, api: ($api | tonumber? // 0),
@@ -274,6 +304,8 @@ status_collect() {
                 version: $termux,
                 allow_external_apps: $allow_ext,
                 boot_installed: $boot,
+                boot_script: $boot_script,
+                pm2_dump: $pm2_dump,
                 doze_whitelisted: $doze,
                 legacy_global: $legacy
             },

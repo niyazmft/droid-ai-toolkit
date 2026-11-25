@@ -52,6 +52,8 @@ fun SettingsScreen(
     onRunAction: (String) -> Unit,
     onOpenAdvanced: () -> Unit = {},
     onBack: () -> Unit = {},
+    onTestBoot: () -> Unit = {},
+    onOpenBootApp: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val autoStart by Prefs.autoStartGateway.collectAsStateWithLifecycle()
@@ -151,20 +153,15 @@ fun SettingsScreen(
                 // tappable switch that does nothing advertises something the app is not doing.
                 enabled = supervisorOn,
             ) { Prefs.setAutoStart(it) }
-            // Two lines allowed: "Starts after reboot" does not fit the 104 dp label column at
-            // font scale 1.3, and F6 turns this row into an action with its own state block.
-            FactLong(
-                "Starts after reboot",
-                when (snapshot?.termux?.bootInstalled) {
-                    true -> "set up"
-                    false -> "not set up"
-                    null -> "unknown"
-                },
-            )
-            Text(
-                "Set up in Termux → SERVICES → PM2 → Autostart on Boot.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // F6: a state block, not a fact. "Starts after reboot — set up" only proved the
+            // Termux:Boot *app* was installed; it could read "set up" with no boot script and no
+            // saved process list, which is a phone that comes back to nothing.
+            BootStateBlock(
+                snapshot = snapshot,
+                running = running,
+                onRunAction = onRunAction,
+                onTestBoot = onTestBoot,
+                onOpenBootApp = onOpenBootApp,
             )
             UiPill(label = "Re-read status", enabled = !running, ghost = true, onClick = onRefresh)
         }
@@ -268,6 +265,85 @@ fun SettingsScreen(
                 TextButton(onClick = { confirmCleanup = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+/**
+ * "Will my services come back after a reboot?" — answered by three checks and one button.
+ *
+ * The old row answered it with one fact that only proved the Termux:Boot app was installed.
+ * Three things actually have to be true:
+ *
+ *   1. the Termux:Boot app is installed and allowed to start on boot (the toolkit cannot do it);
+ *   2. a boot script exists in `~/.termux/boot/` and is executable (the toolkit writes it);
+ *   3. `pm2 save` has recorded a process list with something in it (the toolkit can run it).
+ *
+ * Each state shows exactly one button, and the last one says "not yet tested" until a reboot
+ * has actually restored something — the app cannot observe a reboot it did not witness, and
+ * claiming otherwise is how "set up" came to mean nothing.
+ */
+@Composable
+private fun BootStateBlock(
+    snapshot: Protocol.Snapshot?,
+    running: Boolean,
+    onRunAction: (String) -> Unit,
+    onTestBoot: () -> Unit,
+    onOpenBootApp: () -> Unit,
+) {
+    val termux = snapshot?.termux
+    val script = termux?.bootScript == true
+    val saved = termux?.pm2DumpCount ?: 0
+    val appInstalled = termux?.bootInstalled == true
+
+    val title: String
+    val detail: String
+    val label: String?
+    val onClick: () -> Unit
+    when {
+        snapshot == null -> {
+            title = "Starts after reboot"
+            detail = "Reading what is in place…"
+            label = null
+            onClick = {}
+        }
+        !appInstalled -> {
+            title = "Needs Termux:Boot"
+            detail = "Android needs the Termux:Boot app to run anything at startup. Install it, " +
+                "open it once, then come back."
+            label = "Get Termux:Boot"
+            onClick = onOpenBootApp
+        }
+        !script || saved == 0 -> {
+            title = "Set up after reboot"
+            detail = "Writes the boot script and saves the process list."
+            label = "Set up"
+            onClick = { onRunAction("service.boot") }
+        }
+        !(termux?.dozeWhitelisted ?: false) -> {
+            title = "Allow background start"
+            detail = "Android may still stop Termux at boot. Allow Termux and Termux:Boot to run " +
+                "in the background (Settings → Apps → Battery)."
+            label = "Check again"
+            onClick = { onRunAction("service.boot") }
+        }
+        else -> {
+            title = "Works after reboot — not yet tested"
+            // Honesty rule: nothing here has watched a reboot, so it cannot claim one worked.
+            detail = "The script and the saved list are in place. Test now restores the saved " +
+                "list the same way the boot script does."
+            label = "Test now"
+            onClick = onTestBoot
+        }
+    }
+
+    Text(title, style = MaterialTheme.typography.titleSmall)
+    Text(
+        detail,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    label?.let {
+        UiPill(label = it, enabled = !running, ghost = true, onClick = onClick)
     }
 }
 

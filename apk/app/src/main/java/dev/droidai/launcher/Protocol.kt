@@ -27,6 +27,11 @@ object Protocol {
         val version: String,
         val allowExternalApps: Boolean,
         val bootInstalled: Boolean,
+        /** The Termux:Boot *script* exists and is executable — the app alone is not enough. */
+        val bootScript: Boolean = false,
+        /** `~/.pm2/dump.pm2`: what `pm2 resurrect` would restore. */
+        val pm2DumpPresent: Boolean = false,
+        val pm2DumpCount: Int = 0,
         val dozeWhitelisted: Boolean,
         /**
          * The pre-migration shared pnpm project, if it is still there.
@@ -249,6 +254,9 @@ object Protocol {
                         version = t.optString("version"),
                         allowExternalApps = t.optBoolean("allow_external_apps"),
                         bootInstalled = t.optBoolean("boot_installed"),
+                        bootScript = t.optBoolean("boot_script"),
+                        pm2DumpPresent = t.optJSONObject("pm2_dump")?.optBoolean("present") ?: false,
+                        pm2DumpCount = t.optJSONObject("pm2_dump")?.optInt("count") ?: 0,
                         dozeWhitelisted = t.optBoolean("doze_whitelisted"),
                         legacyGlobalPresent = t.optJSONObject("legacy_global")?.optBoolean("present") ?: false,
                         legacyGlobalMb = t.optJSONObject("legacy_global")?.optInt("mb") ?: 0,

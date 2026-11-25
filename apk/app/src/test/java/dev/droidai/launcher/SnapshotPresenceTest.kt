@@ -205,4 +205,32 @@ class LegacyGlobalTest {
     fun `a run with no cleanup payload reports nothing reclaimed`() {
         assertEquals(null, Protocol.parse("""{"t":"data","kind":"snapshot","payload":{}}""").reclaimed)
     }
+
+    @Test
+    fun `boot facts are read separately, because one true fact is not a working reboot`() {
+        val snap =
+            parse(
+                """{"version":"0.119.0","allow_external_apps":true,"boot_installed":true,""" +
+                    """"boot_script":false,"pm2_dump":{"present":true,"count":0},""" +
+                    """"doze_whitelisted":true}""",
+            )
+        // The app installed, a dump on disk, the battery exemption granted — and still no boot
+        // script: the old single fact said "set up" for exactly this state.
+        assertEquals(true, snap.termux.bootInstalled)
+        assertEquals(false, snap.termux.bootScript)
+        assertEquals(0, snap.termux.pm2DumpCount)
+    }
+
+    @Test
+    fun `a saved dump reports how many processes it would restore`() {
+        val snap =
+            parse(
+                """{"version":"0.119.0","allow_external_apps":true,"boot_installed":true,""" +
+                    """"boot_script":true,"pm2_dump":{"present":true,"count":2},""" +
+                    """"doze_whitelisted":false}""",
+            )
+        assertEquals(true, snap.termux.bootScript)
+        assertEquals(true, snap.termux.pm2DumpPresent)
+        assertEquals(2, snap.termux.pm2DumpCount)
+    }
 }
