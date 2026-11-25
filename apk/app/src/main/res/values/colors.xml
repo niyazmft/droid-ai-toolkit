@@ -2,4 +2,11 @@
 <resources>
     <!-- Cool page grey, matches Theme.kt light background. -->
     <color name="window_bg">#F0F4F9</color>
+
+    <!--
+      The launcher icon's background layer. It is the white field the artwork is drawn on, not
+      an app colour: the foreground carries the dark card itself, and anything else here would
+      show as a ring around it under a circular launcher mask.
+    -->
+    <color name="ic_launcher_background">#FFFFFF</color>
 </resources>

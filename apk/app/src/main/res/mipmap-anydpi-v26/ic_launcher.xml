@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive launcher icon (API 26+, and minSdk here is 28).
+
+  The artwork is a dark terminal card on a white field, so the two layers mirror it: a white
+  background and the card as the foreground, scaled to ~62% of the 108 dp layer. That keeps
+  the whole card — including the text — inside the 72 dp safe zone, which is the part every
+  launcher mask is guaranteed to show. Making the card full-bleed would look bolder but the
+  text is ~88 dp wide and a circular mask would cut it.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

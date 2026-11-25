@@ -19,6 +19,9 @@ npm-debug.log*
 # Working plan / progress log (local only)
 /PLAN.md
 /TASKS.md
+
+# Source artwork for the launcher icon (generated mipmaps are committed instead)
+/assets/app_icon.jpeg
 firebase-debug.log
 
 # Paperclip prebuilt UI tarballs (downloaded from GitHub releases)
