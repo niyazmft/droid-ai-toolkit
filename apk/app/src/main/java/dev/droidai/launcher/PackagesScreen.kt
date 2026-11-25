@@ -21,8 +21,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -261,7 +265,7 @@ fun PackagesScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-            Text("Packages", style = MaterialTheme.typography.headlineMedium)
+            Text("Tools", style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.weight(1f))
             Text(
                 "${all.count { it.installed }} of ${all.size} installed",
@@ -507,13 +511,20 @@ private fun ToolRow(
             overflow = TextOverflow.Ellipsis,
         )
 
+        // One button per card, plus a ⋯ for everything else (F3). Two equal-weight pills made
+        // every row a decision ("Update or Remove?") when there is one obvious next action;
+        // removal lives in the menu, where it is still two taps and still confirmed.
+        val runnable = row.supported && row.blocked == null
+        val primary = row.actions.firstOrNull { !it.destructive } ?: row.actions.firstOrNull()
+        val secondary = row.actions.filter { it !== primary }
+        var menuOpen by remember { mutableStateOf(false) }
+
         Row(
             Modifier.fillMaxWidth().padding(top = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            row.actions.forEach { action ->
-                val runnable = row.supported && row.blocked == null
+            primary?.let { action ->
                 val usable = runnable || action.destructive
                 UiPill(
                     label =
@@ -526,6 +537,45 @@ private fun ToolRow(
                     enabled = !running && usable,
                     ghost = action.destructive,
                 )
+            }
+            if (secondary.isNotEmpty()) {
+                Box {
+                    IconButton(
+                        onClick = { menuOpen = true },
+                        modifier = Modifier.size(40.dp),
+                        enabled = !running,
+                    ) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            contentDescription = "More actions for ${row.title}",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        secondary.forEach { action ->
+                            val usable = runnable || action.destructive
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        actionLabel(action, row.installed),
+                                        color =
+                                            if (action.destructive) {
+                                                MaterialTheme.colorScheme.error
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            },
+                                    )
+                                },
+                                enabled = usable,
+                                onClick = {
+                                    menuOpen = false
+                                    onRun(action)
+                                },
+                            )
+                        }
+                    }
+                }
             }
         }
     }

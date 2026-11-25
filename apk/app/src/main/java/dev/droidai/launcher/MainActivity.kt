@@ -37,7 +37,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -659,13 +659,19 @@ internal fun StatusChip(
     )
 }
 
+/**
+ * The two things a person does: see whether it is running, and add or update a tool.
+ *
+ * Settings is behind the gear in the header, not a tab, and everything technical is one tap
+ * further inside it (Advanced). The old bar had four tabs whose first one was a developer
+ * console — a device table with `aarch64` and `API 29`, a per-service Stop/Restart list and an
+ * `adb` command — which is the wrong first screen for someone who wants their agent to work.
+ */
 private enum class Tab(
     val label: String,
 ) {
-    OVERVIEW("Overview"),
-    PACKAGES("Packages"),
-    METRICS("Metrics"),
-    SETTINGS("Settings"),
+    HOME("Home"),
+    TOOLS("Tools"),
 }
 
 /**
@@ -695,6 +701,7 @@ private fun AppHeader(
     detail: String,
     age: String?,
     onRefresh: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 12.dp, bottom = 4.dp),
@@ -715,6 +722,16 @@ private fun AppHeader(
             Icon(
                 Icons.Filled.Refresh,
                 contentDescription = "Refresh",
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        // Settings is a gear here rather than a fourth tab: it is where you go to change the
+        // app, not where you go to use it.
+        IconButton(onClick = onSettings, modifier = Modifier.size(44.dp)) {
+            Icon(
+                Icons.Filled.Settings,
+                contentDescription = "Settings",
                 modifier = Modifier.size(20.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -774,10 +791,8 @@ private fun SoftTabBar(
                     ) {
                         Icon(
                             when (t) {
-                                Tab.OVERVIEW -> Icons.Filled.List
-                                Tab.PACKAGES -> PackageIcon
-                                Tab.METRICS -> MetricsIcon
-                                Tab.SETTINGS -> Icons.Filled.Settings
+                                Tab.HOME -> Icons.Filled.Home
+                                Tab.TOOLS -> PackageIcon
                             },
                             // The label names the tab; a description here made TalkBack
                             // say "Overview, Overview".
@@ -828,11 +843,14 @@ private fun Home(
     // Home is composed during a warm start while the probe is still running, so it needs
     // the gate's state too — to know when it is safe to start the supervisor.
     val probeState by Gate.probe.collectAsStateWithLifecycle()
+    val accessAllowed by Gate.permissionGranted.collectAsStateWithLifecycle()
 
     // rememberSaveable: a rotation or a process death used to drop the user back on
     // Overview with the sub-screen closed and the scroll position lost.
     var showRawScreen by rememberSaveable { mutableStateOf(false) }
-    var tabName by rememberSaveable { mutableStateOf(Tab.OVERVIEW.name) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showAdvanced by rememberSaveable { mutableStateOf(false) }
+    var tabName by rememberSaveable { mutableStateOf(Tab.HOME.name) }
     var showFailureDetails by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     val tab = Tab.valueOf(tabName)
@@ -884,36 +902,98 @@ private fun Home(
     // It is also the one screen that shows tool versions, so it is where the slow, full read
     // belongs — app launch and resume only need `--fast` (HomeViewModel.onToolsScreenOpened).
     LaunchedEffect(tab) {
-        if (tab == Tab.PACKAGES) {
+        if (tab == Tab.TOOLS) {
             vm.onCatalogScreenOpened()
             vm.onToolsScreenOpened()
         }
     }
 
-    // Raw output is a sub-screen of Overview, so Back must pop it — not quit the app.
+    // Sub-screens are pushed, not tab-switched: Settings is behind the gear, Advanced behind
+    // Settings, raw output behind Advanced. Back must pop one level, never quit the app.
     BackHandler(enabled = showRawScreen) { showRawScreen = false }
+    BackHandler(enabled = !showRawScreen && showAdvanced) { showAdvanced = false }
+    BackHandler(enabled = !showRawScreen && !showAdvanced && showSettings) { showSettings = false }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
-        bottomBar = { SoftTabBar(tab) { tabName = it.name } },
+        // A sub-screen is a full-page detour, so it has no tab bar: offering one would only
+        // invite leaving the page you just opened.
+        bottomBar = {
+            if (!showSettings && !showRawScreen) SoftTabBar(tab) { tabName = it.name }
+        },
     ) { pad ->
-        if (showRawScreen) {
-            Box(Modifier.padding(pad)) {
-                RawOutputScreen(
-                    raw = if (retainRaw) s.raw else "",
-                    retained = retainRaw,
-                    onBack = { showRawScreen = false },
-                )
+        when {
+            showRawScreen -> {
+                Box(Modifier.padding(pad)) {
+                    RawOutputScreen(
+                        raw = if (retainRaw) s.raw else "",
+                        retained = retainRaw,
+                        onBack = { showRawScreen = false },
+                    )
+                }
+                return@Scaffold
             }
-            return@Scaffold
+
+            showAdvanced -> {
+                Box(Modifier.padding(pad)) {
+                    AdvancedScreen(
+                        snapshot = s.snapshot,
+                        services = s.snapshot?.services.orEmpty(),
+                        foreign = s.foreign,
+                        accessAllowed = accessAllowed,
+                        running = s.running,
+                        onBack = { showAdvanced = false },
+                        onRestartService = { name -> vm.runService("service.restart", name, "Restarting $name") },
+                        onStopService = { name -> vm.runService("service.stop", name, "Stopping $name") },
+                        onRestartEverything = { vm.runService("service.resurrect", null, "Restarting services") },
+                        onCheckAgain = {
+                            vm.refreshForeign()
+                            Gate.refresh(context)
+                            Termux.probe(context)
+                        },
+                        onOpenRawOutput = { showRawScreen = true },
+                    )
+                }
+                return@Scaffold
+            }
+
+            showSettings -> {
+                // SettingsScreen has no scroller of its own (the tab content used to own it), so
+                // the page must provide one — without this the lower sections were clipped and
+                // unreachable, which is how Advanced became untappable on the first build.
+                Box(Modifier.padding(pad).fillMaxSize()) {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        SettingsScreen(
+                            snapshot = s.snapshot,
+                            running = s.running,
+                            notificationsGranted = notificationsGranted,
+                            onRefresh = { vm.refresh() },
+                            onRecheckPermission = {
+                                Gate.refresh(context)
+                                Termux.probe(context)
+                            },
+                            onRequestNotifications = onRequestNotifications,
+                            onRunAction = { id -> vm.runConfirmed(id, "Removing the old pnpm project") },
+                            onOpenAdvanced = { showAdvanced = true },
+                            onBack = { showSettings = false },
+                        )
+                    }
+                }
+                return@Scaffold
+            }
         }
+
         Column(Modifier.padding(pad).fillMaxSize()) {
             AppHeader(
                 detail =
-                    s.snapshot?.let { "${it.device.model} · ${it.device.arch}" }
-                        ?: "Termux is ready.",
+                    s.snapshot?.let {
+                        // Model only. The arch used to sit here too, which is a word a
+                        // non-technical reader cannot use; it lives in Advanced now.
+                        it.device.model
+                    } ?: "Termux is ready.",
                 age = if (s.snapshot != null && s.checkedAt > 0L) clockShort(s.checkedAt) else null,
                 onRefresh = { vm.refresh() },
+                onSettings = { showSettings = true },
             )
 
             // Pinned above the list, not inside it: a failure that has scrolled out of
@@ -978,155 +1058,18 @@ private fun Home(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 when (tab) {
-                    Tab.OVERVIEW -> {
-                        if (s.steps.isNotEmpty()) {
-                            Section("Last run")
-                            Panel {
-                                s.steps.forEach { step ->
-                                    StepRow(step)
-                                }
-                            }
-                        }
+                    Tab.HOME ->
+                        HomeBody(
+                            snapshot = s.snapshot,
+                            steps = s.steps,
+                            installedKnown = installedKnown,
+                            running = s.running,
+                            failedTools = failedTools,
+                            onChooseTool = { tabName = Tab.TOOLS.name },
+                            onRestartEverything = { vm.runService("service.resurrect", null, "Restarting services") },
+                        )
 
-                        if (s.snapshot == null) {
-                            // A warm launch renders this screen immediately while the probe runs,
-                            // so there is a window with no Device panel at all. Say what is
-                            // happening instead of leaving the page looking half-built.
-                            Section("Device")
-                            Panel {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                                    Text(
-                                        "Reading device status…",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        modifier = Modifier.padding(start = 8.dp),
-                                    )
-                                }
-                            }
-                        }
-
-                        s.snapshot?.let { snap ->
-                            Section("Device")
-                            Panel {
-                                Fact("Model", snap.device.model)
-                                Fact("Android", "${snap.device.android} · API ${snap.device.api}")
-                                // Arch lives in the header subtitle, once, next to the model.
-                                // Repeating it here was noise on every screen.
-                                // "725 MB free of 1794 MB" is 23 characters — one over the
-                                // value budget at font scale 1.3, where it ellipsised. The slash
-                                // form says the same thing in 14.
-                                Fact("Memory", "${snap.device.memAvailableMb} / ${snap.device.memTotalMb} MB")
-                                Fact("Swap free", "${snap.device.swapFreeMb} MB")
-                                Fact("Disk free", "${snap.device.diskFreeMb / 1024} GB")
-                                Fact("Termux", snap.termux.version)
-                                Fact("Boot restore", if (snap.termux.bootInstalled) "installed" else "missing")
-                                Fact("Node", Format.toolVersion(snap.tools.node))
-                                Fact("Python", Format.toolVersion(snap.tools.python))
-                                Fact("PM2", if (snap.tools.pm2Installed) "installed" else "missing")
-                                if (snap.tools.openclaw.isNotBlank()) {
-                                    Fact("OpenClaw", Format.toolVersion(snap.tools.openclaw))
-                                }
-                                if (snap.tools.hermes.isNotBlank()) {
-                                    Fact(
-                                        "Hermes",
-                                        Format.toolVersion(snap.tools.hermes),
-                                    )
-                                }
-                                if (snap.tools.n8n.isNotBlank()) Fact("n8n", Format.toolVersion(snap.tools.n8n))
-                            }
-
-                            Section("Services")
-                            Panel {
-                                if (snap.services.isEmpty()) {
-                                    Text(
-                                        "Nothing is running yet. Open Packages to install a tool.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                                snap.services.forEach { sv ->
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            sv.name,
-                                            style = MaterialTheme.typography.titleSmall,
-                                            modifier = Modifier.weight(1f),
-                                        )
-                                        StatusChip(sv.status == "online")
-                                    }
-                                    Text(
-                                        "${sv.memMb} MB · ${sv.restarts} restarts",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)) {
-                                        UiPill(
-                                            label = "Stop",
-                                            enabled = !s.running,
-                                            ghost = true,
-                                            onClick = { vm.runService("service.stop", sv.name, "Stopping ${sv.name}") },
-                                        )
-                                        UiPill(
-                                            label = "Restart",
-                                            enabled = !s.running,
-                                            ghost = true,
-                                            onClick = {
-                                                vm.runService(
-                                                    "service.restart",
-                                                    sv.name,
-                                                    "Restarting ${sv.name}",
-                                                )
-                                            },
-                                        )
-                                    }
-                                }
-                                // Not on a phone with nothing installed: it asks the engine to
-                                // resurrect services that do not exist, which reads as the app
-                                // trying to fix something that was never broken.
-                                if (installedKnown.isNotEmpty()) {
-                                    UiPill(
-                                        label = "Restart services",
-                                        enabled = !s.running,
-                                        onClick = { vm.runService("service.resurrect", null, "Restarting services") },
-                                    )
-                                }
-                            }
-                        }
-
-                        Section("Security")
-                        Panel {
-                            if (s.foreign.isEmpty()) {
-                                Text(
-                                    "Only this app can run commands in Termux.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            } else {
-                                Text(
-                                    "${s.foreign.size} other app(s) can also run commands in Termux:",
-                                    color = MaterialTheme.colorScheme.error,
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                                UiCodeBlock(s.foreign.joinToString("\n"))
-                                // The adb command is the remedy for an advanced user; it is not
-                                // the message. A non-technical reader needs the plain sentence:
-                                // if you did not install these, remove them.
-                                Text(
-                                    "If you did not install one of these, uninstall it from Android " +
-                                        "Settings → Apps.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                UiCodeBlock(s.foreign.joinToString("\n") { Security.revokeCommand(it) })
-                            }
-                            UiPill(
-                                label = "Check again",
-                                ghost = true,
-                                onClick = { vm.refreshForeign() },
-                            )
-                        }
-
-                        UiPill(label = "Show raw output", ghost = true, onClick = { showRawScreen = true })
-                    }
-
-                    Tab.PACKAGES ->
+                    Tab.TOOLS ->
                         PackagesScreen(
                             snapshot = s.snapshot,
                             actions = s.actions,
@@ -1134,22 +1077,6 @@ private fun Home(
                             knownInstalled = installedKnown,
                             failedTools = failedTools,
                             onRun = { action -> vm.onRun(action) },
-                        )
-
-                    Tab.METRICS -> MetricsScreen(snapshot = s.snapshot)
-
-                    Tab.SETTINGS ->
-                        SettingsScreen(
-                            snapshot = s.snapshot,
-                            running = s.running,
-                            notificationsGranted = notificationsGranted,
-                            onRefresh = { vm.refresh() },
-                            onRecheckPermission = {
-                                Gate.refresh(context)
-                                Termux.probe(context)
-                            },
-                            onRequestNotifications = onRequestNotifications,
-                            onRunAction = { id -> vm.runConfirmed(id, "Removing the old pnpm project") },
                         )
                 }
             }
@@ -1179,6 +1106,15 @@ private fun Home(
             },
             confirmButton = {
                 TextButton(onClick = { showFailureDetails = false }) { Text("Close") }
+            },
+            // The dialog replays the last 12 lines of the failing step; the rest of the stream
+            // is in Advanced → Diagnostics. Sending the reader there from the evidence is the
+            // difference between "here is why" and "here is why, and here is everything".
+            dismissButton = {
+                TextButton(onClick = {
+                    showFailureDetails = false
+                    showRawScreen = true
+                }) { Text("Open full output") }
             },
         )
     }
@@ -1230,6 +1166,73 @@ private fun Home(
                 TextButton(onClick = { vm.cancelPending() }) { Text("Cancel") }
             },
         )
+    }
+}
+
+/**
+ * Home: one sentence of state and one button.
+ *
+ * Everything the old Overview put here — the eleven-row device table, per-service Stop/Restart,
+ * the Security panel, raw output — is in Advanced (Settings → Advanced). What is left is what a
+ * person can act on before knowing what `aarch64` means: whether it is running, and what to do
+ * next.
+ *
+ * "Last run" stays because it is the only confirmation that an install or restart finished, and
+ * a completion message that scrolled away is not a record.
+ */
+@Composable
+private fun HomeBody(
+    snapshot: Protocol.Snapshot?,
+    steps: List<Protocol.Step>,
+    installedKnown: Set<String>,
+    running: Boolean,
+    failedTools: Set<String>,
+    onChooseTool: () -> Unit,
+    onRestartEverything: () -> Unit,
+) {
+    val servicesUp = snapshot?.services?.count { it.status == "online" } ?: 0
+    val installed =
+        maxOf(
+            snapshot?.installedKeys()?.size ?: 0,
+            installedKnown.size,
+        )
+    val verdict =
+        HomeSummary.verdict(
+            installed = installed,
+            running = servicesUp,
+            needsAttention = failedTools.isNotEmpty(),
+        )
+    val action = HomeSummary.action(verdict)
+
+    Text(
+        HomeSummary.headline(verdict, servicesUp),
+        style = MaterialTheme.typography.headlineSmall,
+    )
+    Text(
+        HomeSummary.detail(verdict),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    action?.let {
+        Button(
+            onClick = {
+                when (it) {
+                    HomeSummary.Action.CHOOSE_TOOL -> onChooseTool()
+                    HomeSummary.Action.RESTART_EVERYTHING -> onRestartEverything()
+                }
+            },
+            shape = CircleShape,
+            enabled = !running,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(top = 8.dp),
+        ) { Text(HomeSummary.actionLabel(it), style = UiType.pill) }
+    }
+
+    if (steps.isNotEmpty()) {
+        Section("Last run")
+        Panel {
+            steps.forEach { step -> StepRow(step) }
+        }
     }
 }
 

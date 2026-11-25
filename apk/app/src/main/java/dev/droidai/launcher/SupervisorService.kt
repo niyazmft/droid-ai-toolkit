@@ -227,7 +227,7 @@ class SupervisorService : Service() {
         // were never installed. Nothing to watch is healthy, and it needs no polling.
         if (verdict == SupervisorPolicy.Verdict.NOTHING_INSTALLED) {
             Prefs.setRestartAttempts(0)
-            update("Nothing installed yet", "pick a tool in Packages when you are ready")
+            update("Nothing installed yet", "pick a tool in Tools when you are ready")
             return CheckResult.HEALTHY
         }
 

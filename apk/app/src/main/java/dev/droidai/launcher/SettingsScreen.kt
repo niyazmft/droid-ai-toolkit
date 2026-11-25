@@ -49,6 +49,8 @@ fun SettingsScreen(
     onRecheckPermission: () -> Unit,
     onRequestNotifications: () -> Unit = {},
     onRunAction: (String) -> Unit,
+    onOpenAdvanced: () -> Unit = {},
+    onBack: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val autoStart by Prefs.autoStartGateway.collectAsStateWithLifecycle()
@@ -69,6 +71,9 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium)
+        TextButton(onClick = onBack, modifier = Modifier.padding(top = 2.dp)) {
+            Text("Back")
+        }
 
         Section("Appearance")
         Panel {
@@ -173,6 +178,17 @@ fun SettingsScreen(
                 subtitle = "Useful when asking for help — it is the raw evidence behind a failure.",
                 checked = retainRaw,
             ) { Prefs.setRetainRaw(it) }
+        }
+
+        Section("Advanced")
+        Panel {
+            Text(
+                "About this phone, background apps, Termux access and the raw output of the last " +
+                    "command. All of it optional — nothing here is needed to use a tool.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            UiPill(label = "Open Advanced", ghost = true, onClick = onOpenAdvanced)
         }
 
         Section("Cleanup")

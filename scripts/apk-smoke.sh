@@ -4,7 +4,7 @@
 # It asserts the behaviours that actually regressed on 8x, not a screenshot diff:
 #
 #   1. cold start shows "Checking your device…", never the allow-external-apps page
-#   2. a probe that succeeds reaches the Overview
+#   2. a probe that succeeds reaches Home
 #   3. hardware Back on Raw Output pops the sub-screen instead of quitting the app
 #   4. the selected tab survives a rotation
 #   5. Settings still renders at font scale 1.3
@@ -115,7 +115,35 @@ for m in re.finditer(
   return 1
 }
 
-# Tap one of the four bottom tabs by position.
+# Tap a control by its content description (the gear icon has no text).
+tap_desc() {
+  local desc="$1" ui coords try
+  for try in 1 2 3; do
+    ui=$(dump_ui)
+    coords=$(printf '%s' "$ui" | DESC="$desc" python3 -c '
+import os, re, sys
+want = os.environ["DESC"]
+for m in re.finditer(
+    r"content-desc=\"([^\"]*)\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", sys.stdin.read()
+):
+    if m.group(1).strip() != want:
+        continue
+    x1, y1, x2, y2 = (int(m.group(i)) for i in (2, 3, 4, 5))
+    if x2 > x1 and y2 > y1:
+        print((x1 + x2) // 2, (y1 + y2) // 2)
+        break
+' 2>/dev/null)
+    if [ -n "$coords" ]; then
+      # shellcheck disable=SC2086  # two integers by construction
+      adb_cmd shell input tap $coords >/dev/null 2>&1
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# Tap one of the bottom tabs by position.
 #
 # The tab's *label* cannot be used: `selectable(role = Tab)` merges its descendants into one
 # semantics node, so uiautomator reports the label with an empty frame ([0,0][0,0]) and a
@@ -127,27 +155,31 @@ tap_tab() {
   ui=$(dump_ui)
   coords=$(printf '%s' "$ui" | WANT="$wanted" python3 -c '
 import os, re, sys
-names = ["Overview", "Packages", "Metrics", "Settings"]
+names = ["Home", "Tools"]
 want = os.environ["WANT"]
 if want not in names:
     sys.exit(0)
 xml = sys.stdin.read()
 screen = re.search(r"bounds=\"\[0,0\]\[(\d+),(\d+)\]\"", xml)
+width = int(screen.group(1)) if screen else 0
 height = int(screen.group(2)) if screen else 0
-nodes = []
+if not width or not height:
+    sys.exit(0)
+# The bar is split into equal segments, so the tab centre is geometry, not a lookup: the
+# *selected* tab is reported with clickable=false, so counting clickable nodes cannot tell
+# which one is which (and the label nodes have empty frames).
+y = None
 for m in re.finditer(
     r"clickable=\"true\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", xml
 ):
     x1, y1, x2, y2 = (int(m.group(i)) for i in (1, 2, 3, 4))
-    if x2 <= x1 or y2 <= y1:
-        continue
-    if height and y1 < height * 0.8:
-        continue
-    nodes.append(((x1 + x2) // 2, (y1 + y2) // 2, x1))
-nodes.sort(key=lambda n: n[2])
+    if y2 > y1 and y1 > height * 0.8 and x2 > x1:
+        y = (y1 + y2) // 2
+        break
+if y is None:
+    y = int(height * 0.92)
 idx = names.index(want)
-if idx < len(nodes):
-    print(nodes[idx][0], nodes[idx][1])
+print(int((idx + 0.5) * width / len(names)), y)
 ' 2>/dev/null)
   if [ -z "$coords" ]; then
     return 1
@@ -207,21 +239,25 @@ fi
 if on_screen "$early" 'Checking your device'; then
   ok "cold start shows a neutral checking state"
 elif [ "$saw_app" -eq 1 ]; then
-  ok "cold start reached a real screen (checking state or Overview)"
+  ok "cold start reached a real screen (checking state or Home)"
 else
   bad "cold start showed neither a checking state nor the Overview"
 fi
 
-# --- 2. a successful probe reaches the Overview -------------------------------
+# --- 2. a successful probe reaches Home --------------------------------------
 
 say "2. ready state"
 ready=0
 for _ in $(seq 1 20); do
   sleep 2
   ui=$(dump_ui)
-  # Device + Services come from the status payload. "Last run" is deliberately absent
-  # until the user runs something: probe/supervisor runs must not fill that panel.
-  if on_screen "$ui" 'Device' && on_screen "$ui" 'Model'; then
+  # Home is one sentence and one button now (F3): the device table, the service pills and
+  # raw output moved to Settings → Advanced. Reaching it means the payload arrived, because
+  # the sentence is derived from the snapshot.
+  if on_screen "$ui" 'Home' &&
+     { on_screen "$ui" 'tool running' || on_screen "$ui" 'tools running' ||
+       on_screen "$ui" 'Nothing installed yet' || on_screen "$ui" 'Nothing is running' ||
+       on_screen "$ui" 'Something needs attention'; }; then
     ready=1
     break
   fi
@@ -231,9 +267,9 @@ for _ in $(seq 1 20); do
 done
 
 if [ "$ready" -eq 1 ]; then
-  ok "reached the Overview after the probe"
+  ok "reached Home after the probe"
 else
-  bad "did not reach the Overview (device not set up, or the probe never answered)"
+  bad "did not reach Home (device not set up, or the probe never answered)"
   if on_screen "$(dump_ui)" 'allow-external-apps'; then
     say "        the app is showing its one-time setup screen; finish it by hand, then re-run"
   fi
@@ -241,54 +277,88 @@ fi
 
 # --- 3. Back on the Raw Output sub-screen must not quit -----------------------
 
-say "3. back navigation"
+say "3. back navigation (raw output is behind Settings -> Advanced)"
 if [ "$ready" -eq 1 ]; then
-  for _ in 1 2 3 4; do
-    adb_cmd shell input swipe 360 1200 360 300 120 >/dev/null 2>&1
-  done
-  sleep 1
-  if tap_text "Show raw output"; then
+  opened=0
+  if tap_desc "Settings"; then
     sleep 2
-    if on_screen "$(dump_ui)" 'Raw Output'; then
-      adb_cmd shell input keyevent KEYCODE_BACK >/dev/null 2>&1
+    for _ in 1 2 3 4; do
+      adb_cmd shell input swipe 360 1200 360 500 200 >/dev/null 2>&1
+    done
+    sleep 1
+    if tap_text "Open Advanced"; then
       sleep 2
-      if resumed_activity | grep -q "$PKG"; then
-        ok "Back on Raw Output returned to the app instead of quitting"
-      else
-        bad "Back on Raw Output quit the app"
+      for _ in 1 2 3 4; do
+        adb_cmd shell input swipe 360 1200 360 500 200 >/dev/null 2>&1
+      done
+      sleep 1
+      if tap_text "Open raw output"; then
+        sleep 2
+        if on_screen "$(dump_ui)" 'Raw Output'; then
+          opened=1
+          adb_cmd shell input keyevent KEYCODE_BACK >/dev/null 2>&1
+          sleep 2
+          if resumed_activity | grep -q "$PKG"; then
+            ok "Back on Raw Output returned to the app instead of quitting"
+          else
+            bad "Back on Raw Output quit the app"
+          fi
+        else
+          bad "could not open the Raw Output screen"
+        fi
       fi
-    else
-      bad "could not open the Raw Output screen"
     fi
-  else
-    bad "could not find the Show raw output button"
+  fi
+  if [ "$opened" -eq 0 ]; then
+    bad "could not reach Raw Output through Settings -> Advanced"
+  fi
+  # Back to Home for the remaining checks. Popped one level at a time and checked, because the
+  # number of levels depends on where §3 left the app and one Back too many exits it.
+  for _ in 1 2 3 4; do
+    ui=$(dump_ui)
+    if on_screen "$ui" 'Home' && ! on_screen "$ui" 'Advanced' && ! on_screen "$ui" 'Raw Output'; then
+      break
+    fi
+    adb_cmd shell input keyevent KEYCODE_BACK >/dev/null 2>&1
+    sleep 1
+  done
+  if ! resumed_activity | grep -q "$PKG"; then
+    adb_cmd shell am start -n "$ACTIVITY" >/dev/null 2>&1
+    sleep 8
   fi
 else
-  say "  SKIP  back navigation (not on the Overview)"
+  say "  SKIP  back navigation (not on Home)"
 fi
 
 # --- 4. the tab must survive a rotation ---------------------------------------
 
 say "4. rotation keeps the tab"
 if [ "$ready" -eq 1 ]; then
-  tap_tab "Packages" || bad "could not find the Packages tab"
+  tap_tab "Tools" || bad "could not find the Tools tab"
   sleep 2
   adb_cmd shell settings put system accelerometer_rotation 0 >/dev/null 2>&1
   adb_cmd shell settings put system user_rotation 1 >/dev/null 2>&1
   # A tab label is on every screen, so asserting 'Packages' passed even when the tap never
-  # landed. The tool cards are only on Packages, and the device table only on the Overview.
+  # landed. The tool cards are only on Tools, and the status sentence only on Home.
   # Polled, because a rotation recreates the activity and the first dump can catch it mid-draw.
   kept=0
   for _ in 1 2 3 4; do
     sleep 2
     rot=$(dump_ui)
-    if on_screen "$rot" 'installed' && ! on_screen "$rot" 'Model'; then
+    # Tools shows an installed count ("3 of 8 installed"); Home shows one sentence, and the
+    # exclusions matter because Home's empty state also contains the word "installed". Group
+    # headers are not usable here: in landscape the "Not installed" group is below the fold.
+    if on_screen "$rot" 'installed' &&
+      ! on_screen "$rot" 'Nothing installed yet' &&
+      ! on_screen "$rot" 'Nothing is running' &&
+      ! on_screen "$rot" 'tool running' &&
+      ! on_screen "$rot" 'tools running'; then
       kept=1
       break
     fi
   done
   if [ "$kept" -eq 1 ]; then
-    ok "rotation kept the user on Packages"
+    ok "rotation kept the user on Tools"
   else
     bad "rotation reset the screen"
   fi
@@ -296,7 +366,7 @@ if [ "$ready" -eq 1 ]; then
   adb_cmd shell settings put system accelerometer_rotation 1 >/dev/null 2>&1
   sleep 2
 else
-  say "  SKIP  rotation (not on the Overview)"
+  say "  SKIP  rotation (not on Home)"
 fi
 
 # --- 5. large font must still render Settings ---------------------------------
@@ -307,7 +377,9 @@ if [ "$ready" -eq 1 ]; then
   adb_cmd shell am force-stop "$PKG" >/dev/null 2>&1
   adb_cmd shell am start -n "$ACTIVITY" >/dev/null 2>&1
   sleep 18
-  tap_tab "Settings" || bad "could not find the Settings tab at font scale 1.3"
+  if ! tap_desc "Settings"; then
+    bad "could not find the Settings gear at font scale 1.3"
+  fi
   sleep 2
   # Assert on a fact near the top of Settings: at 1.3x the Termux panel scrolls below
   # the fold, and uiautomator dumps only what is on screen.
@@ -356,7 +428,7 @@ if [ "$ready" -eq 1 ]; then
 
   adb_cmd shell settings put system font_scale "$original_font_scale" >/dev/null 2>&1
 else
-  say "  SKIP  large font (not on the Overview)"
+  say "  SKIP  large font (not on Home)"
 fi
 
 # --- summary -----------------------------------------------------------------
