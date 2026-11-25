@@ -101,35 +101,39 @@ fun SettingsScreen(
 
         Section("Startup & Services")
         Panel {
+            // Copy per PLAN.md §F3.2: a 230-character subtitle was five lines of prose for a
+            // switch. These are ≤ 26 / ≤ 85 chars so each row fits two lines at font scale 1.3.
             SwitchRow(
-                title = "Show a status notification",
-                subtitle =
-                    "A small always-on notification reporting how many services are running. " +
-                        "It re-checks when you unlock the phone — never on a timer — so it " +
-                        "costs nothing while the phone sits idle. Off means no notification " +
-                        "and nothing restarts services by itself.",
+                title = "Watch in background",
+                subtitle = "One notification, checked when you unlock. Off: no warnings, no auto-restart.",
                 checked = supervisorOn,
             ) { Prefs.setSupervisorEnabled(it) }
             // The grant is not optional: without it Android hides the notification while the
             // service keeps running, which is the one failure mode with no visible symptom.
             if (supervisorOn && !notificationsGranted) {
                 Text(
-                    "Android is blocking this app's notifications, so the supervisor cannot " +
-                        "tell you when a service stops.",
+                    "Notifications are off, so a stopped service goes unnoticed.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                 )
                 UiPill(label = "Turn on notifications", ghost = true, onClick = onRequestNotifications)
             }
+            // The old label promised the wrong scope and the wrong condition: the toggle runs
+            // `service.resurrect` → `pm2 resurrect`, which restores *every* process in the dump,
+            // and it only fires when *nothing* is online (SupervisorPolicy returns HEALTHY as
+            // soon as one service is up). One service, not all; stopped, not all-stopped.
             SwitchRow(
-                title = "Restart the gateway automatically",
-                subtitle =
-                    "If the OpenClaw gateway stops, try to start it again — up to three " +
-                        "times, then stop trying.",
+                title = "Restart if all stop",
+                subtitle = "When every service is offline, try three times, then give up.",
                 checked = autoStart,
+                // Disabled, not hidden: it can have no effect while nothing is watching, and a
+                // tappable switch that does nothing advertises something the app is not doing.
+                enabled = supervisorOn,
             ) { Prefs.setAutoStart(it) }
-            Fact(
-                "Restarts after reboot",
+            // Two lines allowed: "Starts after reboot" does not fit the 104 dp label column at
+            // font scale 1.3, and F6 turns this row into an action with its own state block.
+            FactLong(
+                "Starts after reboot",
                 when (snapshot?.termux?.bootInstalled) {
                     true -> "set up"
                     false -> "not set up"
@@ -137,7 +141,7 @@ fun SettingsScreen(
                 },
             )
             Text(
-                "Reboot support is installed by the toolkit (SERVICES → PM2 → Autostart on Boot).",
+                "Set up in Termux → SERVICES → PM2 → Autostart on Boot.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

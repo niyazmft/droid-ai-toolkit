@@ -233,8 +233,8 @@ class SupervisorService : Service() {
 
         if (verdict == SupervisorPolicy.Verdict.NO_SERVICES_AUTOSTART_OFF) {
             update(
-                "No services online (auto-start is off)",
-                "turn it on in Settings to let the supervisor restart them",
+                "No services online (auto-restart is off)",
+                "turn it on in Settings to let the app restart them",
             )
             return CheckResult.UNHEALTHY
         }
