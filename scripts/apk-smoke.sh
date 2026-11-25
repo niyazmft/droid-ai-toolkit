@@ -58,6 +58,23 @@ dump_ui() {
 
 on_screen() { printf '%s' "$1" | grep -Fq -- "$2"; }
 
+# node_height <ui-xml> <exact text> -- the pixel height of that text node, or empty.
+#
+# Used by §5: a fact row that wraps into a paragraph is ~2x the height of one that does not,
+# and "did it wrap" is otherwise a judgement call on a screenshot.
+node_height() {
+  printf '%s' "$1" | TXT="$2" python3 -c '
+import os, re, sys
+want = os.environ["TXT"]
+for m in re.finditer(
+    r"text=\"([^\"]*)\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", sys.stdin.read()
+):
+    if m.group(1).strip() == want:
+        print(int(m.group(5)) - int(m.group(3)))
+        break
+' 2>/dev/null
+}
+
 resumed_activity() {
   adb_cmd shell dumpsys activity activities 2>/dev/null | grep -m1 mResumedActivity
 }
@@ -67,17 +84,70 @@ resumed_activity() {
 # Fixed coordinates were the first version of this script, and they broke the moment the
 # font scale changed: the bottom bar grows, so a fixed y stopped hitting the tab.
 tap_text() {
-  local label="$1" ui coords
-  ui=$(dump_ui)
-  coords=$(printf '%s' "$ui" | LABEL="$label" python3 -c '
+  local label="$1" ui coords try
+  for try in 1 2 3; do
+    ui=$(dump_ui)
+    coords=$(printf '%s' "$ui" | LABEL="$label" python3 -c '
 import os, re, sys
 label = os.environ["LABEL"]
 for m in re.finditer(
     r"text=\"([^\"]*)\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", sys.stdin.read()
 ):
-    if m.group(1).strip() == label:
-        print((int(m.group(2)) + int(m.group(4))) // 2, (int(m.group(3)) + int(m.group(5))) // 2)
+    if m.group(1).strip() != label:
+        continue
+    x1, y1, x2, y2 = (int(m.group(i)) for i in (2, 3, 4, 5))
+    # An empty frame cannot be tapped, and tapping it silently hits (0,0). A clipped node
+    # (the tab bar at font scale 1.3, before the bar was allowed to grow) reports exactly
+    # this, so keep looking instead of tapping the corner of the screen.
+    if x2 > x1 and y2 > y1:
+        print((x1 + x2) // 2, (y1 + y2) // 2)
         break
+' 2>/dev/null)
+    if [ -n "$coords" ]; then
+      # shellcheck disable=SC2086  # two integers by construction
+      adb_cmd shell input tap $coords >/dev/null 2>&1
+      return 0
+    fi
+    # A dump taken mid-transition (right after Back, or while the app is still drawing the
+    # first frame) can be empty or partial. Re-dump instead of failing on the first try.
+    sleep 1
+  done
+  return 1
+}
+
+# Tap one of the four bottom tabs by position.
+#
+# The tab's *label* cannot be used: `selectable(role = Tab)` merges its descendants into one
+# semantics node, so uiautomator reports the label with an empty frame ([0,0][0,0]) and a
+# coordinate tap on it lands in the corner of the screen. The selectable node itself carries
+# real bounds but no text, so the tab is identified by its place in the bar — which is fixed
+# by the design (four tabs, left to right).
+tap_tab() {
+  local wanted="$1" ui coords
+  ui=$(dump_ui)
+  coords=$(printf '%s' "$ui" | WANT="$wanted" python3 -c '
+import os, re, sys
+names = ["Overview", "Packages", "Metrics", "Settings"]
+want = os.environ["WANT"]
+if want not in names:
+    sys.exit(0)
+xml = sys.stdin.read()
+screen = re.search(r"bounds=\"\[0,0\]\[(\d+),(\d+)\]\"", xml)
+height = int(screen.group(2)) if screen else 0
+nodes = []
+for m in re.finditer(
+    r"clickable=\"true\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", xml
+):
+    x1, y1, x2, y2 = (int(m.group(i)) for i in (1, 2, 3, 4))
+    if x2 <= x1 or y2 <= y1:
+        continue
+    if height and y1 < height * 0.8:
+        continue
+    nodes.append(((x1 + x2) // 2, (y1 + y2) // 2, x1))
+nodes.sort(key=lambda n: n[2])
+idx = names.index(want)
+if idx < len(nodes):
+    print(nodes[idx][0], nodes[idx][1])
 ' 2>/dev/null)
   if [ -z "$coords" ]; then
     return 1
@@ -115,8 +185,18 @@ fi
 say "1. cold start"
 adb_cmd shell am force-stop "$PKG" >/dev/null 2>&1
 adb_cmd shell am start -n "$ACTIVITY" >/dev/null 2>&1
-sleep 2
-early=$(dump_ui)
+# Sample repeatedly: on y6 the first frame takes ~5 s (splash included), so a single sample
+# at 2 s saw neither the app nor its checking state and failed a working cold start.
+early=""
+saw_app=0
+for _ in 1 2 3 4 5 6 7 8; do
+  sleep 1
+  early=$(dump_ui)
+  if on_screen "$early" 'Droid AI'; then
+    saw_app=1
+    break
+  fi
+done
 
 if on_screen "$early" 'allow-external-apps'; then
   bad "cold start showed the allow-external-apps instructions while still probing"
@@ -126,8 +206,8 @@ fi
 
 if on_screen "$early" 'Checking your device'; then
   ok "cold start shows a neutral checking state"
-elif on_screen "$early" 'Droid AI'; then
-  ok "probe finished before the first sample (already on Overview)"
+elif [ "$saw_app" -eq 1 ]; then
+  ok "cold start reached a real screen (checking state or Overview)"
 else
   bad "cold start showed neither a checking state nor the Overview"
 fi
@@ -191,12 +271,23 @@ fi
 
 say "4. rotation keeps the tab"
 if [ "$ready" -eq 1 ]; then
-  tap_text "Packages" || bad "could not find the Packages tab"
+  tap_tab "Packages" || bad "could not find the Packages tab"
   sleep 2
   adb_cmd shell settings put system accelerometer_rotation 0 >/dev/null 2>&1
   adb_cmd shell settings put system user_rotation 1 >/dev/null 2>&1
-  sleep 3
-  if on_screen "$(dump_ui)" 'Packages'; then
+  # A tab label is on every screen, so asserting 'Packages' passed even when the tap never
+  # landed. The tool cards are only on Packages, and the device table only on the Overview.
+  # Polled, because a rotation recreates the activity and the first dump can catch it mid-draw.
+  kept=0
+  for _ in 1 2 3 4; do
+    sleep 2
+    rot=$(dump_ui)
+    if on_screen "$rot" 'installed' && ! on_screen "$rot" 'Model'; then
+      kept=1
+      break
+    fi
+  done
+  if [ "$kept" -eq 1 ]; then
     ok "rotation kept the user on Packages"
   else
     bad "rotation reset the screen"
@@ -216,16 +307,53 @@ if [ "$ready" -eq 1 ]; then
   adb_cmd shell am force-stop "$PKG" >/dev/null 2>&1
   adb_cmd shell am start -n "$ACTIVITY" >/dev/null 2>&1
   sleep 18
-  tap_text "Settings" || bad "could not find the Settings tab at font scale 1.3"
+  tap_tab "Settings" || bad "could not find the Settings tab at font scale 1.3"
   sleep 2
   # Assert on a fact near the top of Settings: at 1.3x the Termux panel scrolls below
   # the fold, and uiautomator dumps only what is on screen.
   ui=$(dump_ui)
-  if on_screen "$ui" 'Version' && on_screen "$ui" 'Package'; then
+  if on_screen "$ui" 'Appearance' && on_screen "$ui" 'Version'; then
     ok "Settings renders at font scale 1.3"
   else
     bad "Settings did not render at font scale 1.3"
   fi
+
+  # F3.3: the Termux & Safety facts must be one line each at 1.3, not a paragraph. A single
+  # line of bodySmall at 1.3 is ~19 dp; two lines are ~38 dp, so 28 dp separates them on any
+  # density. The panel sits below the fold, hence the scroll.
+  for _ in 1 2 3; do
+    adb_cmd shell input swipe 360 1200 360 500 200 >/dev/null 2>&1
+  done
+  sleep 1
+  density=$(adb_cmd shell wm density 2>/dev/null | tr -dc '0-9')
+  budget=$(( 28 * ${density:-320} / 160 ))
+  # A row clipped by the top of the scroll viewport reports a sliver of its height, which would
+  # pass the budget for the wrong reason. Nudge until the label is fully on screen.
+  minh=$(( 18 * ${density:-320} / 160 ))
+  attempt=0
+  ui=$(dump_ui)
+  while :; do
+    h=$(node_height "$ui" "Access")
+    if [ -n "$h" ] && [ "$h" -ge "$minh" ]; then
+      break
+    fi
+    [ "$attempt" -ge 4 ] && break
+    adb_cmd shell input swipe 360 700 360 900 200 >/dev/null 2>&1
+    sleep 1
+    attempt=$((attempt + 1))
+    ui=$(dump_ui)
+  done
+  for label in Access Version; do
+    h=$(node_height "$ui" "$label")
+    if [ -z "$h" ]; then
+      bad "could not find the '$label' fact row at font scale 1.3"
+    elif [ "$h" -le "$budget" ]; then
+      ok "'$label' fact is one line at font scale 1.3 (${h}px <= ${budget}px)"
+    else
+      bad "'$label' fact wrapped at font scale 1.3 (${h}px > ${budget}px)"
+    fi
+  done
+
   adb_cmd shell settings put system font_scale "$original_font_scale" >/dev/null 2>&1
 else
   say "  SKIP  large font (not on the Overview)"

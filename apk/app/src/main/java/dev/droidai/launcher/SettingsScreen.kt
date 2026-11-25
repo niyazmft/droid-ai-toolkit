@@ -26,6 +26,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -144,8 +146,18 @@ fun SettingsScreen(
 
         Section("Termux & Safety")
         Panel {
-            Fact("Command access", if (permission) "allowed" else "not allowed")
-            Fact("Termux version", snapshot?.termux?.version ?: "—")
+            // Access is a state, not a measurement, so it is a chip — and the two facts below it
+            // are one line each at font scale 1.3. They used to wrap into paragraphs because the
+            // row split its width by weight; see Fact() for the fixed label column.
+            AccessRow(permission)
+            val fullVersion = snapshot?.termux?.version.orEmpty()
+            // Short form on screen (the pre-release tail is noise here), full string for a
+            // screen reader and in Advanced → About. Never ellipsised.
+            Fact(
+                "Version",
+                Format.shortVersion(fullVersion).ifBlank { "—" },
+                spoken = fullVersion.ifBlank { "unknown" },
+            )
             UiPill(label = "Check again", ghost = true, onClick = onRecheckPermission)
             SwitchRow(
                 title = "Ask before removing",
@@ -197,6 +209,32 @@ fun SettingsScreen(
                 TextButton(onClick = { confirmCleanup = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+/**
+ * Can this app run commands in Termux? A state, shown as a chip.
+ *
+ * It was a Fact row ("Command access · allowed"), which is a sentence-shaped way to say a
+ * yes/no thing — and at font scale 1.3 the label wrapped. The chip carries the meaning in its
+ * word, so it survives colour blindness and dark mode, and TalkBack reads "Access: Allowed".
+ */
+@Composable
+private fun AccessRow(allowed: Boolean) {
+    val value = if (allowed) "Allowed" else "Not allowed"
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) { contentDescription = "Access: $value" },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "Access",
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
+        )
+        StatusChip(online = allowed, label = value, neutral = !allowed)
     }
 }
 

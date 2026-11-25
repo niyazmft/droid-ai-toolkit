@@ -49,4 +49,23 @@ object Format {
         // Unknown shape: show it, short, rather than invent something.
         return firstLine.take(32)
     }
+
+    /**
+     * `0.119.0-beta.3` → `0.119.0`, for a fact row.
+     *
+     * The pre-release tail is information for a bug report, not for a Settings row, and it is
+     * the part that made the value the longest thing on the screen. The full string stays
+     * available: it is passed as `spoken` to keep it in semantics, and Advanced → About shows
+     * it verbatim. When no dotted triple exists the input is returned unchanged — a version is
+     * never truncated to something that looks like a different version.
+     */
+    fun shortVersion(raw: String): String {
+        val s = raw.trim()
+        if (s.isEmpty()) return ""
+        DOTTED_TRIPLE.find(s)?.let { return it.value }
+        return s
+    }
+
+    /** The first three-part number in a string: `0.119.0-beta.3` → `0.119.0`. */
+    private val DOTTED_TRIPLE = Regex("""\d+\.\d+\.\d+""")
 }

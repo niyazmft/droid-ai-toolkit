@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -72,6 +71,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -525,21 +525,45 @@ internal fun Section(title: String) {
     )
 }
 
+/**
+ * A label and its value on one line, in two fixed columns.
+ *
+ * Splitting the row by *weight* (0.9 / 1.7) let the label grow with its value: at font scale
+ * 1.3, "Command access" and "Termux version" each wrapped into a paragraph, which reads as
+ * broken rather than as compact. The label column is now a fixed [LABEL_COLUMN] and the value
+ * takes what is left, so a long label cannot push a fact onto a second line.
+ *
+ * A version is never ellipsised: [Fact] is for values that fit, and [FactLong] is for the ones
+ * that genuinely do not. A truncated "2026.9.3" would be worse than a wrapped one.
+ */
 @Composable
 internal fun Fact(
     label: String,
     value: String,
+    /**
+     * What a screen reader should say instead of [value], when the visible form is shortened.
+     *
+     * A version is displayed as `0.119.0` because the pre-release tail is noise on a fact row,
+     * but "Termux version: 0.119.0" hides which build was tested. The full string is spoken and
+     * kept in Advanced → About.
+     */
+    spoken: String? = null,
 ) {
     if (value.isBlank()) return
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            // One semantic node: TalkBack reads "Access: Allowed", not the two halves as
+            // separate stops that mean nothing apart.
+            .semantics(mergeDescendants = true) { contentDescription = "$label: ${spoken ?: value}" },
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Text(
             label,
             style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(0.9f),
-            // Two lines, not one: at the default font size "Command permission" was
-            // rendered as "Command perm…" and the device line lost its Android version.
-            maxLines = 2,
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(LABEL_COLUMN),
         )
         Text(
             value,
@@ -551,13 +575,62 @@ internal fun Fact(
                     fontFeatureSettings = "tnum",
                 ),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1.7f),
+            modifier = Modifier.weight(1f),
             textAlign = TextAlign.End,
         )
     }
 }
+
+/**
+ * [Fact] for a value that is genuinely too long for one line (a Hermes release string, a
+ * command line). Two lines, still with the fixed label column.
+ */
+@Composable
+internal fun FactLong(
+    label: String,
+    value: String,
+) {
+    if (value.isBlank()) return
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) { contentDescription = "$label: $value" },
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(LABEL_COLUMN),
+        )
+        Text(
+            value,
+            style =
+                MaterialTheme.typography.bodySmall.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontFeatureSettings = "tnum",
+                ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.End,
+        )
+    }
+}
+
+/**
+ * The label column.
+ *
+ * 104 dp fits the longest short label used today ("Memory", "Android", "Boot restore") at
+ * font scale 1.3 on a 360 dp-wide phone with the value column still ~200 dp — enough for
+ * "0.119.0-beta.3" and "1794 MB". Labels that do not fit are shortened at the call site
+ * ("Command access" → "Access"), never wrapped.
+ */
+private val LABEL_COLUMN = 104.dp
 
 /** A bordered group of related rows. */
 @Composable
@@ -667,7 +740,12 @@ private fun SoftTabBar(
     val dim = MaterialTheme.colorScheme.onSurfaceVariant
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).navigationBarsPadding()) {
         Row(
-            Modifier.fillMaxWidth().height(62.dp).padding(horizontal = 6.dp),
+            // heightIn, not a fixed height: a fixed 62 dp cannot grow, so at a large font scale
+            // the label had nowhere to go. The children below use `weight`, not `fillMaxHeight`,
+            // for the same reason — a Scaffold bottomBar is measured with an unbounded max
+            // height, and `fillMaxHeight` against an infinite constraint collapses the whole
+            // Scaffold (the content went blank and the bar floated mid-screen when tried).
+            Modifier.fillMaxWidth().heightIn(min = 62.dp).padding(horizontal = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Tab.values().forEach { t ->
@@ -675,7 +753,11 @@ private fun SoftTabBar(
                 Column(
                     Modifier
                         .weight(1f)
-                        .fillMaxHeight()
+                        // weight, not fillMaxHeight: the bar is measured with an unbounded max
+                        // height (it is a Scaffold bottomBar), and fillMaxHeight against an
+                        // infinite constraint collapses the whole Scaffold — the content went
+                        // blank and the tab bar floated mid-screen when this was tried.
+                        .fillMaxWidth()
                         // selectable, not clickable: TalkBack needs role=Tab and the
                         // selected state, which a bare clickable does not report.
                         .selectable(selected = selected, role = Role.Tab) { onSelect(t) },
@@ -930,7 +1012,10 @@ private fun Home(
                                 Fact("Android", "${snap.device.android} · API ${snap.device.api}")
                                 // Arch lives in the header subtitle, once, next to the model.
                                 // Repeating it here was noise on every screen.
-                                Fact("Memory", "${snap.device.memAvailableMb} MB free of ${snap.device.memTotalMb} MB")
+                                // "725 MB free of 1794 MB" is 23 characters — one over the
+                                // value budget at font scale 1.3, where it ellipsised. The slash
+                                // form says the same thing in 14.
+                                Fact("Memory", "${snap.device.memAvailableMb} / ${snap.device.memTotalMb} MB")
                                 Fact("Swap free", "${snap.device.swapFreeMb} MB")
                                 Fact("Disk free", "${snap.device.diskFreeMb / 1024} GB")
                                 Fact("Termux", snap.termux.version)
