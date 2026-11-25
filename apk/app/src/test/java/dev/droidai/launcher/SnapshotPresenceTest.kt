@@ -43,7 +43,10 @@ class SnapshotPresenceTest {
             """"services":[],"checks":{}}}"""
     }
 
-    private fun snapshot(versions: String = "\"\"", installed: String? = null): Protocol.Snapshot =
+    private fun snapshot(
+        versions: String = "\"\"",
+        installed: String? = null,
+    ): Protocol.Snapshot =
         Protocol.parse(payload(versions, installed)).snapshot
             ?: error("the payload must parse")
 

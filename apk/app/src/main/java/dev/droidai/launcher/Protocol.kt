@@ -153,6 +153,7 @@ object Protocol {
         /** Named preconditions (`postgres_running`, `pkg_available:ollama`, …). */
         val predicates: List<String> = emptyList(),
     )
+
     /**
      * One parse of one stream, with every view derived from the same event list.
      *
