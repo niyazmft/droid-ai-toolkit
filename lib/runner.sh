@@ -185,6 +185,15 @@ runner_run() {
     state_begin "$id" "$run_id" '{}' >/dev/null 2>&1 || true
     log=$(log_path "$id")
     : >> "$log" 2>/dev/null || true
+    # Record how this run was invoked, in the step's own log.
+    #
+    # The result bundle tells a caller nothing about the flags it used, so "did the app send
+    # --fast?" used to be unanswerable from a device that felt slow. One line here makes it a
+    # grep, and it is per-run so it cannot be confused with yesterday's invocation.
+    {
+        printf '=== %s %s (run %s)\n' "$(date -u +%FT%TZ)" "$id" "$run_id"
+        printf '=== argv: %s\n' "${ORIGINAL_ARGS[*]:-(none)}"
+    } >> "$log" 2>/dev/null || true
 
     # Steps that produce structured output write it to this file; the runner
     # emits it as a `data` event. A file keeps the NDJSON stream clean, so a

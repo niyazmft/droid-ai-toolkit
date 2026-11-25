@@ -81,6 +81,15 @@ data class Completion(
     val actionId: String,
     val label: String,
     val startedAt: Long,
+    /**
+     * The run asked for `--fast`.
+     *
+     * The client has to know this to merge rather than replace: a `--fast` status carries blank
+     * version strings by design, so treating it like a full read deletes what the screen knows.
+     * Derived from the arguments at dispatch time, because the result bundle says nothing about
+     * how the command was invoked.
+     */
+    val fast: Boolean = false,
 )
 
 /**
@@ -163,6 +172,10 @@ object Runner {
     @Volatile
     private var actionId: String = ""
 
+    /** Whether the in-flight run asked for `--fast`; captured at dispatch, see [Completion.fast]. */
+    @Volatile
+    private var fast: Boolean = false
+
     @Volatile
     private var origin = Origin.SYSTEM
 
@@ -230,6 +243,7 @@ object Runner {
         origin = o
         _label.value = label
         actionId = if (args.size >= 3 && args[1] == "run") args[2] else ""
+        fast = args.contains("--fast")
         _startedAt.value = System.currentTimeMillis()
         _running.value = true
         _result.value = null
@@ -295,7 +309,7 @@ object Runner {
         wasProbe: Boolean,
     ): Completion {
         val finished = RunResult(stdout = "", stderr = "", exitCode = -1, err = -1, errmsg = message)
-        val done = Completion(finished, origin, actionId, _label.value, _startedAt.value)
+        val done = Completion(finished, origin, actionId, _label.value, _startedAt.value, fast)
         _running.value = false
         _result.value = finished
         if (wasProbe) {
@@ -336,7 +350,7 @@ object Runner {
                     return
                 }
 
-                val completion = Completion(result, origin, actionId, _label.value, _startedAt.value)
+                val completion = Completion(result, origin, actionId, _label.value, _startedAt.value, fast)
                 _result.value = result
                 _running.value = false
                 if (origin == Origin.PROBE) classify(result)

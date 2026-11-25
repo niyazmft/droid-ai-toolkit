@@ -131,36 +131,19 @@ private val TOOL_BLURB =
 /**
  * Where the engine says a tool lives.
  *
- * `tools.installed` is authoritative: the engine stats the per-tool directory, so it costs
- * nothing and cannot be confused by a blank version string. The version fallback exists
- * only for an engine older than that field.
+ * Delegates to [Protocol.Snapshot.isInstalled] so there is one rule for "installed" in the
+ * app: this file used to carry its own copy, and the ViewModel carried a third, which is
+ * how a `--fast` snapshot could report a tool as gone while it served traffic.
  */
 private fun isInstalled(
     snapshot: Protocol.Snapshot?,
     key: String,
-): Boolean {
-    snapshot
-        ?.tools
-        ?.installed
-        ?.get(key)
-        ?.let { return it }
-    val v = versionOf(snapshot, key)
-    return v.isNotBlank()
-}
+): Boolean = snapshot?.isInstalled(key) ?: false
 
 private fun versionOf(
     snapshot: Protocol.Snapshot?,
     key: String,
-): String =
-    when (key) {
-        "openclaw" -> snapshot?.tools?.openclaw.orEmpty()
-        "hermes" -> snapshot?.tools?.hermes.orEmpty()
-        "n8n" -> snapshot?.tools?.n8n.orEmpty()
-        "ollama" -> snapshot?.tools?.ollama.orEmpty()
-        // Pi, Gemini, Paperclip and Nanobot are not in the status payload: probing them costs
-        // seconds per refresh (Gemini's --version took 76 s on 8x).
-        else -> ""
-    }
+): String = snapshot?.versionOf(key).orEmpty()
 
 /**
  * Why this tool needs attention, or null.

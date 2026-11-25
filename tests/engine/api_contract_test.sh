@@ -56,6 +56,12 @@ t_jq_true "$OUT" '
 t_eq "" "$(printf '%s\n' "$OUT" | jq -s -r '[.[] | select(.t == "data")][0].payload.tools.openclaw')" \
     "status --fast leaves tool versions blank"
 
+# The step log records the argv, which is the only way to answer "did the caller actually send
+# --fast?" from a device later. (The result bundle carries output, not the invocation.)
+logfile=$(ls -t "$STATE_ROOT"/log/status-*.log 2>/dev/null | head -1)
+t_contains "$(cat "$logfile" 2>/dev/null)" "argv: --api status --fast" \
+    "the run log records the invocation flags"
+
 # ---- errors --------------------------------------------------------------------------
 
 engine nope

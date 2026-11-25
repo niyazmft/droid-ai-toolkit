@@ -36,6 +36,13 @@ data class HomeState(
     /** The last full status document, parsed. `null` until one exists. */
     val snapshot: Protocol.Snapshot? = null,
     val checkedAt: Long = 0L,
+    /**
+     * When the last *full* read completed (0 = never, in this process).
+     *
+     * Separate from [checkedAt] because a `--fast` read refreshes that one on every unlock with
+     * blank versions. This is what decides whether opening Tools has to spend the slow read.
+     */
+    val lastFullAt: Long = 0L,
     val actions: List<Protocol.Action> = emptyList(),
     /** Final state of each step in the last run the *user* started. */
     val steps: List<Protocol.Step> = emptyList(),
@@ -280,7 +287,7 @@ class HomeViewModel(
             persistFailure(failure)
             if (fromUser) {
                 say(if (completion.label.isBlank()) "That did not finish" else "${completion.label} did not finish")
-                refreshAfterRun()
+                refreshAfterRun(completion.actionId)
             }
             // This is the only place a tool can be marked as needing attention. The old code
             // returned from the error branch *before* this line, so `failedTools` was never
@@ -307,34 +314,36 @@ class HomeViewModel(
             return
         }
 
-        // Only a full snapshot may fill the screens. The supervisor polls `status --fast`,
-        // which leaves version strings blank, and Packages reads "installed" from those
-        // versions — accepting a fast snapshot is exactly how the app came to report
-        // "0 of 8 installed" on a device with four tools installed.
+        // A snapshot may fill the screens unless it came from the supervisor. The supervisor
+        // polls `--fast` and only ever needs a verdict, so its payload is not the screen's
+        // source of truth; everything else (probe, refresh, a user's own read) is.
+        //
+        // `--fast` no longer disqualifies a snapshot because presence now comes from
+        // `tools.installed` (see Protocol.Snapshot.isInstalled) rather than from a version
+        // string. The version strings are merged below, not taken at face value.
         if (completion.origin != Origin.SYSTEM) {
-            parsed.snapshot?.let { snap ->
+            parsed.snapshot?.let { fresh ->
+                // A `--fast` read blanks every version string, so it is merged into what is
+                // already on screen instead of replacing it. Replacing was how the OpenClaw row
+                // (and the installed-tool set) disappeared right after the startup probe.
+                val snap = if (completion.fast) fresh.mergedWith(_state.value.snapshot) else fresh
                 val at = System.currentTimeMillis()
-                _state.update { it.copy(snapshot = snap, checkedAt = at) }
+                _state.update {
+                    it.copy(snapshot = snap, checkedAt = at, lastFullAt = if (completion.fast) it.lastFullAt else at)
+                }
                 Prefs.setLastStatusAt(at)
-                viewModelScope.launch { StatusStore.save(app, result.stdout) }
-                Prefs.setInstalledTools(
-                    listOf("openclaw", "hermes", "n8n", "ollama")
-                        .filter { key ->
-                            when (key) {
-                                "openclaw" -> snap.tools.openclaw.isNotBlank()
-                                "hermes" -> snap.tools.hermes.isNotBlank()
-                                "n8n" -> snap.tools.n8n.isNotBlank()
-                                "ollama" -> snap.tools.ollama.isNotBlank()
-                                else -> false
-                            }
-                        }.toSet(),
-                )
+                // Only a full read is cached. The file is what paints the first frame after a
+                // cold start, and a `--fast` document has no versions to paint: saving it made
+                // the OpenClaw row disappear on the *next* launch even though the merge above
+                // had preserved it in memory.
+                if (!completion.fast) viewModelScope.launch { StatusStore.save(app, result.stdout) }
+                Prefs.setInstalledTools(snap.installedKeys())
             }
         }
 
         // A finished run makes every screen stale. Refresh by itself, with a distinct origin
         // so this neither clears the banner nor overwrites the run's raw stream.
-        if (fromUser) refreshAfterRun()
+        if (fromUser) refreshAfterRun(completion.actionId)
 
         // Last: the catalogue only makes sense once an idle status has been parsed. If the
         // refresh above took the transport slot, [maybeRequestCatalog] skips and the
@@ -350,9 +359,9 @@ class HomeViewModel(
         Prefs.markFailed(completion.actionId.substringBefore('.'), failed)
     }
 
-    private fun refreshAfterRun() {
+    private fun refreshAfterRun(actionId: String) {
         if (Runner.running.value) return
-        Runner.send(app, listOf("--api", "status"), Origin.REFRESH, "Refresh")
+        Runner.send(app, RefreshPolicy.argsAfterRun(actionId), Origin.REFRESH, "Refresh")
     }
 
     /**
@@ -387,6 +396,22 @@ class HomeViewModel(
     fun onCatalogScreenOpened() {
         if (_state.value.actions.isEmpty()) catalogRequested = false
         maybeRequestCatalog()
+    }
+
+    /**
+     * The Tools screen is open: it is the one place a version string is read off the screen.
+     *
+     * Opening it is therefore the moment to spend the slow read — not app launch, which only
+     * needs device facts and service state. Rate-limited by [RefreshPolicy.needsFullRead] so
+     * flicking between tabs is free.
+     */
+    fun onToolsScreenOpened() {
+        val current = _state.value
+        if (!RefreshPolicy.needsFullRead(System.currentTimeMillis(), current.lastFullAt)) return
+        // A full read is what a user's Refresh does too; it must not queue a second one behind
+        // itself, and it must not steal the slot from a running install.
+        if (Runner.running.value) return
+        dispatch(listOf("--api", "status"), "Read tool versions")
     }
 
     private fun startClock() {

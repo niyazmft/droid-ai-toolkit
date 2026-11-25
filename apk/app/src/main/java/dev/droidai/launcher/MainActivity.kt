@@ -798,8 +798,14 @@ private fun Home(
 
     // Opening Packages is an explicit ask for the tool list: allow one more attempt if the
     // first one was lost to a busy transport (see HomeViewModel.onCatalogScreenOpened).
+    //
+    // It is also the one screen that shows tool versions, so it is where the slow, full read
+    // belongs — app launch and resume only need `--fast` (HomeViewModel.onToolsScreenOpened).
     LaunchedEffect(tab) {
-        if (tab == Tab.PACKAGES) vm.onCatalogScreenOpened()
+        if (tab == Tab.PACKAGES) {
+            vm.onCatalogScreenOpened()
+            vm.onToolsScreenOpened()
+        }
     }
 
     // Raw output is a sub-screen of Overview, so Back must pop it — not quit the app.

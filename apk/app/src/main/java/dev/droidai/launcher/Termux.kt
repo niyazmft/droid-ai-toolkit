@@ -165,6 +165,15 @@ object Termux {
 
     fun probe(context: Context) {
         Gate.resetProbe()
-        Runner.send(context, listOf("--api", "status"), Origin.PROBE)
+        // `--fast`: the gate only needs to know that Termux answered with a status document.
+        // The full form measured 23.1 s on 8x — against a 25 s probe ceiling, so on slow
+        // hardware it timed out and marked a *working* device unreachable. `--fast` answers
+        // the same question in well under half that, and skips the version probes that make
+        // it expensive (each one starts a whole Node or Python runtime).
+        //
+        // The blank versions this returns are fine for a gate but not for a screen: see
+        // HomeViewModel, where a fast snapshot may update the device facts but never the
+        // installed-tool set (which the engine reports separately in `tools.installed`).
+        Runner.send(context, listOf("--api", "status", "--fast"), Origin.PROBE)
     }
 }

@@ -68,7 +68,77 @@ object Protocol {
          * difference between a disabled button with a reason and a bare exit 3.
          */
         val checks: Map<String, Boolean> = emptyMap(),
-    )
+    ) {
+        /**
+         * Version string for a catalog tool, or "" when this snapshot does not carry one.
+         *
+         * Only the four tools whose `--version` is cheap appear in the payload; Pi, Gemini,
+         * Paperclip and Nanobot are not probed at all (Gemini's `--version` took 76 s on 8x).
+         */
+        fun versionOf(key: String): String =
+            when (key) {
+                "openclaw" -> tools.openclaw
+                "hermes" -> tools.hermes
+                "n8n" -> tools.n8n
+                "ollama" -> tools.ollama
+                else -> ""
+            }
+
+        /**
+         * Is this catalog tool present?
+         *
+         * `tools.installed` is authoritative: the engine stats the per-tool directory, so it
+         * costs nothing and is unaffected by `--fast`, which blanks every version string. The
+         * version fallback exists only for an engine older than that field — treating a blank
+         * version as "not installed" is how a phone with four tools on disk came to report
+         * "0 of 8 installed".
+         */
+        fun isInstalled(key: String): Boolean = tools.installed[key] ?: versionOf(key).isNotBlank()
+
+        /** Every tool the engine reports as present, as a set of catalog keys. */
+        fun installedKeys(): Set<String> =
+            if (tools.installed.isNotEmpty()) {
+                tools.installed.filterValues { it }.keys
+            } else {
+                CATALOG_TOOL_KEYS.filter { versionOf(it).isNotBlank() }.toSet()
+            }
+
+        /**
+         * Fold a `--fast` snapshot into the one already on screen.
+         *
+         * `--fast` blanks every version string deliberately, so accepting it verbatim made the
+         * Overview forget what it knew: the OpenClaw row vanished after the startup probe, on a
+         * phone where OpenClaw was running. Everything measured cheaply (memory, disk, services,
+         * the installed flags) comes from the new snapshot; the version strings are kept from the
+         * previous full read until the next one arrives.
+         *
+         * A blank is only replaced when the new snapshot has nothing to say — a genuinely absent
+         * tool stays absent, because [tools.installed] (not this field) is what decides presence.
+         */
+        fun mergedWith(previous: Snapshot?): Snapshot {
+            val old = previous ?: return this
+            return copy(
+                tools =
+                    tools.copy(
+                        pnpm = tools.pnpm.ifBlank { old.tools.pnpm },
+                        openclaw = tools.openclaw.ifBlank { old.tools.openclaw },
+                        hermes = tools.hermes.ifBlank { old.tools.hermes },
+                        n8n = tools.n8n.ifBlank { old.tools.n8n },
+                        ollama = tools.ollama.ifBlank { old.tools.ollama },
+                        installed = if (tools.installed.isNotEmpty()) tools.installed else old.tools.installed,
+                    ),
+            )
+        }
+    }
+
+    /**
+     * Every tool key the catalog can have, for the version fallback above.
+     *
+     * Pi, Gemini, Paperclip and Nanobot map to an empty version deliberately: they have no
+     * cheap probe, so an old engine's payload cannot tell us about them.
+     */
+    val CATALOG_TOOL_KEYS =
+        listOf("openclaw", "hermes", "n8n", "ollama", "pi", "gemini", "paperclip", "nanobot")
 
     data class Action(
         val id: String,
@@ -83,7 +153,6 @@ object Protocol {
         /** Named preconditions (`postgres_running`, `pkg_available:ollama`, …). */
         val predicates: List<String> = emptyList(),
     )
-
     /**
      * One parse of one stream, with every view derived from the same event list.
      *
