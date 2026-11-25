@@ -6,7 +6,9 @@
   "category": "services",
   "destructive": true,
   "idempotent": false,
-  "requires": {},
+  "requires": {
+    "predicates": ["legacy_global_present", "tools_migrated"]
+  },
   "steps": [
     { "id": "cleanup", "title": "Remove legacy project and shims", "run": "step_cleanup_global_project" }
   ]

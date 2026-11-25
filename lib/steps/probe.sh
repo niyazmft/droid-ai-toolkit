@@ -73,6 +73,28 @@ pred_has_matching_jiter_wheel() {
     return 1
 }
 
+# pred_legacy_global_present -- is the pre-migration shared pnpm project still on disk?
+#
+# The cleanup action is only meaningful where this exists, and on a device that has already
+# migrated (8x) it used to report "done" after removing nothing. Naming it as a predicate
+# makes the refusal happen before the tap instead of after it.
+pred_legacy_global_present() {
+    [ -d "$HOME/.local/share/pnpm/global" ]
+}
+
+# pred_tools_migrated -- has every tool the cleanup would strand moved to tools/?
+#
+# The cleanup deletes the legacy tree and the shims that point into it, so a tool still
+# running from there loses its command. This is the guard the step already enforced
+# internally; declaring it means the app can show the same reason and disable the button.
+pred_tools_migrated() {
+    local t
+    for t in pi n8n openclaw gemini; do
+        [ -d "$(tool_dir "$t")/node_modules" ] || return 1
+    done
+    return 0
+}
+
 pred_apply() {
     local name="$1"; shift
     if [ -z "$name" ]; then

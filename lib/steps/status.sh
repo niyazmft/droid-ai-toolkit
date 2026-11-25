@@ -113,6 +113,27 @@ _st_checks_json() {
     printf '%s' "$out"
 }
 
+# _st_legacy_global -- the pre-migration shared pnpm project, as {"present":bool,"mb":n}.
+#
+# The app shows a Cleanup panel only when this exists, and says how big it is — "12.9 GB" is
+# the whole reason someone would remove it. The size is time-boxed and skipped under `--fast`:
+# `du` over a 13 GB tree of thousands of files takes seconds on a phone, and a status poll has
+# no business paying for a number only the Advanced panel displays.
+_st_legacy_global() {
+    local g="$HOME/.local/share/pnpm/global" mb=0
+    if [ ! -d "$g" ]; then
+        printf '{"present":false,"mb":0}'
+        return 0
+    fi
+    if [ "${DROIDAI_STATUS_FAST:-0}" != "1" ]; then
+        mb=$(_st_tmo 5 du -sm "$g" 2>/dev/null | awk '{print $1; exit}')
+    fi
+    case "$mb" in
+        ''|*[!0-9]*) mb=0 ;;
+    esac
+    printf '{"present":true,"mb":%s}' "$mb"
+}
+
 # _st_installed_json -- presence per catalog tool, as a JSON object of booleans.
 #
 # Presence is a directory (or a PATH entry), never a version string. `--version` starts a
@@ -173,7 +194,7 @@ status_collect() {
     local mem_total mem_avail swap_total swap_free disk_free
     local termux_ver allow_ext boot_installed doze hl
     local node pnpm py openclaw hermes n8n ollama pm2_inst
-    local services services_installed checks
+    local services services_installed checks legacy_global
 
     model=$(_st_getprop ro.product.model)
     android=$(_st_getprop ro.build.version.release)
@@ -224,6 +245,8 @@ status_collect() {
     if [ -z "$services_installed" ]; then services_installed='{}'; fi
     checks=$(_st_checks_json)
     if [ -z "$checks" ]; then checks='{}'; fi
+    legacy_global=$(_st_legacy_global)
+    if [ -z "$legacy_global" ]; then legacy_global='{"present":false,"mb":0}'; fi
 
     jq -n \
         --arg model "$model" --arg android "$android" --arg api "$api" \
@@ -238,6 +261,7 @@ status_collect() {
         --argjson services "${services:-[]}" \
         --argjson installed "$services_installed" \
         --argjson checks "$checks" \
+        --argjson legacy "$legacy_global" \
         '{
             device: {
                 model: $model, android: $android, api: ($api | tonumber? // 0),
@@ -250,7 +274,8 @@ status_collect() {
                 version: $termux,
                 allow_external_apps: $allow_ext,
                 boot_installed: $boot,
-                doze_whitelisted: $doze
+                doze_whitelisted: $doze,
+                legacy_global: $legacy
             },
             tools: {
                 node: $node, pnpm: $pnpm, python: $python, pm2_installed: $pm2_installed,

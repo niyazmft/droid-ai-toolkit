@@ -137,6 +137,29 @@ before/after numbers in `TASKS.md` are measured with.
 
 It is a log, not part of the event stream: nothing the app sends or receives references it.
 
+## Status payload: `termux.legacy_global`
+
+```json
+"termux": { "legacy_global": { "present": true, "mb": 1252 } }
+```
+
+The pre-migration shared pnpm project. `present` decides whether the app offers the cleanup
+panel at all; `mb` is what makes removing it worth doing ("12.9 GB"). `mb` is **0 under
+`--fast`** on purpose: measuring a multi-gigabyte tree takes seconds on a phone, so only the
+panel (which asks for a full read when it needs the number) pays for it.
+
+The cleanup step reports what it removed as a `data` payload, so a client can say it instead
+of "done" — the action used to answer "done" while removing nothing on a device that was
+already clean:
+
+```json
+{"t":"data","kind":"cleanup","payload":{"reclaimed_mb":13200,"shims":812}}
+```
+
+`service.cleanup-legacy` declares `requires.predicates: ["legacy_global_present",
+"tools_migrated"]`, so on a device where a tool still runs from the legacy folder the refusal
+happens in preflight (exit 3, `unmet: tools_migrated`) instead of after the tap.
+
 ## Exit codes
 
 | Code | Meaning |

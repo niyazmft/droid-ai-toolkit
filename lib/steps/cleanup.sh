@@ -10,19 +10,27 @@
 # that name the legacy path, and only then removes the tree.
 step_cleanup_global_project() {
     local g="$HOME/.local/share/pnpm/global"
-    local t bin removed=0
+    local t bin removed=0 mb_before=0 mb_after=0
 
-    for t in pi n8n openclaw gemini; do
-        if [ ! -d "$(tool_dir "$t")/node_modules" ]; then
-            echo "refusing: $t is not installed under tools/ — migrate it first"
-            return 1
-        fi
-    done
+    # The same guard the spec declares as a predicate, so a direct invocation cannot bypass
+    # it. The message names the tool the user has to migrate first.
+    if ! pred_tools_migrated; then
+        for t in pi n8n openclaw gemini; do
+            if [ ! -d "$(tool_dir "$t")/node_modules" ]; then
+                echo "refusing: $t is not installed under tools/ — migrate it first"
+                break
+            fi
+        done
+        return 1
+    fi
 
     if [ ! -d "$g" ]; then
         echo "nothing to do: $g is already absent"
+        _cleanup_report 0 0
         return 0
     fi
+
+    mb_before=$(_cleanup_mb "$g")
 
     # Never touch a shim the toolkit itself depends on. `pm2` is the load-bearing
     # example: the supervisor restarts services through it, and a cleanup that removed
@@ -39,5 +47,32 @@ step_cleanup_global_project() {
     echo "removed $removed legacy shim(s)"
 
     rm -rf "$g" && echo "removed $g"
+    mb_after=$(_cleanup_mb "$g")
+    _cleanup_report "$((mb_before - mb_after))" "$removed"
     return 0
+}
+
+# _cleanup_mb <path> -- size in whole MB, 0 when du cannot answer.
+#
+# `du -sm` is one process either side of the delete, which is worth it: "Reclaimed 12.9 GB"
+# is the only part of this action a user can see, and it is what distinguishes "it worked"
+# from "it told me done and nothing changed" (which happened on 8x).
+_cleanup_mb() {
+    local mb
+    mb=$(du -sm "$1" 2>/dev/null | awk '{print $1; exit}')
+    case "$mb" in
+        ''|*[!0-9]*) printf '0' ;;
+        *) printf '%s' "$mb" ;;
+    esac
+}
+
+# _cleanup_report <reclaimed_mb> <shims> -- the `data` payload for the app.
+#
+# Kept separate so the "nothing to do" path reports the same shape: a client should not have
+# to branch on whether anything was removed before reading the numbers.
+_cleanup_report() {
+    local reclaimed="${1:-0}" shims="${2:-0}"
+    [ -n "${RUNNER_RESULT:-}" ] || return 0
+    jq -nc --argjson mb "$reclaimed" --argjson shims "$shims" \
+        '{reclaimed_mb: $mb, shims: $shims}' > "$RUNNER_RESULT" 2>/dev/null || true
 }

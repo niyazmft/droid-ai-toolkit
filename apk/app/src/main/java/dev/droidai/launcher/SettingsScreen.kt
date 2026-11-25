@@ -17,6 +17,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +63,21 @@ fun SettingsScreen(
     // "Re-check" succeeded, because reading a StateFlow value is not observable.
     val permission by Gate.permissionGranted.collectAsStateWithLifecycle()
     var confirmCleanup by remember { mutableStateOf(false) }
+    // The size is measured by a *full* status read (`du` over a 13 GB tree is skipped under
+    // --fast), so the panel asks for one when it needs the number. Once per visit: a fast
+    // refresh would answer 0 again and this would loop.
+    var sizeAsked by remember { mutableStateOf(false) }
+
+    LaunchedEffect(snapshot?.termux?.legacyGlobalPresent, snapshot?.termux?.legacyGlobalMb) {
+        if (snapshot?.termux?.legacyGlobalPresent == true &&
+            snapshot.termux.legacyGlobalMb == 0 &&
+            !sizeAsked &&
+            !running
+        ) {
+            sizeAsked = true
+            onRefresh()
+        }
+    }
 
     // No verticalScroll here: this screen is rendered inside the tab content's scroller,
     // and nesting two of them makes Compose measure one with an infinite max height and
@@ -191,20 +207,43 @@ fun SettingsScreen(
             UiPill(label = "Open Advanced", ghost = true, onClick = onOpenAdvanced)
         }
 
-        Section("Cleanup")
-        Panel {
-            Text(
-                "Removes an old shared package folder left behind by earlier versions. " +
-                    "Refused while any tool still depends on it.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            UiPill(
-                label = "Remove the old package folder",
-                enabled = !running,
-                ghost = true,
-                onClick = { confirmCleanup = true },
-            )
+        // Hidden entirely when the legacy folder is absent, which is the normal state on a
+        // device that has migrated: showing a button that removes nothing and then reports
+        // "done" is how 8x claimed a successful cleanup of a folder that was already gone.
+        if (snapshot?.termux?.legacyGlobalPresent == true) {
+            val migrated = snapshot.checks["tools_migrated"] != false
+            val mb = snapshot.termux.legacyGlobalMb
+            Section("Cleanup")
+            Panel {
+                val size =
+                    when {
+                        mb >= 1024 -> String.format(java.util.Locale.US, "%.1f GB", mb / 1024.0)
+                        mb > 0 -> "$mb MB"
+                        else -> "size not measured yet"
+                    }
+                Text(
+                    "Legacy package folder · $size",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    if (migrated) {
+                        "Left behind by an earlier version. Nothing uses it now, so it can be removed."
+                    } else {
+                        // The engine's own refusal, said before the tap. It used to arrive after
+                        // it, as "Step failed: Remove legacy project and shims".
+                        "Still in use: a tool has not been moved to its own folder yet. " +
+                            "Open Tools and update it first."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                UiPill(
+                    label = "Remove it",
+                    enabled = !running && migrated,
+                    ghost = true,
+                    onClick = { confirmCleanup = true },
+                )
+            }
         }
     }
 

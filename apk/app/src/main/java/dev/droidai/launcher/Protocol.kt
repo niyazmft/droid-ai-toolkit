@@ -28,6 +28,15 @@ object Protocol {
         val allowExternalApps: Boolean,
         val bootInstalled: Boolean,
         val dozeWhitelisted: Boolean,
+        /**
+         * The pre-migration shared pnpm project, if it is still there.
+         *
+         * `present` decides whether the Cleanup panel exists at all; `mb` is what makes
+         * removing it worth doing ("12.9 GB"). `mb` is 0 under `--fast` on purpose: measuring a
+         * 13 GB tree takes seconds, and only the panel needs the number.
+         */
+        val legacyGlobalPresent: Boolean = false,
+        val legacyGlobalMb: Int = 0,
     )
 
     data class Tools(
@@ -174,6 +183,14 @@ object Protocol {
         /** One entry per step, in first-seen order, showing its final state. */
         val steps: List<Step> by lazy { finalStepsOf(events) }
 
+        /**
+         * What the legacy cleanup reclaimed, when this run was that cleanup: (MB, shims).
+         *
+         * The step emits it as a `data` payload; without reading it the app could only say
+         * "done", which is exactly what it said on 8x while removing nothing.
+         */
+        val reclaimed: Pair<Int, Int>? by lazy { reclaimedOf(events) }
+
         /** A failure in two parts: a sentence to act on, and the evidence. */
         fun failure(
             exitCode: Int,
@@ -196,6 +213,13 @@ object Protocol {
 
     /** The `data` payload of a status run, if present. */
     fun snapshot(stdout: String): Snapshot? = snapshotOf(events(stdout))
+
+    private fun reclaimedOf(evs: List<JSONObject>): Pair<Int, Int>? =
+        evs
+            .filter { it.optString("t") == "data" }
+            .mapNotNull { it.optJSONObject("payload") }
+            .firstOrNull { it.has("reclaimed_mb") }
+            ?.let { p -> p.optInt("reclaimed_mb") to p.optInt("shims") }
 
     private fun snapshotOf(evs: List<JSONObject>): Snapshot? {
         val payload =
@@ -226,6 +250,8 @@ object Protocol {
                         allowExternalApps = t.optBoolean("allow_external_apps"),
                         bootInstalled = t.optBoolean("boot_installed"),
                         dozeWhitelisted = t.optBoolean("doze_whitelisted"),
+                        legacyGlobalPresent = t.optJSONObject("legacy_global")?.optBoolean("present") ?: false,
+                        legacyGlobalMb = t.optJSONObject("legacy_global")?.optInt("mb") ?: 0,
                     ),
                 tools =
                     Tools(

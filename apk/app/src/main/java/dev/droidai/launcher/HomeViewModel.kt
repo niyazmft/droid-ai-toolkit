@@ -304,7 +304,7 @@ class HomeViewModel(
             _state.update { it.copy(failure = null) }
             persistFailure(null)
         }
-        if (fromUser) say(if (completion.label.isBlank()) "Done" else "${completion.label} — done")
+        if (fromUser) say(completionMessage(completion, parsed))
         markFailed(completion, failed = false)
 
         // Route on the payload, not on which button was pressed: a probe result is still in
@@ -349,6 +349,29 @@ class HomeViewModel(
         // refresh above took the transport slot, [maybeRequestCatalog] skips and the
         // completion handler for *that* run will ask instead.
         maybeRequestCatalog()
+    }
+
+    /**
+     * What to say when a run finishes.
+     *
+     * The cleanup action reports what it removed, and that number is the only proof it did
+     * anything: on 8x the same action said "done" while removing nothing (the tree was already
+     * gone), which reads identically to success. "Reclaimed 12.9 GB" does not.
+     */
+    private fun completionMessage(
+        completion: Completion,
+        parsed: Protocol.Parsed,
+    ): String {
+        val label = if (completion.label.isBlank()) "Done" else "${completion.label} — done"
+        val reclaimed = parsed.reclaimed ?: return label
+        val (mb, shims) = reclaimed
+        if (mb <= 0 && shims <= 0) return "Nothing to remove — already clean"
+        val size =
+            when {
+                mb >= 1024 -> String.format(java.util.Locale.US, "%.1f GB", mb / 1024.0)
+                else -> "$mb MB"
+            }
+        return "Reclaimed $size, removed $shims shortcut(s)"
     }
 
     private fun markFailed(
