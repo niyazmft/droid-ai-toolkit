@@ -776,16 +776,32 @@ Two rules follow, both learned the hard way:
   it did nothing until the next unlock. `onStartCommand` re-posts and the permission callback
   starts the service again (`lastStartId 1 → 2` on the device).
 
-Also measured on a **clean** Termux 0.119.0-beta.3 / Android 16, both unfixed and both real
-first-run blockers:
+### The app provisions Termux; the user does not (measured on a clean S22)
 
-1. `pkg` refuses with "No mirror or mirror group selected" because `curl` cannot link
-   (`SSL_set_quic_tls_early_data_enabled` — a libcurl/openssl package mismatch), while plain
-   `apt update` works. The app's bootstrap (`pkg install -y git curl` + clone) therefore cannot
-   run, and the user is told the toolkit could not be downloaded.
-2. `--api` requires **`jq`**, which nothing installs. The gate correctly reports
-   `jq is required for the --api interface` but the app only says "the app reached Termux, but it
-   did not answer as expected" — map known prerequisites to a sentence plus the `apt` line.
+A clean Termux 0.119.0-beta.3 on Android 16 exposed two first-run blockers, and the first rule
+they imply: **the user should never open Termux except for `allow-external-apps`.**
+
+1. **`--api` needs `jq` and nothing installed it.** `install.sh --api` refuses without jq (the
+   TUI installs it in `ensure_deps()`; a headless run has no terminal to answer apt with). The
+   launcher in `Termux.kt` now installs jq (then git/curl/tar) **before** it execs an existing
+   checkout, so a checkout whose jq went missing is repaired instead of failing. It tries `pkg`,
+   then `apt update` + `apt` — on that device `pkg` refuses with "No mirror or mirror group
+   selected" because its own curl cannot link (`SSL_set_quic_tls_early_data_enabled`), while
+   `apt` works. If provisioning still fails the launcher emits
+   `{"t":"error","code":6,"msg":"missing-packages: …","hint":"…"}`, which the app turns into a
+   screen naming the tool and the exact line — never "something went wrong".
+2. **`api_catalog` returned `{"schema":1,"actions":[]}` on that checkout** while 40 valid specs
+   sat on disk and `find`/`jq` both worked by hand. The `find … | head -1` probe plus
+   `xargs -0 jq` pipeline is gone: `api_spec_files` collects `"$dir"/*/*.json` with a bash glob
+   and one `jq -cs` builds the document. No find, no xargs, no SIGPIPE, and nothing that needs
+   findutils installed. Symptom to remember: the app faithfully renders "0 of 0 installed"
+   because the *catalog it was given* was empty — check `install.sh --api list` first.
+
+`Gate.classify` is now a pure function with unit tests (`GateClassifyTest`), because the mapping
+from "jq is required" to a generic error screen is exactly what hid this for a whole session.
+Onboarding copy states the split plainly: Setup downloads the toolkit and installs the tools it
+needs; the one thing it cannot do is flip `allow-external-apps`, because Android does not let one
+app change another app's settings.
 
 - **Foreground service types are declared, not guessed.** `specialUse` +
   `FOREGROUND_SERVICE_SPECIAL_USE`, and `POST_NOTIFICATIONS` is requested in context. With
