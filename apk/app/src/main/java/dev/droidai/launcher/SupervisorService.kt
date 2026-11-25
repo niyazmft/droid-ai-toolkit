@@ -93,15 +93,7 @@ class SupervisorService : Service() {
         // The type is passed explicitly on API 34+: the platform verifies it against the
         // manifest declaration *and* the FOREGROUND_SERVICE_SPECIAL_USE grant, which is the
         // check that a `dataSync` declaration without FOREGROUND_SERVICE_DATA_SYNC was failing.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification("Starting…", "watching the toolkit"),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification("Starting…", "watching the toolkit"))
-        }
+        post(notification("Starting…", "watching the toolkit"))
         postedTitle = "Starting…"
         postedText = "watching the toolkit"
 
@@ -131,6 +123,11 @@ class SupervisorService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // Re-post on every start. On API 33+ the first post can happen before the user grants
+        // POST_NOTIFICATIONS, and the notification is then invisible while the service runs;
+        // an unchanged status never calls update(), so it would stay invisible until the next
+        // unlock. Starting the service again after the grant is what makes "Allow" take effect.
+        post(notification(postedTitle ?: "Starting…", postedText ?: "watching the toolkit"))
         return START_STICKY
     }
 
@@ -292,6 +289,15 @@ class SupervisorService : Service() {
             .setContentIntent(open)
             .addAction(0, "Stop", stop)
             .build()
+    }
+
+    /** `startForeground` with the declared type, which is mandatory from API 34. */
+    private fun post(n: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, n)
+        }
     }
 
     private fun createChannel() {

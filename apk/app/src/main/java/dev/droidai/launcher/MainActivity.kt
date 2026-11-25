@@ -116,6 +116,9 @@ class MainActivity : ComponentActivity() {
             // Asked once: Prefs.setNotificationAsked() ran before the dialog opened, so a
             // denial is respected and the user can still turn it on from Settings → Apps.
             refreshNotifications()
+            // Re-start the supervisor so it re-posts: the first post happened while the
+            // permission was missing, and an unchanged status never re-notifies by itself.
+            if (notificationsGranted.value) SupervisorService.start(this)
         }
 
     /** Set once a probe has failed, so returning from Termux re-checks by itself. */
