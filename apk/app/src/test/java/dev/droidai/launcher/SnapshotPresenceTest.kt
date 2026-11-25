@@ -155,34 +155,42 @@ class SnapshotMergeTest {
  */
 class LegacyGlobalTest {
     private fun parse(termux: String): Protocol.Snapshot =
-        Protocol.parse(
-            """{"t":"data","kind":"snapshot","payload":{""" +
-                """"device":{"model":"x","android":"10","api":29,"abi":"a","arch":"aarch64",""" +
-                """"mem_total_mb":1,"mem_available_mb":1,"swap_total_mb":0,"swap_free_mb":0,""" +
-                """"disk_free_mb":1,"hardlinks":true},""" +
-                """"termux":$termux,""" +
-                """"tools":{"node":"","pnpm":"","python":"","pm2_installed":false,""" +
-                """"openclaw":"","hermes":"","n8n":"","ollama":""},""" +
-                """"services":[],"checks":{}}}""",
-        ).snapshot ?: error("must parse")
+        Protocol
+            .parse(
+                """{"t":"data","kind":"snapshot","payload":{""" +
+                    """"device":{"model":"x","android":"10","api":29,"abi":"a","arch":"aarch64",""" +
+                    """"mem_total_mb":1,"mem_available_mb":1,"swap_total_mb":0,"swap_free_mb":0,""" +
+                    """"disk_free_mb":1,"hardlinks":true},""" +
+                    """"termux":$termux,""" +
+                    """"tools":{"node":"","pnpm":"","python":"","pm2_installed":false,""" +
+                    """"openclaw":"","hermes":"","n8n":"","ollama":""},""" +
+                    """"services":[],"checks":{}}}""",
+            ).snapshot ?: error("must parse")
 
     @Test
     fun `a migrated device has no legacy folder`() {
-        val snap = parse("""{"version":"0.119.0","allow_external_apps":true,"boot_installed":true,"doze_whitelisted":false,"legacy_global":{"present":false,"mb":0}}""")
+        val snap =
+            parse(
+                """{"version":"0.119.0","allow_external_apps":true,"boot_installed":true,"doze_whitelisted":false,"legacy_global":{"present":false,"mb":0}}""",
+            )
         assertEquals(false, snap.termux.legacyGlobalPresent)
         assertEquals(0, snap.termux.legacyGlobalMb)
     }
 
     @Test
     fun `a device with the old tree reports its size in MB`() {
-        val snap = parse("""{"version":"0.119.0","allow_external_apps":true,"boot_installed":true,"doze_whitelisted":false,"legacy_global":{"present":true,"mb":13200}}""")
+        val snap =
+            parse(
+                """{"version":"0.119.0","allow_external_apps":true,"boot_installed":true,"doze_whitelisted":false,"legacy_global":{"present":true,"mb":13200}}""",
+            )
         assertEquals(true, snap.termux.legacyGlobalPresent)
         assertEquals(13200, snap.termux.legacyGlobalMb)
     }
 
     @Test
     fun `an engine without the field reads as absent, not as zero bytes present`() {
-        val snap = parse("""{"version":"0.119.0","allow_external_apps":true,"boot_installed":true,"doze_whitelisted":false}""")
+        val snap =
+            parse("""{"version":"0.119.0","allow_external_apps":true,"boot_installed":true,"doze_whitelisted":false}""")
         assertEquals(false, snap.termux.legacyGlobalPresent)
     }
 
