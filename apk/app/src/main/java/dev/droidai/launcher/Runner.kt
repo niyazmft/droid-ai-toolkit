@@ -385,12 +385,12 @@ object Runner {
      * cannot fix it, on the one screen a new user is guaranteed to see.
      */
     private fun classify(result: RunResult) {
-        val all = "${result.errmsg}\n${result.stderr}\n${result.stdout}"
-        val lower = all.lowercase()
-
-        if (result.exitCode == 0 && result.stdout.contains("\"t\":\"data\"")) {
+        val probe = Gate.classify(result.exitCode, result.stdout, result.stderr, result.errmsg)
+        if (probe == Probe.READY) {
             Gate.probe.value = Probe.READY
             Gate.detail.value = ""
+            Gate.message.value = ""
+            Gate.fix.value = ""
             // Remember success: the next launch opens on the Overview instead of spending
             // the probe's ten seconds on a loading screen for a device that already works.
             Prefs.setTermuxReady(true)
@@ -398,17 +398,26 @@ object Runner {
         }
 
         Prefs.setTermuxReady(false)
-        Gate.probe.value =
-            when {
-                lower.contains("allow-external-apps") -> Probe.DENIED
-                lower.contains("toolkit not found") ||
-                    lower.contains("first-run setup") ||
-                    lower.contains("lib/ not found") -> Probe.NO_TOOLKIT
-                result.stdout.isBlank() && result.stderr.isBlank() && result.errmsg.isBlank() ->
-                    Probe.UNREACHABLE
-                else -> Probe.ERROR
+
+        // The engine writes its errors for a person. Use its sentence as the screen's body and
+        // its hint as the remedy, instead of an apology plus a collapsed details block.
+        val error = Protocol.events(result.stdout).firstOrNull { it.optString("t") == "error" }
+        val engineMessage = error?.optString("msg").orEmpty()
+        val engineHint = error?.optString("hint").orEmpty()
+        val engineDetail = error?.optString("detail").orEmpty()
+
+        Gate.message.value = engineMessage
+        Gate.fix.value =
+            engineHint.ifBlank {
+                if (probe == Probe.NEEDS_PACKAGES) "apt update && apt full-upgrade && apt install -y jq" else ""
             }
-        Gate.detail.value = summarise(result)
+        Gate.probe.value = probe
+        Gate.detail.value =
+            listOfNotNull(
+                engineMessage.takeIf { it.isNotBlank() },
+                engineDetail.takeIf { it.isNotBlank() },
+                summarise(result),
+            ).joinToString("\n")
     }
 
     /** Three lines, exit code included: the gate has to be diagnosable, not just red. */

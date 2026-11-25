@@ -225,6 +225,8 @@ class MainActivity : ComponentActivity() {
         val permission by Gate.permissionGranted.collectAsStateWithLifecycle()
         val probe by Gate.probe.collectAsStateWithLifecycle()
         val detail by Gate.detail.collectAsStateWithLifecycle()
+        val message by Gate.message.collectAsStateWithLifecycle()
+        val fix by Gate.fix.collectAsStateWithLifecycle()
         val readyBefore by Prefs.termuxReady.collectAsStateWithLifecycle()
         val notifGranted by notificationsGranted.collectAsStateWithLifecycle()
 
@@ -291,11 +293,12 @@ class MainActivity : ComponentActivity() {
                 Setup(
                     title = "One-time setup in Termux",
                     body =
-                        "Termux ignores commands from other apps until you allow them. That is a " +
-                            "safety feature protecting your shell — it is not a fault in this app, " +
-                            "and it is the only step it cannot do for you.\n\n" +
-                            "Copy the line below, paste it into Termux, and press Enter. You only " +
-                            "do this once.",
+                        "Setup does the rest itself: it downloads the toolkit into Termux and " +
+                            "installs the few command-line tools it needs.\n\n" +
+                            "This one step it cannot do. Android does not let one app change " +
+                            "another app's settings, so you have to allow commands from other " +
+                            "apps inside Termux. Copy the line below, paste it into Termux, and " +
+                            "press Enter. You only do this once.",
                     code = Termux.ALLOW_EXTERNAL_APPS,
                     note =
                         "Then come back here — the app checks again by itself.\n\n" +
@@ -315,12 +318,39 @@ class MainActivity : ComponentActivity() {
                     detail = detail,
                 )
 
+            probe == Probe.NEEDS_PACKAGES ->
+                Setup(
+                    title = "Termux is missing a tool",
+                    body =
+                        (message.ifBlank { "Setup could not install everything it needs." }) +
+                            "\n\nSetup installs the command-line tools it needs by itself. This time " +
+                            "Termux's package manager refused, which happens when Termux's own packages " +
+                            "are out of step with each other. One line in Termux fixes it.",
+                    code = fix.ifBlank { "apt update && apt full-upgrade && apt install -y jq" },
+                    note =
+                        "After that, come back here and the app carries on by itself. If it still " +
+                            "fails, the details below say exactly what Termux answered.",
+                    primary =
+                        "Copy the line and open Termux" to {
+                            markRecheck()
+                            Termux.openTermux(this@MainActivity)
+                        },
+                    secondary =
+                        "Try again" to {
+                            Gate.refresh(this@MainActivity)
+                            Termux.probe(this@MainActivity)
+                        },
+                    detail = detail,
+                )
+
             probe == Probe.NO_TOOLKIT ->
                 Setup(
                     title = "Setup did not finish",
                     body =
-                        "Droid AI could not download its toolkit into Termux. This needs a working " +
-                            "internet connection the first time.",
+                        (if (message.isNotBlank()) "$message.\n\n" else "") +
+                            "Droid AI tried to download its toolkit into Termux and could not. " +
+                            "This needs a working internet connection the first time, and a Termux " +
+                            "whose package manager works.",
                     note = "Check Wi-Fi or mobile data, then try again. Nothing on your device was changed.",
                     primary =
                         "Try again" to {
@@ -353,8 +383,11 @@ class MainActivity : ComponentActivity() {
 
             else ->
                 Setup(
-                    title = "Something went wrong",
-                    body = "The app reached Termux, but it did not answer as expected.",
+                    title = "Termux refused a command",
+                    body =
+                        (if (message.isNotBlank()) "$message." else "") +
+                            "\n\nThe app reached Termux, but the answer was not something it " +
+                            "understands. The details below are Termux's own words.",
                     primary =
                         "Try again" to {
                             Gate.refresh(this@MainActivity)
@@ -439,7 +472,15 @@ private fun Setup(
         }
 
         Button(
-            onClick = primary.second,
+            onClick = {
+                // The label says "Copy the line and open Termux", so copy. It used to only open
+                // Termux and leave the user to find the copy button.
+                code?.let {
+                    clipboard.setText(AnnotatedString(it))
+                    copied = true
+                }
+                primary.second()
+            },
             shape = androidx.compose.foundation.shape.CircleShape,
             modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
         ) { Text(primary.first, style = UiType.pill) }
@@ -762,6 +803,12 @@ private fun Home(
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             vm.notices.collect { snackbar.showSnackbar(it) }
         }
+    }
+
+    // Opening Packages is an explicit ask for the tool list: allow one more attempt if the
+    // first one was lost to a busy transport (see HomeViewModel.onCatalogScreenOpened).
+    LaunchedEffect(tab) {
+        if (tab == Tab.PACKAGES) vm.onCatalogScreenOpened()
     }
 
     // Raw output is a sub-screen of Overview, so Back must pop it — not quit the app.

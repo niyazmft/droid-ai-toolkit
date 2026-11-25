@@ -355,12 +355,38 @@ class HomeViewModel(
         Runner.send(app, listOf("--api", "status"), Origin.REFRESH, "Refresh")
     }
 
+    /**
+     * Ask for the catalog once the device is idle.
+     *
+     * The latch is set only when the request was actually dispatched. It used to be set *before*
+     * `send`, and a SYSTEM send is skipped when another run holds the transport — on a phone
+     * where the supervisor's first `--fast` poll lands in the same instant as the startup probe,
+     * that one skipped request latched "already asked" and Packages stayed on "0 of 0 installed"
+     * for the life of the process.
+     */
     private fun maybeRequestCatalog() {
         val current = _state.value
         if (catalogRequested || current.snapshot == null || current.actions.isNotEmpty()) return
         if (Runner.running.value) return
-        catalogRequested = true
-        Runner.send(app, listOf("--api", "list"), Origin.SYSTEM, "Read the tool list")
+        when (Runner.send(app, listOf("--api", "list"), Origin.SYSTEM, "Read the tool list")) {
+            // Anything but a skip decides the question: either it is on its way, or Termux
+            // could not be started at all and retrying in a loop helps nobody.
+            Dispatch.SENT, Dispatch.FAILED -> catalogRequested = true
+            // The slot was taken (probe, supervisor poll, or a queued tap): try again when that
+            // run completes, which is what the completion handler does.
+            Dispatch.SKIPPED, Dispatch.QUEUED -> Unit
+        }
+    }
+
+    /**
+     * The user opened Packages and it is still empty: allow one more attempt.
+     *
+     * Belt and braces on top of the retry above — a screen that says "Reading the tool list…"
+     * forever is worse than a slightly eager request, and opening the tab is an explicit ask.
+     */
+    fun onCatalogScreenOpened() {
+        if (_state.value.actions.isEmpty()) catalogRequested = false
+        maybeRequestCatalog()
     }
 
     private fun startClock() {

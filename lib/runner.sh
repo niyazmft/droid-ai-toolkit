@@ -16,35 +16,49 @@ runner_actions_dir() {
     printf '%s/actions' "${TOOLKIT_DIR:-.}"
 }
 
+# api_spec_files -- every spec path, as words in FILES.
+#
+# A bash glob, deliberately: the previous `find … | head -1` + `xargs -0 jq` pipeline returned
+# nothing on a clean Termux on Android 16 even though `find` and `jq` both worked by hand — the
+# app then rendered "0 of 0 installed" with no way to tell why. Globs cost no processes, remove
+# find/xargs as runtime dependencies (a fresh Termux may not have findutils), and cannot die of
+# SIGPIPE from `head`.
+api_spec_files() {
+    local dir f
+    FILES=()
+    dir=$(runner_actions_dir)
+    [ -d "$dir" ] || return 1
+    for f in "$dir"/*/*.json "$dir"/*.json; do
+        if [ -f "$f" ]; then
+            FILES+=("$f")
+        fi
+    done
+    [ ${#FILES[@]} -gt 0 ]
+}
+
 # api_catalog -- every spec that declares itself valid, as one JSON document.
 # The app renders this; adding a tool must not require an APK release.
 api_catalog() {
-    local dir found
-    dir=$(runner_actions_dir)
-    if [ -d "$dir" ]; then
-        found=$(find "$dir" -type f -name '*.json' 2>/dev/null | head -1)
-        if [ -n "$found" ]; then
-            find "$dir" -type f -name '*.json' -print0 2>/dev/null \
-                | xargs -0 jq -c 'select(.schema == 1 and (.id | type) == "string")' 2>/dev/null \
-                | jq -cs '{schema:1, actions: sort_by(.category, .title)}'
-            return 0
-        fi
+    if ! api_spec_files; then
+        printf '{"schema":1,"actions":[]}\n'
+        return 0
     fi
-    printf '{"schema":1,"actions":[]}\n'
+    # One jq for all specs: --slurp reads them in order, and the filter drops anything that is
+    # not a v1 spec instead of failing the whole catalog on one bad file.
+    jq -cs 'map(select(.schema == 1 and (.id | type) == "string"))
+            | {schema: 1, actions: sort_by(.category, .title)}' "${FILES[@]}"
 }
 
 # api_find_action <id> -- path to the spec, or non-zero when unknown
 api_find_action() {
-    local id="$1" dir f
-    dir=$(runner_actions_dir)
-    [ -d "$dir" ] || return 1
-    while IFS= read -r f; do
-        [ "$(jq -r '.id // empty' "$f" 2>/dev/null)" = "$id" ] || continue
-        printf '%s' "$f"
-        return 0
-    done <<EOF
-$(find "$dir" -type f -name '*.json' 2>/dev/null)
-EOF
+    local id="$1" f
+    api_spec_files || return 1
+    for f in "${FILES[@]}"; do
+        if [ "$(jq -r '.id // empty' "$f" 2>/dev/null)" = "$id" ]; then
+            printf '%s' "$f"
+            return 0
+        fi
+    done
     return 1
 }
 

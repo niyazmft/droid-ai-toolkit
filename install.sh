@@ -6560,7 +6560,10 @@ if [ "$API_MODE" -eq 1 ]; then
         exit 2
     fi
     if ! command -v jq >/dev/null 2>&1; then
-        printf '%s\n' '{"t":"error","code":3,"msg":"jq is required for the --api interface"}'
+        # The TUI installs this in ensure_deps(); the API cannot, because it has no terminal to
+        # answer apt with. Say what is missing and how to fix it, so the app can show a screen
+        # instead of "something went wrong".
+        printf '%s\n' '{"t":"error","code":3,"msg":"jq is required for the --api interface","missing":"jq","hint":"apt install -y jq"}'
         exit 3
     fi
     # shellcheck source=lib/json.sh

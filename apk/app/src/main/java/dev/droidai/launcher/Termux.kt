@@ -62,25 +62,79 @@ object Termux {
      */
     private val launcher =
         """
+        # install_pkg <names...>: the app installs what it needs, so the user never opens Termux
+        # for it. `pkg` is only a wrapper and on some devices its mirror check fails ("No mirror
+        # or mirror group selected" — its own curl cannot link); plain `apt` still works, so both
+        # are tried, with an `apt update` in between.
+        install_pkg() {
+          pkg install -y "${'$'}@" >/dev/null 2>&1 && return 0
+          apt update >/dev/null 2>&1
+          apt install -y "${'$'}@" >/dev/null 2>&1 && return 0
+          return 1
+        }
+
+        # 1. jq is what `install.sh --api` refuses to run without, so it is checked before
+        #    anything else — including an existing checkout, which used to be exec'd straight away
+        #    and then fail on a device where jq had gone missing.
+        if ! command -v jq >/dev/null 2>&1; then
+          install_pkg jq
+        fi
+        if ! command -v jq >/dev/null 2>&1; then
+          printf '%s\n' '{"t":"error","code":6,"msg":"missing-packages: jq","missing":"jq","hint":"apt update && apt full-upgrade && apt install -y jq"}'
+          exit 6
+        fi
+
+        # 2. An existing checkout wins: no download, no network.
         for d in "${'$'}HOME/droid-ai-toolkit" "${'$'}HOME/toolkit-test"; do
           if [ -f "${'$'}d/install.sh" ]; then
             cd "${'$'}d" || exit 1
             exec bash ./install.sh "${'$'}@"
           fi
         done
+
+        # 3. Fetching needs git/curl/tar; the toolkit itself needs nothing else.
+        missing=""
+        for c in git curl tar; do
+          command -v "${'$'}c" >/dev/null 2>&1 || missing="${'$'}missing ${'$'}c"
+        done
+        if [ -n "${'$'}missing" ]; then
+          install_pkg ${'$'}missing
+        fi
+        missing=""
+        for c in git curl tar; do
+          command -v "${'$'}c" >/dev/null 2>&1 || missing="${'$'}missing ${'$'}c"
+        done
+        if [ -n "${'$'}missing" ]; then
+          printf '%s\n' "{\"t\":\"error\",\"code\":6,\"msg\":\"missing-packages:${'$'}missing\",\"missing\":\"${'$'}missing\",\"hint\":\"apt update && apt full-upgrade && apt install -y${'$'}missing\"}"
+          exit 6
+        fi
+
+        # 4. Download into a temporary directory; move it into place only when it arrived, so a
+        #    failed download cannot leave a half-written checkout behind.
         DEST="${'$'}HOME/droid-ai-toolkit"
-        command -v git >/dev/null 2>&1 || pkg install -y git >/dev/null 2>&1
-        command -v curl >/dev/null 2>&1 || pkg install -y curl >/dev/null 2>&1
-        rm -rf "${'$'}DEST"
-        if git clone --depth 1 $REPO_URL "${'$'}DEST" >/dev/null 2>&1; then
+        TMP="${'$'}HOME/.droid-ai-toolkit-fetch"
+        LOG="${'$'}HOME/.droid_ai_toolkit"
+        mkdir -p "${'$'}LOG" 2>/dev/null
+        rm -rf "${'$'}TMP"
+        if git clone --depth 1 $REPO_URL "${'$'}TMP" >/dev/null 2>"${'$'}LOG/clone.err"; then
           :
-        elif curl -fsSL $TARBALL_URL | tar -xz -C "${'$'}HOME" >/dev/null 2>&1; then
-          mv "${'$'}HOME/droid-ai-toolkit-main" "${'$'}DEST" >/dev/null 2>&1
+        elif curl -fsSL $TARBALL_URL -o "${'$'}TMP.tgz" >/dev/null 2>&1 &&
+             mkdir -p "${'$'}TMP" &&
+             tar -xzf "${'$'}TMP.tgz" -C "${'$'}TMP" --strip-components=1 >/dev/null 2>&1; then
+          :
+        fi
+        if [ -f "${'$'}TMP/install.sh" ]; then
+          rm -rf "${'$'}DEST"
+          mv "${'$'}TMP" "${'$'}DEST"
+          rm -f "${'$'}TMP.tgz"
         fi
         if [ -f "${'$'}DEST/install.sh" ]; then
           cd "${'$'}DEST" && exec bash ./install.sh "${'$'}@"
         fi
-        printf '%s\n' '{"t":"error","code":4,"msg":"first-run setup could not download the toolkit: no network, or git and curl are both unavailable"}'
+
+        # 5. Say why, with the evidence, instead of "it did not work".
+        why=$(tail -3 "${'$'}LOG/clone.err" 2>/dev/null | tr -d '"' | tr '\n' ' ')
+        printf '%s\n' "{\"t\":\"error\",\"code\":4,\"msg\":\"could not download the toolkit\",\"detail\":\"${'$'}why\"}"
         exit 4
         """.trimIndent()
 

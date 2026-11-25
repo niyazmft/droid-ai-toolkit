@@ -35,6 +35,15 @@ enum class Probe {
     /** Termux refused the intent: allow-external-apps is off. */
     DENIED,
 
+    /**
+     * Termux is working, but a command-line tool Setup needs could not be installed.
+     *
+     * Distinct from [ERROR] because it has a remedy the app can print: a clean Termux on
+     * Android 16 refused `pkg` (its curl cannot link) and `--api` will not run without jq, so
+     * the honest screen is "one package is missing, paste this", not "something went wrong".
+     */
+    NEEDS_PACKAGES,
+
     /** Nothing came back at all — Termux's process is gone (LMK) or it is not running. */
     UNREACHABLE,
 
@@ -51,6 +60,17 @@ object Gate {
     /** The engine's own words, for the "technical details" disclosure. Never the only message. */
     val detail = MutableStateFlow("")
 
+    /**
+     * One sentence from the engine that a person can act on, when it sent one.
+     *
+     * The engine writes these for humans ("jq is required for the --api interface"), so the
+     * screens use them as the body instead of a generic apology plus a hidden details block.
+     */
+    val message = MutableStateFlow("")
+
+    /** The exact line that fixes [NEEDS_PACKAGES], from the engine's `hint` when it offers one. */
+    val fix = MutableStateFlow("")
+
     fun refresh(context: Context) {
         termuxInstalled.value =
             runCatching {
@@ -65,5 +85,34 @@ object Gate {
     fun resetProbe() {
         probe.value = Probe.CHECKING
         detail.value = ""
+        message.value = ""
+        fix.value = ""
+    }
+
+    /**
+     * Which gate failed, decided from the engine's own reply.
+     *
+     * Pure and public so it can be unit-tested: this mapping is what turned "jq is required for
+     * the --api interface" into a generic "something went wrong" on a clean Android 16 device.
+     * Order matters — READY first, and the prerequisite markers before the allow-external-apps
+     * text, which can also appear in unrelated output.
+     */
+    fun classify(
+        exitCode: Int,
+        stdout: String,
+        stderr: String,
+        errmsg: String,
+    ): Probe {
+        val lower = "$errmsg\n$stderr\n$stdout".lowercase()
+        return when {
+            exitCode == 0 && stdout.contains("\"t\":\"data\"") -> Probe.READY
+            lower.contains("missing-packages:") || lower.contains("jq is required") -> Probe.NEEDS_PACKAGES
+            lower.contains("allow-external-apps") -> Probe.DENIED
+            lower.contains("toolkit not found") ||
+                lower.contains("first-run setup") ||
+                lower.contains("lib/ not found") -> Probe.NO_TOOLKIT
+            stdout.isBlank() && stderr.isBlank() && errmsg.isBlank() -> Probe.UNREACHABLE
+            else -> Probe.ERROR
+        }
     }
 }
