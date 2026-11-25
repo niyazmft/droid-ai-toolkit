@@ -750,6 +750,43 @@ real defect. Before adding a screen, read this list:
 - **Parse once.** `Protocol.parse(stdout)` returns a `Parsed` holder; deriving snapshot,
   catalogue, steps and failure from it is an O(1) view. Calling the old per-view functions
   re-parses the whole stream each time — five times per result, on the main thread.
+
+### Android 14+ is where the supervisor used to die (verified on API 36)
+
+Neither test device (y6 API 28, 8x API 29) could ever exercise this, so it went unnoticed:
+a `foregroundServiceType="dataSync"` declaration with only `FOREGROUND_SERVICE` makes
+`startForeground()` throw on **any** Android 14+ phone. Measured A/B on an S22 (Android 16 /
+API 36, `SM-S901E`), same APK lineage:
+
+```text
+SecurityException: Starting FGS with type dataSync callerApp=… targetSDK=34
+  requires permissions: allOf=true [android.permission.FOREGROUND_SERVICE_DATA_SYNC]
+```
+
+…and `dumpsys activity services` showed **no** foreground service: the watchdog was dead on
+arrival. The fixed build reports `isForeground=true … types=0x40000000`
+(`FOREGROUND_SERVICE_TYPE_SPECIAL_USE`) and posts its notification normally.
+
+Two rules follow, both learned the hard way:
+
+- **`specialUse` + `FOREGROUND_SERVICE_SPECIAL_USE`**, not `dataSync`: this service transfers
+  nothing, and `dataSync` also carries a 6 h/24 h cap from targetSdk 35.
+- **Re-post after a notification grant.** The FGS notification is posted in `onCreate`, which can
+  precede `POST_NOTIFICATIONS`; an unchanged status never calls `update()`, so "Allow" looked like
+  it did nothing until the next unlock. `onStartCommand` re-posts and the permission callback
+  starts the service again (`lastStartId 1 → 2` on the device).
+
+Also measured on a **clean** Termux 0.119.0-beta.3 / Android 16, both unfixed and both real
+first-run blockers:
+
+1. `pkg` refuses with "No mirror or mirror group selected" because `curl` cannot link
+   (`SSL_set_quic_tls_early_data_enabled` — a libcurl/openssl package mismatch), while plain
+   `apt update` works. The app's bootstrap (`pkg install -y git curl` + clone) therefore cannot
+   run, and the user is told the toolkit could not be downloaded.
+2. `--api` requires **`jq`**, which nothing installs. The gate correctly reports
+   `jq is required for the --api interface` but the app only says "the app reached Termux, but it
+   did not answer as expected" — map known prerequisites to a sentence plus the `apt` line.
+
 - **Foreground service types are declared, not guessed.** `specialUse` +
   `FOREGROUND_SERVICE_SPECIAL_USE`, and `POST_NOTIFICATIONS` is requested in context. With
   `dataSync` and no type permission, `startForeground()` throws `SecurityException` on
