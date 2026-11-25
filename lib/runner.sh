@@ -302,6 +302,26 @@ api_dispatch() {
             runner_run status
             return $?
             ;;
+        health)
+            # The cheap question the supervisor asks on every unlock: which processes are
+            # alive. Pure bash (lib/health.sh) — no Node, no jq, no `pm2 jlist`.
+            local _health
+            _health=$(mktemp 2>/dev/null) || _health=""
+            if [ -z "$_health" ]; then
+                ev_error 1 "cannot create a temporary file for the health report"
+                return 1
+            fi
+            ev_start health "${API_RUN_ID:-$(date +%s)-$$}"
+            if health_collect "$_health"; then
+                ev_data health "$(cat "$_health")"
+                rm -f "$_health"
+                ev_done 0 "[]"
+                return 0
+            fi
+            rm -f "$_health"
+            ev_error 1 "could not read the health of the toolkit"
+            return 1
+            ;;
         run)
             if [ -z "${API_ACTION:-}" ]; then
                 ev_error 2 "missing action id: --api run <action-id>"
@@ -315,7 +335,7 @@ api_dispatch() {
             return $?
             ;;
         *)
-            ev_error 2 "usage: install.sh --api <list|status|run> [--answers FILE] [--fresh] [--yes]"
+            ev_error 2 "usage: install.sh --api <list|status|health|run> [--answers FILE] [--fresh] [--yes]"
             return 2
             ;;
     esac

@@ -15,6 +15,7 @@ matters for anyone who does not want to install the APK. They must agree because
 ```bash
 bash install.sh --api list
 bash install.sh --api status [--fast]
+bash install.sh --api health
 bash install.sh --api run <action-id> [--answers FILE] [--fresh] [--yes] [--force]
 ```
 
@@ -43,6 +44,33 @@ A consumer must not treat a blank version as "not installed". The flag exists be
 each version probe starts a whole Node or Python interpreter: measured on 8x, a full
 status run costs 22.6 s wall and 18.9 s of user CPU, which is far too much for a timer.
 Use `--fast` for polling, and the full form when a screen is about to display versions.
+
+### `health`
+
+The cheapest question the client asks: **is the toolkit alive?** It reads
+`~/.pm2/pm2.pid`, `~/.pm2/pids/*.pid` and `/proc/<pid>` in pure bash — no `pm2 jlist`, no
+Node, no `jq`, no process spawn — so it answers in tens of milliseconds where
+`status --fast` costs ~6 s on y6 / 7.2 s on 8x (measured 90 ms vs 6065 ms on y6,
+2026-11-25).
+
+```json
+{"t":"data","kind":"health","payload":{
+  "pm2":{"pid":12345,"alive":true},
+  "services":[{"name":"openclaw","pid":12400,"alive":true}],
+  "online":1,"total":1,"node_procs":4,"checked_at":1795637289
+}}
+```
+
+- `pm2.alive` is **not** "the pid file exists". A crashed or LMK-killed daemon leaves
+  `pm2.pid` behind, so liveness is `[ -d /proc/<pid> ]` — and the same rule applies per
+  service, because `~/.pm2/pids/*.pid` survives `pm2 stop`.
+- `total` counts pid files; `online` counts the live ones. They differ exactly when
+  something is wrong, which is the interesting case.
+- `node_procs` is a `/proc` count of `node` processes, for measuring how much a refresh
+  costs (see the Tier-1 numbers in `TASKS.md`).
+- It carries **no versions, memory or catalog**. A caller that needs those uses
+  `status --fast`; this endpoint exists so a per-unlock poll does not pay for them.
+- Stream shape is the same as every other command: `start`, one `data`, `done`.
 
 ## Events (NDJSON, one object per line, stdout)
 

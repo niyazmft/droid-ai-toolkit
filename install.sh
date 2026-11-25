@@ -72,7 +72,7 @@ while [ $# -gt 0 ]; do
             ;;
 
         --run-id)       shift; API_RUN_ID="${1:-}" ;;
-        list|status|run) API_CMD="$1" ;;
+        list|status|health|run) API_CMD="$1" ;;
         -*)             : ;;  # unknown flag: ignore, as before
         *)              [ -z "$API_ACTION" ] && API_ACTION="$1" ;;
     esac
@@ -6572,6 +6572,8 @@ if [ "$API_MODE" -eq 1 ]; then
     . "$TOOLKIT_DIR/lib/state.sh"
     # shellcheck source=lib/preflight.sh
     . "$TOOLKIT_DIR/lib/preflight.sh"
+    # shellcheck source=lib/health.sh
+    . "$TOOLKIT_DIR/lib/health.sh"
     # Termux rewrites "#!<anything>" shebangs through libtermux-exec, which the
     # interactive shell injects via LD_PRELOAD. RUN_COMMAND does not always carry
     # it, and then every shebang script dies with
