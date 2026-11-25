@@ -88,6 +88,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     /**
@@ -592,19 +596,18 @@ private enum class Tab(
 }
 
 /**
- * How old the visible answer is, in the shortest form that is not vague.
+ * When the visible answer was read, as a clock time.
  *
- * It shares the header line with the model and arch — "JSN-L22 · aarch64 · 2m ago" — so it
- * has to be a couple of tokens. The old "checked 2 min ago" was an entire line of prose in
- * a place where every pixel is chrome.
+ * It shares the header line with the model and arch — "JSN-L22 · aarch64 · 14:32" — so it
+ * has to be a couple of tokens. A *relative* age ("2m ago") cannot be rendered once and
+ * left alone: it needs a timer to stay honest, and that timer recomposed the whole Home
+ * screen every 30 s, in the background, to change one word. A fixed time never goes stale.
  */
-private fun ageShort(ageMs: Long): String =
-    when {
-        ageMs < 60_000L -> "just now"
-        ageMs < 3_600_000L -> "${ageMs / 60_000L}m ago"
-        ageMs < 86_400_000L -> "${ageMs / 3_600_000L}h ago"
-        else -> "${ageMs / 86_400_000L}d ago"
-    }
+private fun clockShort(epochMs: Long): String =
+    Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(CLOCK_FMT)
+
+/** Immutable and thread-safe; a fresh `SimpleDateFormat` per call is neither cheap nor needed. */
+private val CLOCK_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
 
 /**
  * The wordmark and the one always-available action.
@@ -744,7 +747,6 @@ private fun Home(
     // the gate's state too — to know when it is safe to start the supervisor.
     val probeState by Gate.probe.collectAsStateWithLifecycle()
 
-    var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
     // rememberSaveable: a rotation or a process death used to drop the user back on
     // Overview with the sub-screen closed and the scroll position lost.
     var showRawScreen by rememberSaveable { mutableStateOf(false) }
@@ -787,17 +789,6 @@ private fun Home(
         }
     }
 
-    // Ages are recomputed while the screen is visible, so "checked 1 min ago" does not sit
-    // there saying "just now" for an hour — but nothing ticks while the app is stopped.
-    LaunchedEffect(lifecycle, s.checkedAt) {
-        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) {
-                nowTick = System.currentTimeMillis()
-                delay(30_000)
-            }
-        }
-    }
-
     // One-shot messages: a completion must be shown once, not re-shown after a rotation.
     LaunchedEffect(lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -833,7 +824,7 @@ private fun Home(
                 detail =
                     s.snapshot?.let { "${it.device.model} · ${it.device.arch}" }
                         ?: "Termux is ready.",
-                age = if (s.snapshot != null && s.checkedAt > 0L) ageShort(nowTick - s.checkedAt) else null,
+                age = if (s.snapshot != null && s.checkedAt > 0L) clockShort(s.checkedAt) else null,
                 onRefresh = { vm.refresh() },
             )
 
