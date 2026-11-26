@@ -70,6 +70,12 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default package list starts with `tools`, which cmdline-tools 16 no
+          # longer publishes: `sdkmanager tools` answers "Failed to find package 'tools'" and
+          # the step dies before anything is built. platform-tools is all we actually need here;
+          # the platform and build-tools are installed by name in the next step.
+          packages: platform-tools
 
       - name: Install SDK packages
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
