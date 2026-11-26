@@ -64,16 +64,20 @@ sourcing every `--api` invocation pays. The ledger that produces these numbers i
 ```json
 {"t":"data","kind":"health","payload":{
   "pm2":{"pid":12345,"alive":true},
-  "services":[{"name":"openclaw","pid":12400,"alive":true}],
-  "online":1,"total":1,"node_procs":4,"checked_at":1795637289
+  "services":[{"name":"openclaw","pid":12400}],
+  "online":1,"stale":0,"total":1,"node_procs":4,"checked_at":1795637289
 }}
 ```
 
 - `pm2.alive` is **not** "the pid file exists". A crashed or LMK-killed daemon leaves
   `pm2.pid` behind, so liveness is `[ -d /proc/<pid> ]` — and the same rule applies per
   service, because `~/.pm2/pids/*.pid` survives `pm2 stop`.
-- `total` counts pid files; `online` counts the live ones. They differ exactly when
-  something is wrong, which is the interesting case.
+- `services` lists **only what is alive**. PM2 leaves `pids/<name>-<id>.pid` behind when a
+  process is deleted or restarted — on 8x the folder held thirteen files for two processes
+  (hermes ×4, ollama ×5, openclaw ×2, paperclip ×2), so listing the files would hand a caller a
+  museum instead of an answer. The leftovers are counted in `stale`, and `total` is
+  `online + stale` so an operator can still see the difference. (This was a real bug found by
+  running the endpoint on the second device.)
 - `node_procs` is a `/proc` count of `node` processes, for measuring how much a refresh
   costs (see the Tier-1 numbers in `TASKS.md`).
 - It carries **no versions, memory or catalog**. A caller that needs those uses

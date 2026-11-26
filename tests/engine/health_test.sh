@@ -41,11 +41,15 @@ engine health
 PAYLOAD=$(printf '%s\n' "$OUT" | jq -s -r '[.[] | select(.t == "data")][0].payload')
 t_eq "true" "$(printf '%s' "$PAYLOAD" | jq -r '.pm2.alive')" "a live daemon pid reads alive"
 t_eq 1 "$(printf '%s' "$PAYLOAD" | jq -r '.online')" "only the live service counts as online"
-t_eq 2 "$(printf '%s' "$PAYLOAD" | jq -r '.total')" "both pid files are reported"
-t_eq "false" "$(printf '%s' "$PAYLOAD" | jq -r '.services[] | select(.name == "n8n") | .alive')" \
-    "a stale pid file is not a running service"
-t_eq "true" "$(printf '%s' "$PAYLOAD" | jq -r '.services[] | select(.name == "openclaw") | .alive')" \
+t_eq 2 "$(printf '%s' "$PAYLOAD" | jq -r '.total')" "total counts both pid files (one live, one stale)"
+t_eq "" "$(printf '%s' "$PAYLOAD" | jq -r '.services[] | select(.name == "n8n") | .name')" \
+    "a stale pid file is not listed as a running service"
+t_eq "openclaw" "$(printf '%s' "$PAYLOAD" | jq -r '.services[].name')" \
     "a live service keeps its name"
+t_eq 1 "$(printf '%s' "$PAYLOAD" | jq -r '.stale')" \
+    "the dead pid file is counted as stale, not listed as a service"
+t_eq 1 "$(printf '%s' "$PAYLOAD" | jq -r '.services | length')" \
+    "services lists only what is alive (8x had 13 files for 2 processes)"
 t_eq "number" "$(printf '%s' "$PAYLOAD" | jq -r '.node_procs | type')" "node_procs is a number"
 
 # ---- it stays cheap --------------------------------------------------------------------

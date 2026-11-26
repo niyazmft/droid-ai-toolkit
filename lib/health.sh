@@ -77,11 +77,16 @@ _h_node_procs() {
 health_collect() {
     local out="${1:-/dev/null}"
     local pm2_pid pm2_alive=false
-    local services="" online=0 total=0 f pid name alive
+    local services="" online=0 stale=0 f pid name
 
     pm2_pid=$(_h_read_pid "$PM2_DIR/pm2.pid")
     if [ -n "$pm2_pid" ] && _h_alive "$pm2_pid"; then pm2_alive=true; fi
 
+    # PM2 keeps `pids/<name>-<id>.pid` after a process is deleted or restarted, so on 8x this
+    # loop saw thirteen files for two real processes: hermes ×4, ollama ×5, openclaw ×2,
+    # paperclip ×2. `services` therefore lists only what is *alive*, and the leftovers are
+    # summarised as `stale` — a consumer that asked "what is running" must not be handed a
+    # museum, and `total` (online + stale) still tells an operator the difference.
     for f in "$PM2_DIR"/pids/*.pid; do
         [ -f "$f" ] || continue
         pid=$(_h_read_pid "$f")
@@ -90,17 +95,16 @@ health_collect() {
         name=${name%-[0-9]*}
         [ -n "$name" ] || continue
         if [ -n "$pid" ] && _h_alive "$pid"; then
-            alive=true
             online=$((online + 1))
+            [ -n "$services" ] && services="$services,"
+            services="$services{\"name\":\"$(_h_escape "$name")\",\"pid\":$pid}"
         else
-            alive=false
+            stale=$((stale + 1))
         fi
-        total=$((total + 1))
-        [ -n "$services" ] && services="$services,"
-        services="$services{\"name\":\"$(_h_escape "$name")\",\"pid\":${pid:-0},\"alive\":$alive}"
     done
 
-    printf '{"pm2":{"pid":%s,"alive":%s},"services":[%s],"online":%s,"total":%s,"node_procs":%s,"checked_at":%s}\n' \
-        "${pm2_pid:-0}" "$pm2_alive" "$services" "$online" "$total" "$(_h_node_procs)" "$(date +%s)" \
+    printf '{"pm2":{"pid":%s,"alive":%s},"services":[%s],"online":%s,"stale":%s,"total":%s,"node_procs":%s,"checked_at":%s}\n' \
+        "${pm2_pid:-0}" "$pm2_alive" "$services" "$online" "$stale" "$((online + stale))" \
+        "$(_h_node_procs)" "$(date +%s)" \
         > "$out" 2>/dev/null
 }
