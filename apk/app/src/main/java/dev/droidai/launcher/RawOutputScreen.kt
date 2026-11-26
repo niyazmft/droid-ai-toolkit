@@ -8,10 +8,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -19,7 +15,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.stringResource
@@ -53,24 +48,22 @@ fun RawOutputScreen(
         }
 
     Column(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
+        // Same 16 dp content margin as Settings and the device facts: the header draws its own
+        // arrow inset, so the body keeps the shared page margin instead of a narrower one.
+        Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = stringResource(R.string.raw_back))
-            }
-            Text(
-                stringResource(R.string.raw_raw_output),
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.weight(1f),
-            )
-            UiPill(
-                label = stringResource(R.string.raw_copy),
-                ghost = true,
-                onClick = { clipboard.setText(AnnotatedString(raw)) },
-            )
-        }
+        SubScreenHeader(
+            title = stringResource(R.string.raw_raw_output),
+            onBack = onBack,
+            action = {
+                UiPill(
+                    label = stringResource(R.string.raw_copy),
+                    ghost = true,
+                    onClick = { clipboard.setText(AnnotatedString(raw)) },
+                )
+            },
+        )
 
         Row(
             Modifier.horizontalScroll(rememberScrollState()),

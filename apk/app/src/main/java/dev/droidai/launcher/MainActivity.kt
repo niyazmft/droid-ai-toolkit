@@ -776,7 +776,9 @@ private fun SoftTabBar(
     current: Tab,
     onSelect: (Tab) -> Unit,
     onOpenPhone: () -> Unit,
-    onSettings: () -> Unit,
+    onSettingsClick: () -> Unit,
+    onSettings: Boolean,
+    onPhone: Boolean,
 ) {
     val p = Skin.palette
     val dim = MaterialTheme.colorScheme.onSurfaceVariant
@@ -795,7 +797,7 @@ private fun SoftTabBar(
                 // which a bare clickable does not report. weight lives inside BarItem.
                 TabItem(
                     tab = t,
-                    selected = t == current,
+                    selected = t == current && !onSettings && !onPhone,
                     onSelect = onSelect,
                 )
             }
@@ -813,7 +815,7 @@ private fun SoftTabBar(
                 icon = Icons.Filled.Info,
                 label = stringResource(R.string.home_device),
                 description = stringResource(R.string.home_about_phone),
-                selected = false,
+                selected = onPhone,
                 tint = dim,
                 onClick = onOpenPhone,
             )
@@ -821,9 +823,9 @@ private fun SoftTabBar(
                 icon = Icons.Filled.Settings,
                 label = stringResource(R.string.home_settings),
                 description = stringResource(R.string.home_settings),
-                selected = false,
+                selected = onSettings,
                 tint = dim,
-                onClick = onSettings,
+                onClick = onSettingsClick,
             )
         }
     }
@@ -1069,15 +1071,33 @@ private fun Home(
         snackbarHost = { SnackbarHost(snackbar) },
         // A sub-screen is a full-page detour, so it has no tab bar: offering one would only
         // invite leaving the page you just opened.
+        // The bar is on every screen, always. It used to disappear on Settings, the device facts
+        // and the raw output — so the one place a thumb goes to move between screens vanished
+        // exactly on the screens that are not the tabs, and Back was the only way out.
         bottomBar = {
-            if (!showSettings && !showRawScreen && !showPhone) {
-                SoftTabBar(
-                    current = tab,
-                    onSelect = { tabName = it.name },
-                    onOpenPhone = { showPhone = true },
-                    onSettings = { showSettings = true },
-                )
-            }
+            SoftTabBar(
+                current = tab,
+                // A sub-screen owns the highlight: Raw Output is reached from Settings, so it
+                // belongs to Settings rather than to the tab underneath.
+                onSettings = showSettings || showRawScreen,
+                onPhone = showPhone,
+                onSelect = {
+                    tabName = it.name
+                    showSettings = false
+                    showPhone = false
+                    showRawScreen = false
+                },
+                onOpenPhone = {
+                    showSettings = false
+                    showRawScreen = false
+                    showPhone = true
+                },
+                onSettingsClick = {
+                    showPhone = false
+                    showRawScreen = false
+                    showSettings = true
+                },
+            )
         },
     ) { pad ->
         when {
@@ -1099,8 +1119,12 @@ private fun Home(
                         onDetails = { showFailureDetails = true },
                         onDismiss = { vm.dismissFailure() },
                     )
+                    SubScreenHeader(
+                        title = stringResource(R.string.phone_about_this_phone),
+                        onBack = { showPhone = false },
+                    )
                     Box(Modifier.weight(1f)) {
-                        PhoneScreen(snapshot = s.snapshot, onBack = { showPhone = false })
+                        PhoneScreen(snapshot = s.snapshot)
                     }
                 }
                 return@Scaffold
@@ -1115,6 +1139,10 @@ private fun Home(
                         state = s,
                         onDetails = { showFailureDetails = true },
                         onDismiss = { vm.dismissFailure() },
+                    )
+                    SubScreenHeader(
+                        title = stringResource(R.string.settings_settings),
+                        onBack = { showSettings = false },
                     )
                     Box(Modifier.weight(1f)) {
                         Column(Modifier.verticalScroll(rememberScrollState())) {

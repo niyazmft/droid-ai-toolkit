@@ -96,11 +96,6 @@ fun SettingsScreen(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(stringResource(R.string.settings_settings), style = MaterialTheme.typography.headlineMedium)
-        TextButton(onClick = onBack, modifier = Modifier.padding(top = 2.dp)) {
-            Text(stringResource(R.string.settings_back))
-        }
-
         Section(stringResource(R.string.settings_startup_services))
         Panel {
             // Copy per PLAN.md §F3.2: a 230-character subtitle was five lines of prose for a

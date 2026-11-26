@@ -7,7 +7,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -34,18 +33,13 @@ import androidx.compose.ui.unit.dp
  * - **Nothing here runs on open.** Opening it costs no command.
  */
 @Composable
-fun PhoneScreen(
-    snapshot: Protocol.Snapshot?,
-    onBack: () -> Unit,
-) {
+fun PhoneScreen(snapshot: Protocol.Snapshot?) {
     Column(
         Modifier
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(stringResource(R.string.phone_about_this_phone), style = MaterialTheme.typography.headlineMedium)
-
         Section(stringResource(R.string.phone_device))
         Panel {
             if (snapshot == null) {
@@ -118,9 +112,5 @@ fun PhoneScreen(
         // keep stopping my tools?".
         Section(stringResource(R.string.phone_memory_over_time))
         PhoneUsage(snapshot = snapshot)
-
-        TextButton(onClick = onBack, modifier = Modifier.padding(top = 8.dp)) {
-            Text(stringResource(R.string.phone_back))
-        }
     }
 }
