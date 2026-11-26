@@ -40,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -265,10 +266,10 @@ fun PackagesScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-            Text("Tools", style = MaterialTheme.typography.headlineMedium)
+            Text(stringResource(R.string.tools_tools), style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.weight(1f))
             Text(
-                "${all.count { it.installed }} of ${all.size} installed",
+                stringResource(R.string.tools_of_installed, all.count { it.installed }, all.size),
                 style = UiType.meta,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 // Sits on the title's baseline rather than on the row's box.
@@ -352,15 +353,20 @@ private fun GroupHeader(
     expanded: Boolean,
     onToggle: () -> Unit,
 ) {
+    // Resolved here, not inside the modifiers: `semantics { }` is a receiver lambda, not a
+    // composable scope, so stringResource cannot be called from inside it.
+    val actionLabel = if (expanded) stringResource(R.string.tools_collapse) else stringResource(R.string.tools_expand)
+    val stateText = if (expanded) stringResource(R.string.tools_expanded) else stringResource(R.string.tools_collapsed)
+
     Row(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 40.dp)
             .clickable(
-                onClickLabel = if (expanded) "Collapse" else "Expand",
+                onClickLabel = actionLabel,
                 role = Role.Button,
                 onClick = onToggle,
-            ).semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
+            ).semantics { stateDescription = stateText },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -370,12 +376,12 @@ private fun GroupHeader(
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            "$count",
+            stringResource(R.string.tools_text, count),
             style = UiType.meta,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.weight(1f))
-        val rotation by animateFloatAsState(if (expanded) 0f else -90f, label = "chevron")
+        val rotation by animateFloatAsState(if (expanded) 0f else -90f, label = stringResource(R.string.tools_chevron))
         Icon(
             Icons.Filled.KeyboardArrowDown,
             contentDescription = null,
@@ -419,7 +425,7 @@ private fun SearchField(
             ) {
                 if (query.isEmpty()) {
                     Text(
-                        "Search tools",
+                        stringResource(R.string.tools_search_tools),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -446,13 +452,13 @@ private fun SearchField(
                 Box(
                     Modifier
                         .size(40.dp)
-                        .clickable(onClickLabel = "Clear search") { onChange("") }
+                        .clickable(onClickLabel = stringResource(R.string.tools_clear_search)) { onChange("") }
                         .semantics { role = Role.Button },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         Icons.Filled.Clear,
-                        contentDescription = "Clear search",
+                        contentDescription = stringResource(R.string.tools_clear_search),
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -499,7 +505,7 @@ private fun ToolRow(
                             StateTone.PLAIN,
                         )
                     row.blocked != null -> UiState(row.blocked, StateTone.PLAIN)
-                    else -> UiState("Not installed", StateTone.PLAIN)
+                    else -> UiState(stringResource(R.string.tools_not_installed), StateTone.PLAIN)
                 }
         }
 
@@ -547,7 +553,7 @@ private fun ToolRow(
                     ) {
                         Icon(
                             Icons.Filled.MoreVert,
-                            contentDescription = "More actions for ${row.title}",
+                            contentDescription = stringResource(R.string.tools_more_actions_for, row.title),
                             modifier = Modifier.size(20.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

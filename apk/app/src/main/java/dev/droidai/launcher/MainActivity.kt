@@ -69,6 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -257,27 +258,26 @@ class MainActivity : ComponentActivity() {
         when {
             !termux ->
                 Setup(
-                    title = "Install Termux first",
+                    title = stringResource(R.string.home_install_termux_first),
                     body =
-                        "Droid AI runs your AI tools inside Termux, a small Linux environment for " +
-                            "Android. Think of Termux as the engine and this app as its dashboard.",
+                        stringResource(R.string.home_droid_ai_runs_your_ai_tools),
                     note =
-                        "Install the F-Droid version, not the one from the Play Store — the Play " +
-                            "Store copy is out of date and the app cannot work with it.",
-                    primary = "Get Termux (F-Droid)" to { openUrl("https://f-droid.org/packages/com.termux/") },
-                    secondary = "I already installed it" to { Gate.refresh(this@MainActivity) },
+                        stringResource(R.string.home_install_the_f_droid_version_not),
+                    primary =
+                        stringResource(R.string.home_get_termux_f_droid) to
+                            { openUrl("https://f-droid.org/packages/com.termux/") },
+                    secondary =
+                        stringResource(R.string.home_i_already_installed_it) to { Gate.refresh(this@MainActivity) },
                 )
 
             !permission ->
                 Setup(
-                    title = "Allow Droid AI to control Termux",
+                    title = stringResource(R.string.home_allow_droid_ai_to_control_termux),
                     body =
-                        "Android asks you to confirm that this app may start commands inside " +
-                            "Termux. Without it the app cannot read your device status or install " +
-                            "anything.",
-                    note = "Nothing is downloaded or changed until you choose to install a tool.",
-                    primary = "Allow" to { requestPermission() },
-                    secondary = "Check again" to { Gate.refresh(this@MainActivity) },
+                        stringResource(R.string.home_android_asks_you_to_confirm_that),
+                    note = stringResource(R.string.home_nothing_is_downloaded_or_changed_until),
+                    primary = stringResource(R.string.home_allow) to { requestPermission() },
+                    secondary = stringResource(R.string.home_check_again) to { Gate.refresh(this@MainActivity) },
                 )
 
             probe == Probe.CHECKING ->
@@ -295,27 +295,19 @@ class MainActivity : ComponentActivity() {
                 screens.SaveableStateProvider(SCREEN_HOME) { Home(vm, notifGranted, ::requestNotifications) }
             probe == Probe.DENIED ->
                 Setup(
-                    title = "One-time setup in Termux",
+                    title = stringResource(R.string.home_one_time_setup_in_termux),
                     body =
-                        "Setup does the rest itself: it downloads the toolkit into Termux and " +
-                            "installs the few command-line tools it needs.\n\n" +
-                            "This one step it cannot do. Android does not let one app change " +
-                            "another app's settings, so you have to allow commands from other " +
-                            "apps inside Termux. Copy the line below, paste it into Termux, and " +
-                            "press Enter. You only do this once.",
+                        stringResource(R.string.home_setup_does_the_rest_itself_it),
                     code = Termux.ALLOW_EXTERNAL_APPS,
                     note =
-                        "Then come back here — the app checks again by itself.\n\n" +
-                            "If you already ran that line and Termux is still refusing it, Termux has " +
-                            "not reloaded its settings yet: swipe Termux away from your recent apps, " +
-                            "then tap Check again.",
+                        stringResource(R.string.home_then_come_back_here_the_app),
                     primary =
-                        "Copy the line and open Termux" to {
+                        stringResource(R.string.home_copy_the_line_and_open_termux) to {
                             markRecheck()
                             Termux.openTermux(this@MainActivity)
                         },
                     secondary =
-                        "Check again" to {
+                        stringResource(R.string.home_check_again) to {
                             Gate.refresh(this@MainActivity)
                             Termux.probe(this@MainActivity)
                         },
@@ -324,23 +316,20 @@ class MainActivity : ComponentActivity() {
 
             probe == Probe.NEEDS_PACKAGES ->
                 Setup(
-                    title = "Termux is missing a tool",
+                    title = stringResource(R.string.home_termux_is_missing_a_tool),
                     body =
                         (message.ifBlank { "Setup could not install everything it needs." }) +
-                            "\n\nSetup installs the command-line tools it needs by itself. This time " +
-                            "Termux's package manager refused, which happens when Termux's own packages " +
-                            "are out of step with each other. One line in Termux fixes it.",
+                            "\n\nSetup installs the command-line tools it needs by itself. This time Termux's package manager refused, which happens when Termux's own packages are out of step with each other. One line in Termux fixes it.",
                     code = fix.ifBlank { "apt update && apt full-upgrade && apt install -y jq" },
                     note =
-                        "After that, come back here and the app carries on by itself. If it still " +
-                            "fails, the details below say exactly what Termux answered.",
+                        stringResource(R.string.home_after_that_come_back_here_and),
                     primary =
-                        "Copy the line and open Termux" to {
+                        stringResource(R.string.home_copy_the_line_and_open_termux) to {
                             markRecheck()
                             Termux.openTermux(this@MainActivity)
                         },
                     secondary =
-                        "Try again" to {
+                        stringResource(R.string.home_try_again) to {
                             Gate.refresh(this@MainActivity)
                             Termux.probe(this@MainActivity)
                         },
@@ -349,36 +338,33 @@ class MainActivity : ComponentActivity() {
 
             probe == Probe.NO_TOOLKIT ->
                 Setup(
-                    title = "Setup did not finish",
+                    title = stringResource(R.string.home_setup_did_not_finish),
                     body =
                         (if (message.isNotBlank()) "$message.\n\n" else "") +
-                            "Droid AI tried to download its toolkit into Termux and could not. " +
-                            "This needs a working internet connection the first time, and a Termux " +
-                            "whose package manager works.",
-                    note = "Check Wi-Fi or mobile data, then try again. Nothing on your device was changed.",
+                            "Droid AI tried to download its toolkit into Termux and could not. This needs a working internet connection the first time, and a Termux whose package manager works.",
+                    note = stringResource(R.string.home_check_wi_fi_or_mobile_data),
                     primary =
-                        "Try again" to {
+                        stringResource(R.string.home_try_again) to {
                             Gate.refresh(this@MainActivity)
                             Termux.probe(this@MainActivity)
                         },
-                    secondary = "Open Termux" to { Termux.openTermux(this@MainActivity) },
+                    secondary = stringResource(R.string.home_open_termux) to { Termux.openTermux(this@MainActivity) },
                     detail = detail,
                 )
 
             probe == Probe.UNREACHABLE ->
                 Setup(
-                    title = "Termux is not responding",
+                    title = stringResource(R.string.home_termux_is_not_responding),
                     body =
-                        "Android stopped Termux to free memory, so it cannot run commands right " +
-                            "now. This is not a settings problem — Termux just needs to be running.",
-                    note = "Open Termux once, then come back. Keeping this app open in the background helps.",
+                        stringResource(R.string.home_android_stopped_termux_to_free_memory),
+                    note = stringResource(R.string.home_open_termux_once_then_come_back),
                     primary =
-                        "Open Termux" to {
+                        stringResource(R.string.home_open_termux) to {
                             markRecheck()
                             Termux.openTermux(this@MainActivity)
                         },
                     secondary =
-                        "Try again" to {
+                        stringResource(R.string.home_try_again) to {
                             Gate.refresh(this@MainActivity)
                             Termux.probe(this@MainActivity)
                         },
@@ -387,17 +373,16 @@ class MainActivity : ComponentActivity() {
 
             else ->
                 Setup(
-                    title = "Termux refused a command",
+                    title = stringResource(R.string.home_termux_refused_a_command),
                     body =
                         (if (message.isNotBlank()) "$message." else "") +
-                            "\n\nThe app reached Termux, but the answer was not something it " +
-                            "understands. The details below are Termux's own words.",
+                            "\n\nThe app reached Termux, but the answer was not something it understands. The details below are Termux's own words.",
                     primary =
-                        "Try again" to {
+                        stringResource(R.string.home_try_again) to {
                             Gate.refresh(this@MainActivity)
                             Termux.probe(this@MainActivity)
                         },
-                    secondary = "Open Termux" to { Termux.openTermux(this@MainActivity) },
+                    secondary = stringResource(R.string.home_open_termux) to { Termux.openTermux(this@MainActivity) },
                     detail = detail,
                 )
         }
@@ -419,9 +404,9 @@ class MainActivity : ComponentActivity() {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             CircularProgressIndicator()
-            Text("Checking your device…", style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.home_checking_your_device), style = MaterialTheme.typography.titleMedium)
             Text(
-                "Reading Termux and the tools you already have.",
+                stringResource(R.string.home_reading_termux_and_the_tools_you),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -471,7 +456,17 @@ private fun Setup(
                         copied = true
                     },
                     modifier = Modifier.heightIn(min = 44.dp),
-                ) { Text(if (copied) "Copied" else "Copy the line") }
+                ) {
+                    Text(
+                        if (copied) {
+                            stringResource(
+                                R.string.home_copied,
+                            )
+                        } else {
+                            stringResource(R.string.home_copy_the_line)
+                        },
+                    )
+                }
             }
         }
 
@@ -507,7 +502,17 @@ private fun Setup(
             TextButton(
                 onClick = { showDetail = !showDetail },
                 modifier = Modifier.heightIn(min = 48.dp),
-            ) { Text(if (showDetail) "Hide technical details" else "Show technical details") }
+            ) {
+                Text(
+                    if (showDetail) {
+                        stringResource(
+                            R.string.home_hide_technical_details,
+                        )
+                    } else {
+                        stringResource(R.string.home_show_technical_details)
+                    },
+                )
+            }
             if (showDetail) {
                 UiCodeBlock(detail)
             }
@@ -649,7 +654,7 @@ internal fun StatusChip(
     neutral: Boolean = false,
 ) {
     UiState(
-        text = label ?: if (online) "Running" else "Stopped",
+        text = label ?: if (online) stringResource(R.string.home_running) else stringResource(R.string.home_stopped),
         tone =
             when {
                 neutral -> StateTone.PLAIN
@@ -708,7 +713,7 @@ private fun AppHeader(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text("Droid AI", style = MaterialTheme.typography.headlineSmall)
+            Text(stringResource(R.string.home_droid_ai), style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.height(2.dp))
             Text(
                 listOfNotNull(detail, age).joinToString(" · "),
@@ -721,7 +726,7 @@ private fun AppHeader(
         IconButton(onClick = onRefresh, modifier = Modifier.size(44.dp)) {
             Icon(
                 Icons.Filled.Refresh,
-                contentDescription = "Refresh",
+                contentDescription = stringResource(R.string.home_refresh),
                 modifier = Modifier.size(20.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -731,7 +736,7 @@ private fun AppHeader(
         IconButton(onClick = onSettings, modifier = Modifier.size(44.dp)) {
             Icon(
                 Icons.Filled.Settings,
-                contentDescription = "Settings",
+                contentDescription = stringResource(R.string.home_settings),
                 modifier = Modifier.size(20.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -822,7 +827,13 @@ private const val TAG = "DroidAI"
 /** Key for the screens' saved state; one screen owns it today, and the name says which. */
 private const val SCREEN_HOME = "home"
 
-/** "1m 20s" — a phone install is measured in minutes, so seconds alone are not enough. */
+/**
+ * "1m 20s" — a phone install is measured in minutes, so seconds alone are not enough.
+ *
+ * Kept as arithmetic rather than a string resource: it is two numbers and a unit, and a
+ * translated format would need arguments at every call site (this is called from a plain
+ * function, not from a composable).
+ */
 private fun elapsedText(seconds: Long): String =
     if (seconds < 60) "${seconds}s" else "${seconds / 60}m ${seconds % 60}s"
 
@@ -1045,24 +1056,28 @@ private fun Home(
                         // act on during testing.
                         if (f.details.isNotEmpty()) {
                             Text(
-                                "Details",
+                                stringResource(R.string.home_details),
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.labelLarge,
                                 modifier =
                                     Modifier
-                                        .clickable(onClickLabel = "Show what failed") { showFailureDetails = true }
-                                        .padding(vertical = 4.dp, horizontal = 4.dp),
+                                        .clickable(onClickLabel = stringResource(R.string.home_show_what_failed)) {
+                                            showFailureDetails =
+                                                true
+                                        }.padding(vertical = 4.dp, horizontal = 4.dp),
                             )
                         }
                         // A verdict that can only be cleared by running something else is a
                         // banner the user cannot get rid of once they have read it.
                         Text(
-                            "Dismiss",
+                            stringResource(R.string.home_dismiss),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.labelLarge,
                             modifier =
                                 Modifier
-                                    .clickable(onClickLabel = "Dismiss the failure") { vm.dismissFailure() }
+                                    .clickable(
+                                        onClickLabel = stringResource(R.string.home_dismiss_the_failure),
+                                    ) { vm.dismissFailure() }
                                     .padding(vertical = 4.dp, horizontal = 4.dp),
                         )
                     }
@@ -1126,7 +1141,7 @@ private fun Home(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showFailureDetails = false }) { Text("Close") }
+                TextButton(onClick = { showFailureDetails = false }) { Text(stringResource(R.string.home_close)) }
             },
             // The dialog replays the last 12 lines of the failing step; the rest of the stream
             // is in Advanced → Diagnostics. Sending the reader there from the evidence is the
@@ -1135,7 +1150,7 @@ private fun Home(
                 TextButton(onClick = {
                     showFailureDetails = false
                     showRawScreen = true
-                }) { Text("Open full output") }
+                }) { Text(stringResource(R.string.home_open_full_output)) }
             },
         )
     }
@@ -1143,34 +1158,31 @@ private fun Home(
     s.capacity?.let { a ->
         AlertDialog(
             onDismissRequest = { vm.cancelCapacity() },
-            title = { Text("This device may not fit ${a.title}") },
+            title = { Text(stringResource(R.string.home_this_device_may_not_fit, a.title)) },
             text = {
                 Text(
                     (
                         if (a.minMemMb > 0) {
-                            "${a.title} asks for ${a.minMemMb} MB free memory; this device has " +
-                                "${s.snapshot?.device?.memAvailableMb ?: 0} MB.\n\n"
+                            "${a.title} asks for ${a.minMemMb} MB free memory; this device has ${s.snapshot?.device?.memAvailableMb ?: 0} MB.\n\n"
                         } else {
                             ""
                         }
                     ) +
                         (
                             if (a.minDiskMb > 0) {
-                                "It asks for ${a.minDiskMb} MB free storage; this device has " +
-                                    "${s.snapshot?.device?.diskFreeMb ?: 0} MB.\n\n"
+                                "It asks for ${a.minDiskMb} MB free storage; this device has ${s.snapshot?.device?.diskFreeMb ?: 0} MB.\n\n"
                             } else {
                                 ""
                             }
                         ) +
-                        "Installing anyway usually ends with Android killing it part-way. " +
-                        "Close something and tap Refresh first, or continue at your own risk.",
+                        "Installing anyway usually ends with Android killing it part-way. Close something and tap Refresh first, or continue at your own risk.",
                 )
             },
             confirmButton = {
-                TextButton(onClick = { vm.confirmCapacity() }) { Text("Install anyway") }
+                TextButton(onClick = { vm.confirmCapacity() }) { Text(stringResource(R.string.home_install_anyway)) }
             },
             dismissButton = {
-                TextButton(onClick = { vm.cancelCapacity() }) { Text("Cancel") }
+                TextButton(onClick = { vm.cancelCapacity() }) { Text(stringResource(R.string.home_cancel)) }
             },
         )
     }
@@ -1181,10 +1193,10 @@ private fun Home(
             title = { Text(a.title) },
             text = { Text(a.summary + "\n\nThis cannot be undone.") },
             confirmButton = {
-                TextButton(onClick = { vm.confirmPending() }) { Text("Confirm") }
+                TextButton(onClick = { vm.confirmPending() }) { Text(stringResource(R.string.home_confirm)) }
             },
             dismissButton = {
-                TextButton(onClick = { vm.cancelPending() }) { Text("Cancel") }
+                TextButton(onClick = { vm.cancelPending() }) { Text(stringResource(R.string.home_cancel)) }
             },
         )
     }
@@ -1258,7 +1270,7 @@ private fun HomeBody(
         val recommended =
             actions.firstOrNull { it.id == RECOMMENDED_TOOL } ?: actions.firstOrNull { !it.destructive }
         recommended?.let { action ->
-            Section("Recommended")
+            Section(stringResource(R.string.home_recommended))
             Panel {
                 Text(action.title, style = MaterialTheme.typography.titleMedium)
                 Text(
@@ -1267,7 +1279,7 @@ private fun HomeBody(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 UiPill(
-                    label = "Install",
+                    label = stringResource(R.string.home_install),
                     enabled = !running,
                     onClick = { onRun(action) },
                 )
@@ -1276,7 +1288,7 @@ private fun HomeBody(
     }
 
     if (steps.isNotEmpty()) {
-        Section("Last run")
+        Section(stringResource(R.string.home_last_run))
         Panel {
             steps.forEach { step -> StepRow(step) }
         }
@@ -1330,9 +1342,7 @@ private fun WorkingBanner(
             LinearProgressIndicator(Modifier.fillMaxWidth(), color = accent)
             if (elapsedSeconds >= 20) {
                 Text(
-                    "Still working — this is normal for a large tool, which can take " +
-                        "20–40 minutes on a phone. Keep this app installed; you can use " +
-                        "other apps while it runs.",
+                    stringResource(R.string.home_still_working_this_is_normal_for),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1358,7 +1368,7 @@ private fun StepRow(s: Protocol.Step) {
         }
     val took = if (s.ms >= 1000) "  (${s.ms / 1000}s)" else ""
     Text(
-        "$word — ${s.title}$took",
+        stringResource(R.string.home_text, word, s.title, took),
         style = MaterialTheme.typography.bodySmall,
         color =
             if (s.state == "failed") {

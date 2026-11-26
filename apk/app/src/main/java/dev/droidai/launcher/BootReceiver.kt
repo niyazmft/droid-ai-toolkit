@@ -16,6 +16,9 @@ import android.util.Log
  * Deliberate choices:
  *  - it respects [Prefs.supervisorEnabled]; a user who turned the notification off does not get
  *    it back at boot;
+ *  - it restores the supervisor even when nothing is installed, which is the Q5 decision: the
+ *    Termux menu can install a tool without this app ever being opened, and nothing else would
+ *    be watching it. The empty case reports "Nothing installed yet", not a fault;
  *  - it does **not** start `MainActivity`, so a reboot does not put the app in front of you;
  *  - failures are logged, never thrown: a `BOOT_COMPLETED` receiver that crashes is just a
  *    crash loop the user cannot see.

@@ -27,6 +27,18 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * Watches the toolkit — when the phone is in your hand, not on a clock.
  *
+ * ## It runs on an empty device too (Q5, decided 2026-11-26)
+ *
+ * The alternative was to wait until the first tool is installed. Rejected, because the app is
+ * not the only way to install one: the toolkit's own Termux menu can install OpenClaw, and
+ * nothing would be watching it until the user next opened this app. "Nothing installed yet" is
+ * a perfectly honest notification, and the verdict for that case is already healthy
+ * ([SupervisorPolicy.Verdict.NOTHING_INSTALLED]), so an empty phone is never told its services
+ * are down.
+ *
+ * What the decision costs: one permanent notification on a phone with nothing installed. That
+ * is the trade the owner chose — being told when something stops beats a quieter shade.
+ *
  * ## Why there is no timer
  *
  * The old version polled `--api status` every 60 s. That run measured 22.6 s wall / 18.9 s

@@ -22,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 
@@ -57,10 +58,18 @@ fun RawOutputScreen(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.Filled.ArrowBack, contentDescription = stringResource(R.string.raw_back))
             }
-            Text("Raw Output", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-            UiPill(label = "Copy", ghost = true, onClick = { clipboard.setText(AnnotatedString(raw)) })
+            Text(
+                stringResource(R.string.raw_raw_output),
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f),
+            )
+            UiPill(
+                label = stringResource(R.string.raw_copy),
+                ghost = true,
+                onClick = { clipboard.setText(AnnotatedString(raw)) },
+            )
         }
 
         Row(
@@ -78,19 +87,19 @@ fun RawOutputScreen(
 
         if (!retained) {
             Text(
-                "Raw output retention is off (Settings → Termux & Safety).",
+                stringResource(R.string.raw_raw_output_retention_is_off_settings),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else if (raw.isBlank()) {
             Text(
-                "Nothing captured yet. Run an action and its output appears here.",
+                stringResource(R.string.raw_nothing_captured_yet_run_an_action),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
             Text(
-                "${lines.size} of ${raw.lineSequence().count()} line(s)",
+                stringResource(R.string.raw_of_line_s, lines.size, raw.lineSequence().count()),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

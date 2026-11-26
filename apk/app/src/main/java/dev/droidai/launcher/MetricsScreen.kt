@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -75,17 +76,15 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
 
         if (samples.isEmpty()) {
             Text(
-                "Collecting — no samples yet.\n\n" +
-                    "The supervisor records one sample every five minutes, so the first " +
-                    "point appears within five minutes of the app running.",
+                stringResource(R.string.usage_collecting_no_samples_yet_n_nthe),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            Section("Memory")
+            Section(stringResource(R.string.usage_memory))
             Panel {
                 Text(
-                    "available MB · ${samples.size} sample(s)",
+                    stringResource(R.string.usage_available_mb_sample_s, samples.size),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -99,13 +98,13 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
                 ) {
                     Column(Modifier.width(46.dp), horizontalAlignment = Alignment.End) {
                         Text(
-                            "${samples.maxOf { it.memMb }} MB",
+                            stringResource(R.string.usage_mb, samples.maxOf { it.memMb }),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(Modifier.height(28.dp))
                         Text(
-                            "${samples.minOf { it.memMb }} MB",
+                            stringResource(R.string.usage_mb, samples.minOf { it.memMb }),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -119,20 +118,25 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
                         // A Canvas is invisible to a screen reader. Without this, the whole
                         // Memory panel was silent apart from its low/high caption.
                         description =
-                            "Memory available over the last $windowHours hours: low " +
-                                "${samples.minOf { it.memMb }} MB, high ${samples.maxOf { it.memMb }} MB.",
+                            "Memory available over the last $windowHours hours: low ${samples.minOf {
+                                it.memMb
+                            }} MB, high ${samples.maxOf { it.memMb }} MB.",
                     )
                 }
                 Text(
-                    "low ${samples.minOf { it.memMb }} MB · high ${samples.maxOf { it.memMb }} MB",
+                    stringResource(
+                        R.string.usage_low_mb_high_mb,
+                        samples.minOf { it.memMb },
+                        samples.maxOf { it.memMb },
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                 )
             }
 
-            Section("Swap free")
+            Section(stringResource(R.string.usage_swap_free))
             Panel {
                 Text(
-                    "free swap in MB · higher is better",
+                    stringResource(R.string.usage_free_swap_in_mb_higher_is),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -141,13 +145,14 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     color = MaterialTheme.colorScheme.primary,
                     description =
-                        "Free swap over the last $windowHours hours: from " +
-                            "${samples.minOf { it.swapMb }} MB to ${samples.maxOf { it.swapMb }} MB.",
+                        "Free swap over the last $windowHours hours: from ${samples.minOf {
+                            it.swapMb
+                        }} MB to ${samples.maxOf { it.swapMb }} MB.",
                 )
             }
 
             snapshot?.let { s ->
-                Section("Allocation")
+                Section(stringResource(R.string.usage_allocation))
                 Panel {
                     if (s.services.isEmpty()) {
                         // Same distinction as the supervisor's notification: an empty list on
@@ -155,7 +160,13 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
                         // installed yet".
                         val installed = s.tools.installed.count { it.value }
                         Text(
-                            if (installed == 0) "Nothing installed yet." else "No services running.",
+                            if (installed ==
+                                0
+                            ) {
+                                stringResource(R.string.usage_nothing_installed_yet)
+                            } else {
+                                stringResource(R.string.usage_no_services_running)
+                            },
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -177,25 +188,28 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
                                     }
                                 }
                             }
-                            Text("${sv.memMb} MB", style = MaterialTheme.typography.labelSmall)
+                            Text(
+                                stringResource(R.string.usage_mb, sv.memMb),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
                         }
                     }
                 }
             }
 
-            Section("Events")
+            Section(stringResource(R.string.usage_events))
             Panel {
                 val events = remember(samples) { transitions(samples) }
                 if (events.isEmpty()) {
                     Text(
-                        "No service-count changes in this window.",
+                        stringResource(R.string.usage_no_service_count_changes_in_this),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
                     events.forEach { (ts, text) ->
                         Text(
-                            "${formatTime(ts)}  $text",
+                            stringResource(R.string.usage_text, formatTime(ts), text),
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }

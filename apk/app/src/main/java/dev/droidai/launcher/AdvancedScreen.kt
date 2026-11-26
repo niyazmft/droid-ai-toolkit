@@ -16,6 +16,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 
 /**
@@ -58,31 +59,31 @@ fun AdvancedScreen(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Advanced", style = MaterialTheme.typography.headlineMedium)
+            Text(stringResource(R.string.advanced_advanced), style = MaterialTheme.typography.headlineMedium)
         }
 
         // ---- About this phone -----------------------------------------------------------
-        Section("About this phone")
+        Section(stringResource(R.string.advanced_about_this_phone))
         Panel {
             snapshot?.let { snap ->
                 Fact("Model", snap.device.model)
                 Fact("Android", "${snap.device.android} · API ${snap.device.api}")
                 Fact("Architecture", snap.device.arch, spoken = "architecture: how this phone's processor is built")
                 Text(
-                    "arch — how this phone's processor is built. Tools only run here if a build exists for it.",
+                    stringResource(R.string.advanced_arch_how_this_phone_s_processor),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Fact("Memory", "${snap.device.memAvailableMb} / ${snap.device.memTotalMb} MB")
                 Text(
-                    "Memory — how much RAM is free right now. Android kills background apps when it runs out.",
+                    stringResource(R.string.advanced_memory_how_much_ram_is_free),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Fact("Swap", "${snap.device.swapFreeMb} MB free")
                 Fact("Storage", "${snap.device.diskFreeMb / 1024} GB free")
                 Text(
-                    "Storage — space left for tools and their files.",
+                    stringResource(R.string.advanced_storage_space_left_for_tools_and),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -90,9 +91,18 @@ fun AdvancedScreen(
                 Fact("Termux", snap.termux.version)
                 Fact("Node", Format.toolVersion(snap.tools.node))
                 Fact("Python", Format.toolVersion(snap.tools.python))
-                Fact("PM2", if (snap.tools.pm2Installed) "installed" else "missing")
+                Fact(
+                    "PM2",
+                    if (snap.tools.pm2Installed) {
+                        stringResource(
+                            R.string.advanced_installed,
+                        )
+                    } else {
+                        stringResource(R.string.advanced_missing)
+                    },
+                )
                 Text(
-                    "PM2 — the process manager that keeps a tool running after you close the app.",
+                    stringResource(R.string.advanced_pm2_the_process_manager_that_keeps),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -102,7 +112,7 @@ fun AdvancedScreen(
             }
             if (snapshot == null) {
                 Text(
-                    "Reading device status…",
+                    stringResource(R.string.advanced_reading_device_status),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -110,11 +120,11 @@ fun AdvancedScreen(
         }
 
         // ---- Background apps ------------------------------------------------------------
-        Section("Background apps")
+        Section(stringResource(R.string.advanced_background_apps))
         Panel {
             if (services.isEmpty()) {
                 Text(
-                    "Nothing is running. Choose a tool in Tools to install one.",
+                    stringResource(R.string.advanced_nothing_is_running_choose_a_tool),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -128,19 +138,19 @@ fun AdvancedScreen(
                     StatusChip(sv.status == "online")
                 }
                 Text(
-                    "${sv.memMb} MB · ${sv.restarts} restarts",
+                    stringResource(R.string.advanced_mb_restarts, sv.memMb, sv.restarts),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)) {
                     UiPill(
-                        label = "Stop",
+                        label = stringResource(R.string.advanced_stop),
                         enabled = !running,
                         ghost = true,
                         onClick = { onStopService(sv.name) },
                     )
                     UiPill(
-                        label = "Restart",
+                        label = stringResource(R.string.advanced_restart),
                         enabled = !running,
                         ghost = true,
                         onClick = { onRestartService(sv.name) },
@@ -149,7 +159,7 @@ fun AdvancedScreen(
             }
             if (services.isNotEmpty()) {
                 UiPill(
-                    label = "Restart everything",
+                    label = stringResource(R.string.advanced_restart_everything),
                     enabled = !running,
                     onClick = onRestartEverything,
                 )
@@ -157,7 +167,7 @@ fun AdvancedScreen(
         }
 
         // ---- Termux & safety ------------------------------------------------------------
-        Section("Termux & safety")
+        Section(stringResource(R.string.advanced_termux_safety))
         Panel {
             Text(
                 if (accessAllowed) {
@@ -169,7 +179,7 @@ fun AdvancedScreen(
             )
             if (foreign.isNotEmpty()) {
                 Text(
-                    "${foreign.size} other app(s) can also run commands in Termux:",
+                    stringResource(R.string.advanced_other_app_s_can_also_run, foreign.size),
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -177,26 +187,25 @@ fun AdvancedScreen(
                 // The adb line is the remedy for an advanced user, not the message: a
                 // non-technical reader needs the sentence, not the command.
                 Text(
-                    "If you did not install one of these, uninstall it from Android Settings → Apps.",
+                    stringResource(R.string.advanced_if_you_did_not_install_one),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 UiCodeBlock(foreign.joinToString("\n") { Security.revokeCommand(it) })
             } else {
                 Text(
-                    "Only this app can run commands in Termux.",
+                    stringResource(R.string.advanced_only_this_app_can_run_commands),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            UiPill(label = "Check again", ghost = true, onClick = onCheckAgain)
+            UiPill(label = stringResource(R.string.advanced_check_again), ghost = true, onClick = onCheckAgain)
         }
 
         // ---- Diagnostics ----------------------------------------------------------------
-        Section("Diagnostics")
+        Section(stringResource(R.string.advanced_diagnostics))
         Panel {
             Text(
-                "Everything Termux printed during the last command. Useful when asking for help; " +
-                    "it is the raw evidence behind a failure.",
+                stringResource(R.string.advanced_everything_termux_printed_during_the_last),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -210,16 +219,19 @@ fun AdvancedScreen(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.width(6.dp))
-                UiPill(label = "Open raw output", ghost = true, onClick = onOpenRawOutput)
+                UiPill(
+                    label = stringResource(R.string.advanced_open_raw_output),
+                    ghost = true,
+                    onClick = onOpenRawOutput,
+                )
             }
         }
 
         // ---- Usage (was a top-level tab: a chart nobody asked for, on the first screen) ----
-        Section("Usage")
+        Section(stringResource(R.string.advanced_usage))
         Panel {
             Text(
-                "Memory and swap over the last day or week, sampled every five minutes while " +
-                    "the app runs. Nothing here is needed to use a tool.",
+                stringResource(R.string.advanced_memory_and_swap_over_the_last),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -227,7 +239,7 @@ fun AdvancedScreen(
         MetricsScreen(snapshot = snapshot)
 
         TextButton(onClick = onBack, modifier = Modifier.padding(top = 8.dp)) {
-            Text("Back to Settings")
+            Text(stringResource(R.string.advanced_back_to_settings))
         }
     }
 }

@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -88,15 +89,15 @@ fun SettingsScreen(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text("Settings", style = MaterialTheme.typography.headlineMedium)
+        Text(stringResource(R.string.settings_settings), style = MaterialTheme.typography.headlineMedium)
         TextButton(onClick = onBack, modifier = Modifier.padding(top = 2.dp)) {
-            Text("Back")
+            Text(stringResource(R.string.settings_back))
         }
 
-        Section("Appearance")
+        Section(stringResource(R.string.settings_appearance))
         Panel {
             Text(
-                "Both palettes are designed; this only decides which one you look at.",
+                stringResource(R.string.settings_both_palettes_are_designed_this_only),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -116,38 +117,42 @@ fun SettingsScreen(
             }
         }
 
-        Section("Droid AI")
+        Section(stringResource(R.string.settings_droid_ai))
         Panel {
             Fact("Version", APP_VERSION)
             Fact("Package", context.packageName)
         }
 
-        Section("Startup & Services")
+        Section(stringResource(R.string.settings_startup_services))
         Panel {
             // Copy per PLAN.md §F3.2: a 230-character subtitle was five lines of prose for a
             // switch. These are ≤ 26 / ≤ 85 chars so each row fits two lines at font scale 1.3.
             SwitchRow(
-                title = "Watch in background",
-                subtitle = "One notification, checked when you unlock. Off: no warnings, no auto-restart.",
+                title = stringResource(R.string.settings_watch_in_background),
+                subtitle = stringResource(R.string.settings_one_notification_checked_when_you_unlock),
                 checked = supervisorOn,
             ) { Prefs.setSupervisorEnabled(it) }
             // The grant is not optional: without it Android hides the notification while the
             // service keeps running, which is the one failure mode with no visible symptom.
             if (supervisorOn && !notificationsGranted) {
                 Text(
-                    "Notifications are off, so a stopped service goes unnoticed.",
+                    stringResource(R.string.settings_notifications_are_off_so_a_stopped),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                 )
-                UiPill(label = "Turn on notifications", ghost = true, onClick = onRequestNotifications)
+                UiPill(
+                    label = stringResource(R.string.settings_turn_on_notifications),
+                    ghost = true,
+                    onClick = onRequestNotifications,
+                )
             }
             // The old label promised the wrong scope and the wrong condition: the toggle runs
             // `service.resurrect` → `pm2 resurrect`, which restores *every* process in the dump,
             // and it only fires when *nothing* is online (SupervisorPolicy returns HEALTHY as
             // soon as one service is up). One service, not all; stopped, not all-stopped.
             SwitchRow(
-                title = "Restart if all stop",
-                subtitle = "When every service is offline, try three times, then give up.",
+                title = stringResource(R.string.settings_restart_if_all_stop),
+                subtitle = stringResource(R.string.settings_when_every_service_is_offline_try),
                 checked = autoStart,
                 // Disabled, not hidden: it can have no effect while nothing is watching, and a
                 // tappable switch that does nothing advertises something the app is not doing.
@@ -163,10 +168,15 @@ fun SettingsScreen(
                 onTestBoot = onTestBoot,
                 onOpenBootApp = onOpenBootApp,
             )
-            UiPill(label = "Re-read status", enabled = !running, ghost = true, onClick = onRefresh)
+            UiPill(
+                label = stringResource(R.string.settings_re_read_status),
+                enabled = !running,
+                ghost = true,
+                onClick = onRefresh,
+            )
         }
 
-        Section("Termux & Safety")
+        Section(stringResource(R.string.settings_termux_safety))
         Panel {
             // Access is a state, not a measurement, so it is a chip — and the two facts below it
             // are one line each at font scale 1.3. They used to wrap into paragraphs because the
@@ -180,28 +190,27 @@ fun SettingsScreen(
                 Format.shortVersion(fullVersion).ifBlank { "—" },
                 spoken = fullVersion.ifBlank { "unknown" },
             )
-            UiPill(label = "Check again", ghost = true, onClick = onRecheckPermission)
+            UiPill(label = stringResource(R.string.settings_check_again), ghost = true, onClick = onRecheckPermission)
             SwitchRow(
-                title = "Ask before removing",
-                subtitle = "Confirm before deleting a tool, its files or its shortcuts.",
+                title = stringResource(R.string.settings_ask_before_removing),
+                subtitle = stringResource(R.string.settings_confirm_before_deleting_a_tool_its),
                 checked = confirmRemove,
             ) { Prefs.setConfirmRemove(it) }
             SwitchRow(
-                title = "Keep the last command output",
-                subtitle = "Useful when asking for help — it is the raw evidence behind a failure.",
+                title = stringResource(R.string.settings_keep_the_last_command_output),
+                subtitle = stringResource(R.string.settings_useful_when_asking_for_help_it),
                 checked = retainRaw,
             ) { Prefs.setRetainRaw(it) }
         }
 
-        Section("Advanced")
+        Section(stringResource(R.string.settings_advanced))
         Panel {
             Text(
-                "About this phone, background apps, Termux access and the raw output of the last " +
-                    "command. All of it optional — nothing here is needed to use a tool.",
+                stringResource(R.string.settings_about_this_phone_background_apps_termux),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            UiPill(label = "Open Advanced", ghost = true, onClick = onOpenAdvanced)
+            UiPill(label = stringResource(R.string.settings_open_advanced), ghost = true, onClick = onOpenAdvanced)
         }
 
         // Hidden entirely when the legacy folder is absent, which is the normal state on a
@@ -210,7 +219,7 @@ fun SettingsScreen(
         if (snapshot?.termux?.legacyGlobalPresent == true) {
             val migrated = snapshot.checks["tools_migrated"] != false
             val mb = snapshot.termux.legacyGlobalMb
-            Section("Cleanup")
+            Section(stringResource(R.string.settings_cleanup))
             Panel {
                 val size =
                     when {
@@ -219,7 +228,7 @@ fun SettingsScreen(
                         else -> "size not measured yet"
                     }
                 Text(
-                    "Legacy package folder · $size",
+                    stringResource(R.string.settings_legacy_package_folder, size),
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(
@@ -228,14 +237,13 @@ fun SettingsScreen(
                     } else {
                         // The engine's own refusal, said before the tap. It used to arrive after
                         // it, as "Step failed: Remove legacy project and shims".
-                        "Still in use: a tool has not been moved to its own folder yet. " +
-                            "Open Tools and update it first."
+                        "Still in use: a tool has not been moved to its own folder yet. Open Tools and update it first."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 UiPill(
-                    label = "Remove it",
+                    label = stringResource(R.string.settings_remove_it),
                     enabled = !running && migrated,
                     ghost = true,
                     onClick = { confirmCleanup = true },
@@ -247,22 +255,20 @@ fun SettingsScreen(
     if (confirmCleanup) {
         AlertDialog(
             onDismissRequest = { confirmCleanup = false },
-            title = { Text("Remove the old package folder?") },
+            title = { Text(stringResource(R.string.settings_remove_the_old_package_folder)) },
             text = {
                 Text(
-                    "This deletes the legacy shared pnpm folder and the shortcuts that point " +
-                        "at it. Tools already moved to their own folders are unaffected. " +
-                        "This cannot be undone.",
+                    stringResource(R.string.settings_this_deletes_the_legacy_shared_pnpm),
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     confirmCleanup = false
                     onRunAction("service.cleanup-legacy")
-                }) { Text("Remove") }
+                }) { Text(stringResource(R.string.settings_remove)) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmCleanup = false }) { Text("Cancel") }
+                TextButton(onClick = { confirmCleanup = false }) { Text(stringResource(R.string.settings_cancel)) }
             },
         )
     }
@@ -308,8 +314,8 @@ private fun BootStateBlock(
         }
         !appInstalled -> {
             title = "Needs Termux:Boot"
-            detail = "Android needs the Termux:Boot app to run anything at startup. Install it, " +
-                "open it once, then come back."
+            detail =
+                "Android needs the Termux:Boot app to run anything at startup. Install it, open it once, then come back."
             label = "Get Termux:Boot"
             onClick = onOpenBootApp
         }
@@ -321,16 +327,16 @@ private fun BootStateBlock(
         }
         !(termux?.dozeWhitelisted ?: false) -> {
             title = "Allow background start"
-            detail = "Android may still stop Termux at boot. Allow Termux and Termux:Boot to run " +
-                "in the background (Settings → Apps → Battery)."
+            detail =
+                "Android may still stop Termux at boot. Allow Termux and Termux:Boot to run in the background (Settings → Apps → Battery)."
             label = "Check again"
             onClick = { onRunAction("service.boot") }
         }
         else -> {
             title = "Works after reboot — not yet tested"
             // Honesty rule: nothing here has watched a reboot, so it cannot claim one worked.
-            detail = "The script and the saved list are in place. Test now restores the saved " +
-                "list the same way the boot script does."
+            detail =
+                "The script and the saved list are in place. Test now restores the saved list the same way the boot script does."
             label = "Test now"
             onClick = onTestBoot
         }
@@ -356,7 +362,14 @@ private fun BootStateBlock(
  */
 @Composable
 private fun AccessRow(allowed: Boolean) {
-    val value = if (allowed) "Allowed" else "Not allowed"
+    val value =
+        if (allowed) {
+            stringResource(
+                R.string.settings_allowed,
+            )
+        } else {
+            stringResource(R.string.settings_not_allowed)
+        }
     Row(
         Modifier
             .fillMaxWidth()
@@ -364,7 +377,7 @@ private fun AccessRow(allowed: Boolean) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            "Access",
+            stringResource(R.string.settings_access),
             style = MaterialTheme.typography.bodySmall,
             maxLines = 1,
             modifier = Modifier.weight(1f),
