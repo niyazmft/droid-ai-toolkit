@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "id": "status",
+  "title": "Device status",
+  "summary": "Read-only snapshot: arch, memory, disk, Termux readiness, installed tools, PM2 services",
+  "category": "diagnostics",
+  "requires": {},
+  "steps": [
+    {
+      "id": "snapshot",
+      "title": "Collect device status",
+      "run": "status_collect",
+      "idempotent": false
+    }
+  ]
+}

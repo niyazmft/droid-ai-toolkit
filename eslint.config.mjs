@@ -5,7 +5,7 @@ import jsonc from "eslint-plugin-jsonc";
 export default [
   {
     // Mandatory Ignores
-    ignores: ["node_modules/**", "dist/**", "build/**", ".obsidian/**"],
+    ignores: ["node_modules/**", "dist/**", "build/**", "apk/**/build/**", ".obsidian/**"],
   },
   js.configs.recommended,
   {

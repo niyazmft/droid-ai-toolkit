@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Termux gates RUN_COMMAND on this dangerous permission (user-granted). -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
+    <!-- Supervisor: keeps a low oom_score_adj while watching the toolkit, and shows
+         Termux's death in the notification shade instead of leaving it silent.
+
+         FOREGROUND_SERVICE_SPECIAL_USE is not optional. Since targetSdk 34 a declared
+         service type requires its own permission, and startForeground() throws
+         SecurityException without it — which is exactly what a "dataSync" declaration
+         without FOREGROUND_SERVICE_DATA_SYNC was doing on any Android 14 phone. The type
+         is specialUse rather than dataSync because this service transfers nothing: it
+         holds SCREEN_ON / USER_PRESENT receivers and runs one status command when the
+         user unlocks. dataSync would also be capped at 6 h out of 24 at targetSdk 35. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- The supervisor has to come back after a reboot; without this the watchdog only exists
+         once somebody opens the app, which is the exact case it exists to report. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Live install progress (Task 17). The engine writes step transitions to
+         ~/storage/shared/droid-ai/progress.ndjson; this is what lets the app read it. The
+         feature is optional — without the grant the banner shows elapsed time only. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+    <!-- Required when targetSdk >= 30 so the app can see com.termux. -->
+    <queries>
+        <package android:name="com.termux" />
+        <!-- NOTE: <queries> accepts only package/intent/provider — there is no
+             <permission> child, and AAPT rejects one. getPackagesHoldingPermissions()
+             is unfiltered on API < 30 (both target devices), which is where the
+             permission audit is complete. On API 30+ it can be partial; the fix
+             there is QUERY_ALL_PACKAGES, deliberately not requested. -->
+
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.DroidAI">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Receives the RUN_COMMAND result bundle. The PendingIntent is sent with
+             our own identity, so exported=false is correct and safest. -->
+        <receiver
+            android:name=".TermuxResultReceiver"
+            android:exported="false" />
+
+        <!-- Restores the supervisor after a reboot. Exported because the system sends
+             BOOT_COMPLETED from outside the app; the broadcast is protected, so only the
+             system can trigger it. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".SupervisorService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <!-- Required justification for specialUse (Play review reads this; sideloading
+                 ignores it). Say what the service does, not what it is. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Watches a local Termux runtime: on unlock it runs one status command and posts whether the user's services are still running. No data is transferred." />
+        </service>
+    </application>
+</manifest>

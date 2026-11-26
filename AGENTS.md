@@ -2,13 +2,22 @@
 
 ## Project Type
 
-Bash scripting toolkit. Main deliverable is `install.sh`. No app runtime here — `package.json` is lint-only infrastructure.
+Bash scripting toolkit **and a native Android app**, and the app is now shipped: the APK is
+released as a GitHub release asset (**`droid-ai-0.1.0.apk`**, debug-signed, beta). `install.sh`
+is the executor and single source of truth for logic; `apk/` is a Kotlin/Compose client that
+drives it over `install.sh --api` (see `docs/CONTRACT.md`). `package.json` remains lint-only
+infrastructure.
 
 ## Toolchain & Commands
 
 ```bash
 pnpm install               # Install linter deps (pnpm@10.32.1 enforced via packageManager field)
-pnpm run lint:all          # Full lint gate: ESLint → Stylelint → Markdownlint → shellcheck (read-only, does NOT --fix)
+pnpm run lint:all          # Full gate: ESLint → Stylelint → Markdownlint → compat → action specs → shellcheck (read-only)
+pnpm run lint:actions      # Validate actions/*.json: schema, ids, step primitives
+(cd apk && ./gradlew :app:assembleDebug)          # Build the APK (JDK 17 + Android SDK 34)
+(cd apk && ./gradlew :app:testDebugUnitTest)     # 76 JVM tests (pure logic: parsers, policies)
+bash tests/run.sh                                # Engine tests: 7 scripts, 89 assertions
+ANDROID_SERIAL=<serial> bash scripts/apk-smoke.sh  # 8 device checks against a real phone
 python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS only
 ```
 
@@ -35,7 +44,15 @@ python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS o
 
 ## Architecture
 
-- `install.sh`: Single source of truth for toolkit logic and version (v1.17.7). `package.json` version (1.0.0) is stale — ignore it.
+- `install.sh`: Single source of truth for toolkit logic and version. Also the `--api`
+  entry point: a headless spec runner used by the app (no TUI, no TTY).
+- `actions/`: declarative action specs (JSON). This is the catalog the app renders, so a
+  new tool needs no APK release. `pnpm run lint:actions` validates them.
+- `lib/`: the runner plus step primitives (`lib/steps/*.sh`). Sourced only by `--api`;
+  the TUI still uses the legacy functions in `install.sh` until the phase-7 cutover.
+- `docs/CONTRACT.md`: the app ⇄ engine contract (events, exit codes, safety semantics).
+- `apk/`: Kotlin/Compose client. Termux stays the executor; the app never runs Linux
+  commands itself.
 - `scripts/self_heal.py`: Lightweight Python refactor; only strips unused catch variables.
 - `package.json`: Dev-only. Defines lint scripts, `lint-staged`, and Husky prepare hook.
 
@@ -599,6 +616,268 @@ removed automatically once `/rest/settings` reports
 `showSetupOnFirstLoad=false`. The old `N8N_SECURE_COOKIE=false` and
 `N8N_NODES_INCLUDE=[executeCommand,manualTrigger]` lines are removed. PM2 env
 handling still requires delete+start, not `pm2 restart`.
+
+## Android app release — v0.1.0 beta (GitHub Releases)
+
+The app ships as the release asset **`droid-ai-0.1.0.apk`**. Facts that matter when touching it:
+
+- `applicationId` `dev.droidai.launcher`, `minSdk 28` (Android 9), `targetSdk 34`, `versionName`
+  `0.1.0`, `versionCode 1`.
+- **The release build is signed with the debug key** (`signingConfig = signingConfigs["debug"]` in
+  `apk/app/build.gradle.kts`). A build signed with any other key cannot install over it — a user
+  updating between keys must uninstall first. Do not describe the app as Play/F-Droid
+  installable, and do not claim silent updates.
+- The app is a **client**: it runs `install.sh --api …` inside Termux. It has no root, never
+  installs Linux packages itself beyond provisioning `jq`/`git`/`curl`/`tar` and the toolkit
+  checkout, and cannot flip `allow-external-apps` (the one manual step a user must do).
+
+### UI map (v0.1.0) — the shape the owner settled on
+
+- **One header on every screen**: `Droid AI`, the device line (`TEST-DEVICE · 22:44`) and Refresh. The
+  page name lives in the content, not in the header.
+- **One footer on every screen**: four equal segments — Home, Tools, Device, Settings — same
+  icon-over-label shape, accent pill only on the destination you are on (Raw Output keeps
+  Settings lit because it is reached from there).
+- **No back arrows.** The footer is the visible way to move; the system Back still pops. A back
+  arrow was tried and removed as redundant — do not reintroduce one.
+- Screens: **Home** (verdict + *Running now* with memory/restarts + *Installed* + recommended
+  tool when empty), **Tools** (catalog cards), **Device** (`About this phone`: facts, installed
+  software, memory/swap chart), **Settings** (Startup & services → Termux & safety → Diagnostics
+  → Appearance → Version), **Raw Output** (under Settings → Diagnostics).
+- `Advanced` no longer exists. Its contents were re-homed: services → Home, Termux & safety +
+  Diagnostics → Settings, device facts → Device.
+
+### Live progress feed
+
+The engine appends NDJSON to `~/storage/shared/droid-ai/progress.ndjson`
+(`lib/progress.sh`: begin/step/end, one line per transition, truncated per run). The app reads the
+last line and shows `Step 3 of 7 · Install Pi`. Needs the storage permission and a set-up
+`~/storage/shared` (`termux-setup-storage`); when shared storage is absent the engine writes
+nothing and the app simply shows no step — never an error.
+
+### Smoke harness — four ways it lies if you are not careful
+
+`scripts/apk-smoke.sh` (8 checks) is the only thing that exercises the real UI. Every one of these
+has already produced a false PASS or a false FAIL:
+
+1. **`uiautomator dump` leaves the previous file behind when it fails**, so a check keeps reading
+   the last screen it managed to capture — a stale "Settings" survived a force-stop and a
+   restart. `dump_ui` deletes the file first and retries six times.
+2. **A run repaints once a second** (elapsed + progress), so the window never goes idle and the
+   dump fails. `wait_idle` waits for the working banner to clear before tapping.
+3. **The selected tab reports `clickable="false"`** (it is a `selectable`), so counting clickable
+   nodes shifts every index by one — "tap Tools" landed on Device and the next assertion passed
+   for the wrong reason because the device page contains the word "Installed". Count
+   `selected="true"` too.
+4. **A plugged-in cable raises the system "Use USB to" chooser**, which hides the app from
+   uiautomator entirely. `dismiss_usb_chooser` clears it.
+
+Also: a single quote inside the single-quoted `python3 -c` block in the harness ends the shell
+string and python receives `clickable=true`; keep those blocks double-quoted-only.
+
+## APK on a 32-bit device: --force, checkpoints, legacy detection
+
+Testing the client end-to-end on y6 (Android 9 / API 28, `armeabi-v7a`,
+`uname -m` = **armv8l**, 1.8 GB) found four defects that no earlier 8x pass could see,
+because 8x is aarch64 with 3.6 GB and its tools were installed by the *older* engine.
+
+**1. "Install anyway" did nothing.** The capacity dialog dispatched `--api run <id>` with
+no flag, and the engine had no override, so the promised bypass ended at
+`Command failed (exit 3)` (y6, 2026-11-24: Pi at 344 MB with `min_mem_mb: 384`).
+
+`--force` now exists end-to-end and overrides **capacity only**:
+
+- `runner_preflight <spec> [force]` keeps `requires.arch` and `requires.predicates` hard.
+  No intent makes armv8l run an aarch64 build, or makes `pkg install` find a package the
+  repo does not carry. A preflight that proceeds under `--force` emits `forced: true`.
+- The app sends `--force` from that dialog. Documented in `docs/CONTRACT.md`.
+- Verified on y6: Gemini Update (512 MB needed, 430 MB free) → dialog → `Install anyway`
+  → `deps/install/patch/verify` all ok, `0.71.1`.
+
+**2. Uninstall did not invalidate the install checkpoint.** `step_uninstall_tool` deleted
+`tools/<tool>`, but `state/<tool>.install.json` still said `install: ok` with an unchanged
+fingerprint, so the next Install was **skipped in 0 s** and the run died at verify
+(`not on PATH: pi`) — twice, before the cause was obvious. Both `step_uninstall_tool` and
+`step_hermes_uninstall` now delete `state/<tool>.*.json`. Verified on y6: after Remove,
+Install runs `phase 1/2: resolve` … `Done in 23 s`, shim written, verify `1.6.0`.
+
+**3. `ollama.install` claimed `armv8l` but Termux ships no 32-bit package.**
+`pkg install -y ollama` → `E: Unable to locate package ollama`, surfaced only as
+"Step failed: Install package" (the apt line lives in `~/.droid_ai_toolkit/log/`). The spec
+is now `arch: [aarch64, x86_64]` **and** `predicates: [pkg_available:ollama]`; the new
+`pred_pkg_available` reads `apt-cache policy` and is a hard preflight gate, so the refusal
+happens before any work.
+
+**4. The app ignored `requires.arch`.** It parsed `min_mem_mb`/`min_disk_mb` only, so
+Hermes, Nanobot, Paperclip and Ollama offered Install on a CPU that cannot run them, and
+the dialog blamed memory. `Protocol.Action.arch` now carries the list, and a row whose arch
+excludes this device reads "No build for armv8l" with a disabled "Not on this CPU" pill
+(the destructive pill stays usable). Verified on y6 for Hermes, Nanobot and Ollama.
+
+**Detection now means runnable.** `tools.installed` was `tools/<tool>` only, so y6 showed
+OpenClaw as "Disappeared — its files are gone" while 2026.9.3 served Telegram from the
+legacy `global/5` shim (y6 still has `@earendil-works/pi-coding-agent`,
+`@google/gemini-cli` and `openclaw` there; it has no `tools/` for any of them). It is now
+`tools/<tool>` **or** (legacy package **and** its bin on PATH). Both halves are
+load-bearing: the legacy directory alone still reports a tool after its shim was deleted
+(y6, right after Remove), and the shim alone survives a deleted package. Scoped names are
+checked too, because the old installer linked the scoped directory. Result: y6 2 of 8.
+8x was already migrated on 2026-11-22 (`tools/` only, no `global/`), so it was never
+affected by this one — do not cite it as a reproduction.
+
+**5. `postgres_running` accepted a supervisor as a database (8x).** The predicate fell
+back to `pgrep -f postgres` when `pg_isready` failed, and on 8x that matched
+**`runsv postgres`** — the Termux service wrapper — so Paperclip's gate passed while 5432
+answered nothing. With `--force` overriding the memory gate on top, the app started the
+full ~2 GB install (the interrupted clone left 61 MB in `~/paperclip`, removed by hand).
+`pg_isready` is now authoritative when present, and the fallback accepts only a
+postmaster (`pgrep -x postgres` or `postgres -D`). Re-ran on 8x:
+`preflight ok:false … unmet: postgres_running [--force does not override arch or
+predicates]`, exit 3, no work done.
+
+### What the client now does with that information
+
+The engine grew three things in the same pass, because each failure above was survivable
+but *unexplainable* from the phone:
+
+**A post-run refresh.** A finished run used to leave every screen showing the state from
+before the tap — removing Pi still listed Pi as installed, which reads as "nothing
+happened". The app now sends its own `status` when a user run completes, under a distinct
+`REFRESH` origin: not `SYSTEM` (only a full read may fill the screens, the supervisor polls
+`--fast`) and not `USER` (it must not overwrite the raw stream, the step list or the
+message about the run). A successful refresh must not clear a failure notice — that is a
+separate, deliberate line, because the first version of this change erased the banner it
+had just shown.
+
+The rule is narrower than "the user asked for it": only a successful **action** clears a
+failure. The header Refresh is a `USER` run too, so the first fix still deleted the
+explanation whenever somebody tapped it to check whether the tool worked now. Clearing now
+requires an `--api run`, the only thing that counts as a retry.
+
+**A pinned failure line with evidence.** The banner used to be a verdict with no reason
+("Step failed: Install package"), and it lived *inside* the scroll view, so a user who had
+scrolled the list never saw it. It is now pinned under the header (as is the working
+banner) and reads in the app's voice — "That step failed: …", "This CPU can't run it",
+"Not enough memory right now", "PostgreSQL isn't running", "Android killed it — too little
+memory". A **Details** button opens the lines that explain it, in monospace.
+
+**`checks` in the status payload.** `status` evaluates every predicate the catalog names
+under `requires.predicates` and reports `{"postgres_running": false, …}`. That is what lets
+the Packages screen say "PostgreSQL isn't running" and disable the button *before* the tap,
+instead of offering Install and handing back exit 3. Memory and disk stay warnings a user
+may override with `--force`; predicates do not.
+
+Two engine additions make the above possible, both documented in `CONTRACT.md`:
+
+- On a failed step the runner replays the last 12 non-empty lines of **that step's own
+  output** as `log` events before `done`. Steps write to a log file the app cannot read
+  (different UID, app-private home), so this is the only channel.
+- A preflight refusal's one-line reason is already a `log` event; the app now shows it
+  instead of the exit code.
+
+### The quality gate is green again
+
+`pnpm run lint:all` failed for a long time on this branch: 221 ktlint findings, 194 of them
+in `MainActivity.kt`, which made a red gate meaningless. `ktlint --format` plus two merged
+KDoc blocks fixed it; the gate now passes end to end, so a failure there is a failure
+again.
+
+### APK state model — do not reintroduce composition-local state
+
+The client follows the platform model now, and each rule exists because its absence caused a
+real defect. Before adding a screen, read this list:
+
+- **State lives in `HomeViewModel` + `HomeState`, not in `remember`.** `remember` inside a
+  composable loses its value on rotation (that is how the step list, raw output and the
+  failure banner used to vanish), and `LaunchedEffect(result)` re-ran on the *stale* result,
+  queueing a second status run per rotate. `rememberSaveable` is only for view position: tab,
+  sub-screen, search query, collapse flags.
+- **Results are events: `Runner.completions` (buffered `SharedFlow`).** `Runner.result` stays a
+  `StateFlow` **only** for the supervisor's `withTimeoutOrNull { … first() }` await, which
+  depends on replay. Routing UI through it again reintroduces conflation (a poll and a tap
+  landing together drops one) and cancellation of a half-applied handler.
+- **Collect with `collectAsStateWithLifecycle`, and put timers inside
+  `repeatOnLifecycle(STARTED)`.** A Composition outlives STOP: the old 30 s "age" ticker kept
+  recomposing `Home` in the background, and a foreground-service start from a backgrounded
+  composition is not allowed (`runCatching` used to hide that).
+- **`Runner.send` is serialised on one lock** and safe from any thread. The check-then-act on
+  `_running` could dispatch two RUN_COMMANDs through one `REQUEST_CODE`, losing a result and
+  clearing `running` mid-install.
+- **`SupervisorService` runs on `Dispatchers.Main.immediate`**, so its fields are
+  single-threaded by construction. Do not move it back to `Default` without making them
+  atomic.
+- **Flags in `Prefs` (`SharedPreferences`), documents in a file.** The last status document is
+  `StatusStore` (IO); it used to be a multi-KB JSON string inside the XML that every startup
+  parses whole. `Prefs.lastStatusAt` stays a `Long` because `onResume` needs it synchronously.
+- **Parse once.** `Protocol.parse(stdout)` returns a `Parsed` holder; deriving snapshot,
+  catalogue, steps and failure from it is an O(1) view. Calling the old per-view functions
+  re-parses the whole stream each time — five times per result, on the main thread.
+
+### Android 14+ is where the supervisor used to die (verified on API 36)
+
+Neither test device (y6 API 28, 8x API 29) could ever exercise this, so it went unnoticed:
+a `foregroundServiceType="dataSync"` declaration with only `FOREGROUND_SERVICE` makes
+`startForeground()` throw on **any** Android 14+ phone. Measured A/B on an S22 (Android 16 /
+API 36, S22-class), same APK lineage:
+
+```text
+SecurityException: Starting FGS with type dataSync callerApp=… targetSDK=34
+  requires permissions: allOf=true [android.permission.FOREGROUND_SERVICE_DATA_SYNC]
+```
+
+…and `dumpsys activity services` showed **no** foreground service: the watchdog was dead on
+arrival. The fixed build reports `isForeground=true … types=0x40000000`
+(`FOREGROUND_SERVICE_TYPE_SPECIAL_USE`) and posts its notification normally.
+
+Two rules follow, both learned the hard way:
+
+- **`specialUse` + `FOREGROUND_SERVICE_SPECIAL_USE`**, not `dataSync`: this service transfers
+  nothing, and `dataSync` also carries a 6 h/24 h cap from targetSdk 35.
+- **Re-post after a notification grant.** The FGS notification is posted in `onCreate`, which can
+  precede `POST_NOTIFICATIONS`; an unchanged status never calls `update()`, so "Allow" looked like
+  it did nothing until the next unlock. `onStartCommand` re-posts and the permission callback
+  starts the service again (`lastStartId 1 → 2` on the device).
+
+### The app provisions Termux; the user does not (measured on a clean S22)
+
+A clean Termux 0.119.0-beta.3 on Android 16 exposed two first-run blockers, and the first rule
+they imply: **the user should never open Termux except for `allow-external-apps`.**
+
+1. **`--api` needs `jq` and nothing installed it.** `install.sh --api` refuses without jq (the
+   TUI installs it in `ensure_deps()`; a headless run has no terminal to answer apt with). The
+   launcher in `Termux.kt` now installs jq (then git/curl/tar) **before** it execs an existing
+   checkout, so a checkout whose jq went missing is repaired instead of failing. It tries `pkg`,
+   then `apt update` + `apt` — on that device `pkg` refuses with "No mirror or mirror group
+   selected" because its own curl cannot link (`SSL_set_quic_tls_early_data_enabled`), while
+   `apt` works. If provisioning still fails the launcher emits
+   `{"t":"error","code":6,"msg":"missing-packages: …","hint":"…"}`, which the app turns into a
+   screen naming the tool and the exact line — never "something went wrong".
+2. **`api_catalog` returned `{"schema":1,"actions":[]}` on that checkout** while 40 valid specs
+   sat on disk and `find`/`jq` both worked by hand. The `find … | head -1` probe plus
+   `xargs -0 jq` pipeline is gone: `api_spec_files` collects `"$dir"/*/*.json` with a bash glob
+   and one `jq -cs` builds the document. No find, no xargs, no SIGPIPE, and nothing that needs
+   findutils installed. Symptom to remember: the app faithfully renders "0 of 0 installed"
+   because the *catalog it was given* was empty — check `install.sh --api list` first.
+
+`Gate.classify` is now a pure function with unit tests (`GateClassifyTest`), because the mapping
+from "jq is required" to a generic error screen is exactly what hid this for a whole session.
+Onboarding copy states the split plainly: Setup downloads the toolkit and installs the tools it
+needs; the one thing it cannot do is flip `allow-external-apps`, because Android does not let one
+app change another app's settings.
+
+- **"Nothing installed" is not "services are down".** The supervisor starts at first launch, so
+  `0 online` is the normal state until the user installs something. It used to treat that as a
+  fault: it resurrected services that did not exist and, after three attempts, posted
+  *"Services are down and restarting did not help"* on a phone with nothing installed. The verdict
+  now comes from `SupervisorPolicy.classify(running, installedTools, autoStart)` (tested), which
+  reports **"Nothing installed yet"**, resets the attempt counter, and stops polling. The same
+  distinction gates the Overview's *Restart services* button and the Metrics empty state.
+  Rule of thumb: any sentence about services must be reachable only when a tool is installed.
+- **Foreground service types are declared, not guessed.** `specialUse` +
+  `FOREGROUND_SERVICE_SPECIAL_USE`, and `POST_NOTIFICATIONS` is requested in context. With
+  `dataSync` and no type permission, `startForeground()` throws `SecurityException` on
+  Android 14+, and an ungranted notification permission makes the supervisor invisible —
+  both silently, which is why neither test device (API 28 / pre-14) ever caught it.
 
 ## License Note
 

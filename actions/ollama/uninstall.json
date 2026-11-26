@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "ollama.uninstall",
+  "title": "Remove Ollama",
+  "summary": "Uninstall the Ollama package. Downloaded model weights are not removed.",
+  "category": "utilities",
+  "destructive": true,
+  "requires": {},
+  "steps": [
+    { "id": "uninstall", "title": "Uninstall package", "run": "step_pkg_remove",
+      "args": { "packages": ["ollama"] } }
+  ]
+}

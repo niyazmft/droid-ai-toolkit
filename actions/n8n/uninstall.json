@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "id": "n8n.uninstall",
+  "title": "Remove n8n",
+  "summary": "Stop the n8n process, delete tools/n8n and its shims",
+  "category": "workflows",
+  "destructive": true,
+  "requires": {},
+  "steps": [
+    {
+      "id": "uninstall",
+      "title": "Remove the tool project",
+      "run": "step_uninstall_tool",
+      "args": {
+        "tool": "n8n"
+      }
+    }
+  ]
+}

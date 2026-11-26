@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "hermes.uninstall",
+  "title": "Remove Hermes Agent",
+  "summary": "Stop the PM2 process, then delete ~/.hermes (venv, checkout, plugins and state)",
+  "category": "agents",
+  "destructive": true,
+  "requires": {},
+  "steps": [
+    { "id": "uninstall", "title": "Stop and remove", "run": "step_hermes_uninstall" }
+  ]
+}

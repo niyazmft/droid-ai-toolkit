@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "id": "ollama.install",
+  "title": "Ollama",
+  "summary": "Install the Ollama runtime. Model weights are downloaded separately with `ollama pull`. aarch64/x86_64 only: Termux publishes no 32-bit build.",
+  "category": "utilities",
+  "requires": {
+    "arch": [
+      "aarch64",
+      "x86_64"
+    ],
+    "min_disk_mb": 1500,
+    "predicates": [
+      "pkg_available:ollama"
+    ]
+  },
+  "steps": [
+    {
+      "id": "install",
+      "title": "Install package",
+      "run": "step_pkg_install",
+      "args": {
+        "packages": [
+          "ollama"
+        ]
+      },
+      "idempotent": true
+    },
+    {
+      "id": "verify",
+      "title": "Verify",
+      "run": "step_verify_cmd",
+      "args": {
+        "cmd": [
+          "ollama",
+          "--version"
+        ],
+        "timeout_s": 60
+      }
+    }
+  ]
+}

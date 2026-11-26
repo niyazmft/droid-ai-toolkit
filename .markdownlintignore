@@ -2,3 +2,5 @@ node_modules
 dist
 build
 .obsidian
+PLAN.md
+TASKS.md

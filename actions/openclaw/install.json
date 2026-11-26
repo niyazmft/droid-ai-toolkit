@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "id": "openclaw.install",
+  "title": "OpenClaw gateway",
+  "summary": "Install OpenClaw into its own pnpm project and apply the Android patches (pinned: 2026.11.x cannot migrate its state on Termux)",
+  "category": "agents",
+  "requires": {
+    "arch": [
+      "aarch64",
+      "armv8l",
+      "x86_64"
+    ],
+    "min_mem_mb": 900,
+    "min_disk_mb": 2500,
+    "tools": [
+      "node",
+      "pnpm"
+    ]
+  },
+  "steps": [
+    {
+      "id": "stop",
+      "title": "Stop running gateway",
+      "run": "step_pm2_stop",
+      "args": {
+        "name": "openclaw"
+      },
+      "optional": true,
+      "idempotent": true
+    },
+    {
+      "id": "install",
+      "title": "Install into its own project",
+      "run": "step_pnpm_tool",
+      "args": {
+        "tool": "openclaw",
+        "name": "openclaw",
+        "spec": "2026.9.8"
+      },
+      "retry_on_sigkill": 2,
+      "idempotent": true
+    },
+    {
+      "id": "patches",
+      "title": "Apply Android patches",
+      "run": "step_openclaw_patches",
+      "idempotent": true
+    },
+    {
+      "id": "migrate",
+      "title": "Migrate legacy state",
+      "run": "step_openclaw_migrate",
+      "idempotent": true
+    },
+    {
+      "id": "config",
+      "title": "Configure for Termux",
+      "run": "step_openclaw_config",
+      "optional": true,
+      "idempotent": true
+    },
+    {
+      "id": "verify",
+      "title": "Verify CLI",
+      "run": "step_verify_cmd",
+      "args": {
+        "cmd": [
+          "openclaw",
+          "--version"
+        ],
+        "timeout_s": 120
+      }
+    },
+    {
+      "id": "pm2",
+      "title": "Start gateway under PM2",
+      "run": "step_openclaw_pm2",
+      "optional": true
+    },
+    {
+      "id": "boot",
+      "title": "Install boot hook",
+      "run": "step_openclaw_boot_hook",
+      "idempotent": true
+    }
+  ]
+}

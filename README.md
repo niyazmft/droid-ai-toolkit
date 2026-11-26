@@ -5,7 +5,7 @@
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.17.13-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
+[![Version](https://img.shields.io/badge/version-1.18.0-blue.svg)](https://github.com/niyazmft/droid-ai-toolkit)
 [![Platform](https://img.shields.io/badge/Platform-Android%20(Termux)-green.svg)](https://termux.dev/)
 
 A high-performance, automated toolkit for running AI tools — [OpenClaw](https://github.com/the-claw-team/openclaw), [Gemini CLI](https://github.com/google/gemini-cli), [n8n](https://github.com/n8n-io/n8n), [Ollama](https://ollama.com), [Hermes](https://hermes-agent.nousresearch.com), [Nanobot](https://github.com/nanobot-ai/nanobot), [Pi](https://github.com/earendil-works/pi-coding-agent), and [Paperclip](https://github.com/paperclipai/paperclip) — natively on non-rooted Android devices. This toolkit bypasses kernel restrictions (`renameat2`), patches hardcoded system paths, and optimizes execution for mobile environments.
@@ -16,6 +16,7 @@ A high-performance, automated toolkit for running AI tools — [OpenClaw](https:
 
 - [Key Features](#-key-features)
 - [Compatibility](#-compatibility)
+- [Android App (APK)](#-android-app-apk)
 - [Before You Start](#-before-you-start)
 - [Quick Start](#-quick-start)
   - [Onboard OpenClaw after install](#4-onboard-openclaw-if-installed)
@@ -48,6 +49,7 @@ A high-performance, automated toolkit for running AI tools — [OpenClaw](https:
 
 ## ✨ Key Features
 
+- 📱 **Manage It From an App (v0.1.0 beta)**: a sideloadable APK that drives the same `install.sh` the terminal runs — install, update, repair and remove tools, watch what is running, restart a service, and read the raw output. Termux still does the work; see [Android App (APK)](#-android-app-apk).
 - ⚡ **Zero-Latency Navigation**: In-memory caching for Bash config lookups eliminates ~1-second menu reload delays.
 - 🛠 **Smart Repair**: Detects existing installations and provides a 2-second "Repair Only" path to re-apply patches without redundant downloads.
 - 🩹 **Zero-Config Patching**: Automatically fixes the `koffi` native bridge and `renameat2` kernel crashes for OpenClaw.
@@ -85,8 +87,72 @@ A high-performance, automated toolkit for running AI tools — [OpenClaw](https:
 - **Optimization**: Automatically detects system RAM and recommends appropriate memory limits (512MB to 2048MB) for Node.js and n8n workloads.
 - **Package Managers**: Supports both **npm** (Standard) and **pnpm** (High Efficiency) for Node.js-based tools.
 - **Process Management**: Supports **PM2** (Recommended) and **termux-services** (Native).
+- **App client**: The optional [Android app](#-android-app-apk) needs Android 9.0+ and a Termux installed from F-Droid (not the Play Store build).
 
 > ⚠️ **Architecture Warning**: Tools that depend on Rust-compiled Python extensions (Hermes, Nanobot) are **not supported** on `armv8l`/`armv7l` devices because upstream `maturin` rejects the architecture and pre-built wheels require glibc (not Android's bionic libc).
+
+---
+
+## 📱 Android App (APK)
+
+Manage the toolkit from a normal app instead of the terminal menu. The app is a **client**: it
+drives the same `install.sh` your terminal runs, over a headless `--api` mode, and Termux remains
+the thing that actually installs and supervises anything. Nothing here roots your phone.
+
+> 🚧 **Beta, sideloaded only.** The APK is built and signed with the debug key, so Android will
+> ask you to allow installs from your browser/file manager, and a later build signed with a
+> different key cannot be installed over it (uninstall first). It is also only useful together
+> with Termux — the app will not, and cannot, replace it.
+
+### What it gives you
+
+| | |
+| :--- | :--- |
+| **Install, update, repair, remove** | Every tool in the catalogue, from a card instead of a menu — the same action files the TUI reads |
+| **What is running** | Home lists each service with its memory and restart count, and one tap restarts everything |
+| **Live progress** | The step the engine is on ("Step 3 of 7 · Install OpenClaw"), not a spinner |
+| **Survives a reboot** | Set up the boot script and `pm2 save`, then test the restore from the app |
+| **Evidence, not just a verdict** | A failed step shows its own last lines, and the full stream is one tap away |
+| **Device facts** | Model, Android/API, architecture, RAM and swap with a memory chart over the last 24 h |
+
+### Requirements
+
+| Requirement | Why it is needed |
+| :--- | :--- |
+| **Android 9.0+** (API 28) | Minimum the app is built for |
+| **Termux from [F-Droid](https://f-droid.org/en/packages/com.termux/)** | The Play Store build is obsolete; the app cannot work with it |
+| **`allow-external-apps=true`** in `~/.termux/termux.properties` | Without it, Android refuses to let the app send commands to Termux. This is the one setting the app cannot change for you: |
+| **The toolkit itself** | The app's Setup downloads and updates it into `~/droid-ai-toolkit`; you do not need to run the curl one-liner first |
+
+Copy-paste for that one line, then restart Termux:
+
+```bash
+echo "allow-external-apps=true" >> ~/.termux/termux.properties
+termux-reload-settings
+```
+
+Optional, and only if you want the feature it enables:
+
+- **Files/media permission** — live step progress (the engine writes it to shared storage).
+- **Notification permission** (Android 13+) — the background watcher's one notification, which is
+  how the app tells you a tool stopped.
+- **Termux:Boot** — restores your services after a reboot.
+- **RAM**: the same rule as the terminal tools; Hermes and Nanobot still have no build for
+  `armv8l`/`armv7l`, and the app says so instead of offering an install that would fail.
+
+### Install
+
+1. Download **`droid-ai-0.1.0.apk`** from [Releases](https://github.com/niyazmft/droid-ai-toolkit/releases).
+2. Open it and allow your browser or file manager to install unknown apps when Android asks.
+3. Launch **Droid AI** and tap **Set up** — it provisions the toolkit into Termux and reports what
+   it is missing if something is.
+4. Do the `allow-external-apps` line above if the app says it cannot reach Termux, then tap
+   **Check again**.
+
+> ⚠️ **Do not use the app's Update button to cross an OpenClaw version your device cannot run.**
+> Some builds are pinned per device because newer ones cannot migrate their own state on Android
+> (for example a device happily running `2026.9.8` should stay there). If a tool currently works,
+> an update is a choice, not a fix.
 
 ---
 

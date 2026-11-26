@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # DROID AI TOOLKIT (Termux)
-# Version: 1.17.13
+# Version: 1.18.0
 # Purpose: Install and manage AI tools (OpenClaw, Gemini CLI, n8n, Ollama,
 #          Hermes, Paperclip) on Android via Termux with kernel patches and path fixes.
 # ==============================================================================
@@ -14,15 +14,70 @@
 # set -o pipefail is also avoided for the same reason.
 
 # --- 1. COLORS & GLOBALS ---
-VERSION="1.17.13"
+VERSION="1.18.0"
 ARCH_TYPE=$(uname -m)
+
+# Kept before the argument parser consumes $@ with shift. The API path re-execs
+# itself (see the LD_PRELOAD note below), and without this the re-exec started the
+# script with no arguments at all — which silently fell through to the TUI.
+ORIGINAL_ARGS=("$@")
 
 # Non-interactive n8n migration path. Used by the installer itself and for
 # on-device verification: `bash install.sh --n8n-migrate`.
 N8N_CLI_MIGRATE=0
-case "${1:-}" in
-    --n8n-migrate|--n8n-lan-https) N8N_CLI_MIGRATE=1 ;;
-esac
+
+# --- NON-INTERACTIVE SURFACE ---
+# The APK drives this script through Termux's RUN_COMMAND intent, which has no
+# TTY. `--api` selects the machine interface: NDJSON events on stdout, questions
+# emitted as events and answered through a file (see docs/CONTRACT.md).
+#
+# `--yes` is the ONLY way to pre-approve a destructive action headlessly. A
+# confirmation prompt with no terminal answers NO (see confirm_action).
+API_MODE=0
+API_CMD=""
+API_ACTION=""
+API_ANSWERS=""
+API_RUN_ID=""
+API_FRESH=0
+# --fast: skip probes that start a Node/Python interpreter (tool --version). Used by
+# the APK's supervisor, which polls status on a timer and cannot afford 19 s of CPU.
+API_FAST=0
+ASSUME_YES=0
+# --force: the user has seen the "may not fit" warning and wants to try anyway. It
+# overrides the capacity gates (memory, disk) and nothing else: a spec whose arch or
+# predicate is unsatisfied is refused regardless, because no amount of intent makes
+# armv8l run an aarch64-only tool.
+API_FORCE=0
+# Parameters for an action (--arg key=value), passed to steps as JSON.
+API_PARAMS='{}'
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --n8n-migrate|--n8n-lan-https) N8N_CLI_MIGRATE=1 ;;
+        --api)          API_MODE=1 ;;
+        --yes|-y)       ASSUME_YES=1 ;;
+        --fresh)        API_FRESH=1 ;;
+        --fast)         API_FAST=1 ;;
+        --force)        API_FORCE=1 ;;
+        --answers)      shift; API_ANSWERS="${1:-}" ;;
+        --arg)
+            # key=value, repeatable. Kept as JSON so a step can read it without the
+            # caller having to know the shell quoting rules of the engine.
+            shift
+            _kv="${1:-}"
+            if [ -n "$_kv" ]; then
+                API_PARAMS=$(printf '%s' "$API_PARAMS" | jq -c --arg kv "$_kv" '
+                    ($kv | index("=")) as $i
+                    | if $i == null then . else . + {($kv[0:$i]): ($kv[($i+1):])} end')
+            fi
+            ;;
+
+        --run-id)       shift; API_RUN_ID="${1:-}" ;;
+        list|status|health|run) API_CMD="$1" ;;
+        -*)             : ;;  # unknown flag: ignore, as before
+        *)              [ -z "$API_ACTION" ] && API_ACTION="$1" ;;
+    esac
+    shift
+done
 GREEN=$(printf '\033[0;32m')
 BLUE=$(printf '\033[0;34m')
 YELLOW=$(printf '\033[1;33m')
@@ -889,18 +944,40 @@ get_openclaw_root() {
 #
 # Input is read from the controlling terminal when there is one: the documented
 # launch is `curl -sSL .../install.sh | bash`, where stdin is the script itself.
+# has_tty -- is there a controlling terminal to draw on and read from?
+# Absent under cron, a background Termux RUN_COMMAND, or any piped invocation.
+has_tty() {
+    if { exec 3</dev/tty; } 2>/dev/null; then
+        exec 3<&-
+        return 0
+    fi
+    return 1
+}
+
 confirm_action() {
     local prompt="$1" answer tty_ok=0
-    if { exec 3</dev/tty; } 2>/dev/null; then
+    if has_tty; then
+        exec 3</dev/tty
         tty_ok=1
     fi
 
     while true; do
         echo -ne "\n${BLUE}>>${NC} ${prompt}? [Y/n]: "
         if [ "$tty_ok" -eq 1 ]; then
-            read -r answer <&3 || answer=""
+            # EOF on the tty is not an answer — the terminal went away.
+            if ! read -r answer <&3; then
+                exec 3<&-
+                echo -e "\n${YELLOW}No answer received — treating as No.${NC}"
+                return 1
+            fi
         else
-            read -r answer || answer=""
+            # No terminal at all: a failed read means nobody can answer. This
+            # used to fall through as `answer=""`, which matched the YES branch
+            # and auto-confirmed destructive prompts (WIPE ALL) headlessly.
+            if ! read -r answer; then
+                echo -e "\n${YELLOW}No terminal and no answer on stdin — treating as No.${NC}"
+                return 1
+            fi
         fi
         # Soft keyboards can deliver CR instead of LF; strip either.
         answer="${answer%$'\r'}"
@@ -954,6 +1031,12 @@ WHI_COLS=$(echo "$WHI_SIZES" | awk '{print $2}')
 # items are passed as tag desc pairs, without dynamic status prefixing.
 show_whi_menu() {
     local title="$1"; shift
+    # Exit code 2 is deliberately distinct from "user cancelled" (1). The main
+    # loop used to treat both as a clean exit, so a headless run printed the
+    # banner, could open no menu, and reported success having done nothing.
+    if ! has_tty; then
+        return 2
+    fi
     local -a items=() tags=() descs=()
     while [ $# -gt 0 ]; do
         items+=("$1" "$2")
@@ -989,6 +1072,9 @@ show_whi_menu() {
 # Returns 0 if user confirms (Yes), 1 if user cancels (No)
 whiptail_confirm() {
     local text="$1"
+    if ! has_tty; then
+        return 1
+    fi
     if command -v gum >/dev/null 2>&1; then
         gum confirm "$text"
         return $?
@@ -998,6 +1084,22 @@ whiptail_confirm() {
         fi
         return 0
     fi
+}
+
+# confirm_destructive <text> -- confirmation for an action that removes data.
+# Headless this refuses unless --yes was passed: pre-approving a wipe must be an
+# explicit flag, never the absence of a person at the keyboard.
+confirm_destructive() {
+    local text="$1"
+    if [ "${ASSUME_YES:-0}" -eq 1 ]; then
+        echo -e "${YELLOW}--yes given: proceeding without confirmation.${NC}"
+        return 0
+    fi
+    if ! has_tty; then
+        error_msg "Refusing a destructive action with no terminal. Re-run with --yes to pre-approve it."
+        return 1
+    fi
+    whiptail_confirm "$text"
 }
 
 # msgbox <text>
@@ -2154,7 +2256,7 @@ ids = 0
 pubs = 0
 for path in sys.argv[1].splitlines():
     path = path.strip()
-    if not path:
+    if not path or path in done:
         continue
     try:
         data = open(path, encoding="utf-8", errors="replace").read()
@@ -2732,11 +2834,37 @@ PYOCFSSAFE
     # expensive — the matching files total ~181 MB of bundled JS and four regex
     # passes over that take minutes on a phone. It is not stuck. Give it a
     # generous budget and do not tighten the timeout.
-    local BT cands
+    local BT cands BT_PROGRESS
+    # Per-file checkpoint. This pass costs 48 minutes on 8x (2 913 s measured) and
+    # a kill used to restart it from zero. A file is recorded only after its write
+    # completes, so a kill loses at most the file in flight; re-doing that one is a
+    # no-op because the "bt-stable" marker makes the second pass skip it.
+    BT_PROGRESS="$OPENCLAW_ROOT/.droid-bt-progress"
+    : >> "$BT_PROGRESS" 2>/dev/null || BT_PROGRESS=""
     cands=$(grep -rl --include='*.js' --include='*.mjs' -F 'birthtime' "$OPENCLAW_ROOT/dist" 2>/dev/null | grep -v '\.bak' || true)
-    if BT=$(python3 - "$cands" <<'PYOCBT'
+    if BT=$(python3 - "$cands" "$BT_PROGRESS" <<'PYOCBT'
 import re
 import sys
+
+PROGRESS = sys.argv[2] if len(sys.argv) > 2 else ""
+done = set()
+if PROGRESS:
+    try:
+        with open(PROGRESS, encoding="utf-8", errors="replace") as fh:
+            done = {line.strip() for line in fh if line.strip()}
+    except OSError:
+        done = set()
+
+
+def mark(path):
+    if not PROGRESS:
+        return
+    try:
+        with open(PROGRESS, "a", encoding="utf-8") as fh:
+            fh.write(path + "\n")
+            fh.flush()
+    except OSError:
+        pass
 
 PROD = re.compile(r'birthtime:\s?[A-Za-z0-9_$?.]{1,48}\.birthtimeNs\.toString\(\)')
 CMP_NS = re.compile(r'([A-Za-z0-9_$?.]+)\.birthtimeNs\s*(===|!==)\s*([A-Za-z0-9_$?.]+)\.birthtimeNs')
@@ -2758,6 +2886,7 @@ for path in sys.argv[1].splitlines():
     except OSError:
         continue
     if "birthtime" not in data or "droid-ai-toolkit: bt-stable" in data:
+        mark(path)
         continue
     orig = data
     # Each pass is guarded by a cheap C-speed substring test first. Running four
@@ -2779,6 +2908,7 @@ for path in sys.argv[1].splitlines():
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("/* droid-ai-toolkit: bt-stable */\n" + data)
         changed += 1
+    mark(path)
 print(changed)
 PYOCBT
     ); then
@@ -2808,6 +2938,10 @@ PYOCBT
         echo -e "   ${BLUE}The patch pass was interrupted before it finished. Re-run AGENTS → OpenClaw → [R] Repair.${NC}"
         echo -e "   ${BLUE}Until it is clean, CLI writes fail with 'Existing shared-state database generation changed'.${NC}"
         printf '%s\n' "$BT_LEFT" | sed "s|^$OPENCLAW_ROOT/dist/|   - |" | head -8
+    else
+        # Complete pass: drop the checkpoint so a later repair re-scans instead of
+        # skipping files that may have changed upstream in place.
+        [ -n "$BT_PROGRESS" ] && rm -f "$BT_PROGRESS" 2>/dev/null
     fi
 
     # --- 3) reclaim phantom agent leases left by Android PID recycling ---
@@ -5345,7 +5479,7 @@ restore_hermes_backup() {
     [ "$mode" = "CANCEL" ] || [ -z "$mode" ] && return 0
 
     if [ "$mode" = "FULL" ]; then
-        whiptail_confirm "This will REPLACE your current ~/.hermes with the backup. Continue?" || return 0
+        confirm_destructive "This will REPLACE your current ~/.hermes with the backup. Continue?" || return 0
         status_msg "Restoring full backup"
         if [ -d "$HOME/.hermes" ]; then
             local safety="$HOME/.hermes.fresh.$(date +%Y%m%d%H%M%S)"
@@ -6352,23 +6486,23 @@ menu_uninstall() {
         case "$choice" in
             "") continue ;;
             OPENCLAW)
-                whiptail_confirm "This will remove the OpenClaw global package and background services." && { uninstall_openclaw; whiptail_msg "OpenClaw removed."; } ;;
+                confirm_destructive "This will remove the OpenClaw global package and background services." && { uninstall_openclaw; whiptail_msg "OpenClaw removed."; } ;;
             N8N)
-                whiptail_confirm "This will remove n8n and its watchdog." && { uninstall_n8n; whiptail_msg "n8n removed."; } ;;
+                confirm_destructive "This will remove n8n and its watchdog." && { uninstall_n8n; whiptail_msg "n8n removed."; } ;;
             GEMINI)
-                whiptail_confirm "This will remove the Gemini CLI global package." && { uninstall_gemini; whiptail_msg "Gemini CLI removed."; } ;;
+                confirm_destructive "This will remove the Gemini CLI global package." && { uninstall_gemini; whiptail_msg "Gemini CLI removed."; } ;;
             HERMES)
-                whiptail_confirm "This will remove the Hermes agent installation." && { uninstall_hermes; whiptail_msg "Hermes removed."; } ;;
+                confirm_destructive "This will remove the Hermes agent installation." && { uninstall_hermes; whiptail_msg "Hermes removed."; } ;;
             OLLAMA)
-                whiptail_confirm "This will remove Ollama and downloaded models." && { uninstall_ollama; whiptail_msg "Ollama removed."; } ;;
+                confirm_destructive "This will remove Ollama and downloaded models." && { uninstall_ollama; whiptail_msg "Ollama removed."; } ;;
             PI)
-                whiptail_confirm "This will remove the Pi Coding Agent." && { uninstall_pi; whiptail_msg "Pi removed."; } ;;
+                confirm_destructive "This will remove the Pi Coding Agent." && { uninstall_pi; whiptail_msg "Pi removed."; } ;;
             PAPERCLIP)
-                whiptail_confirm "Paperclip soft-uninstall preserves source code and database. For deep uninstall (wipe everything), use UNINSTALL -> Wipe Software Stack." && { uninstall_paperclip; whiptail_msg "Paperclip removed (soft)."; } ;;
+                confirm_destructive "Paperclip soft-uninstall preserves source code and database. For deep uninstall (wipe everything), use UNINSTALL -> Wipe Software Stack." && { uninstall_paperclip; whiptail_msg "Paperclip removed (soft)."; } ;;
             NANOBOT)
-                whiptail_confirm "This will remove Nanobot AI." && { uninstall_nanobot; whiptail_msg "Nanobot AI removed."; } ;;
+                confirm_destructive "This will remove Nanobot AI." && { uninstall_nanobot; whiptail_msg "Nanobot AI removed."; } ;;
             WIPE)
-                whiptail_confirm "This will WIPE ALL applications and data. Core system packages are NOT removed." && { full_cleanup; whiptail_msg "All toolkit software removed."; } ;;
+                confirm_destructive "This will WIPE ALL applications and data. Core system packages are NOT removed." && { full_cleanup; whiptail_msg "All toolkit software removed."; } ;;
             BACK|*) return ;;
         esac
     done
@@ -6412,8 +6546,92 @@ if [ "$N8N_CLI_MIGRATE" -eq 1 ]; then
     exit $?
 fi
 
+# --- MACHINE INTERFACE (--api) ---
+# Resolved from BASH_SOURCE so `bash /path/install.sh --api …` works. The
+# `curl | bash` entry point has no directory and simply skips this path.
+TOOLKIT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    TOOLKIT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || TOOLKIT_DIR=""
+fi
+
+if [ "$API_MODE" -eq 1 ]; then
+    if [ -z "$TOOLKIT_DIR" ] || [ ! -d "$TOOLKIT_DIR/lib" ]; then
+        printf '%s\n' '{"t":"error","code":2,"msg":"lib/ not found: --api must run from the toolkit checkout, not curl|bash"}'
+        exit 2
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        # The TUI installs this in ensure_deps(); the API cannot, because it has no terminal to
+        # answer apt with. Say what is missing and how to fix it, so the app can show a screen
+        # instead of "something went wrong".
+        printf '%s\n' '{"t":"error","code":3,"msg":"jq is required for the --api interface","missing":"jq","hint":"apt install -y jq"}'
+        exit 3
+    fi
+    # shellcheck source=lib/json.sh
+    . "$TOOLKIT_DIR/lib/json.sh"
+    # shellcheck source=lib/state.sh
+    . "$TOOLKIT_DIR/lib/state.sh"
+    # shellcheck source=lib/usage.sh
+    . "$TOOLKIT_DIR/lib/usage.sh"
+    # shellcheck source=lib/progress.sh
+    . "$TOOLKIT_DIR/lib/progress.sh"
+    # shellcheck source=lib/preflight.sh
+    . "$TOOLKIT_DIR/lib/preflight.sh"
+    # shellcheck source=lib/health.sh
+    . "$TOOLKIT_DIR/lib/health.sh"
+    # Termux rewrites "#!<anything>" shebangs through libtermux-exec, which the
+    # interactive shell injects via LD_PRELOAD. RUN_COMMAND does not always carry
+    # it, and then every shebang script dies with
+    #   pm2: /usr/bin/env: bad interpreter: No such file or directory
+    # because Android has no /usr/bin/env. node itself keeps working (real binary),
+    # so the failure looks like "pm2 is broken" rather than "the environment is".
+    # Observed on 8x: the supervisor's restart action failed exactly this way while
+    # the same command worked over SSH.
+    # It has to be set BEFORE the shell starts: exporting it from inside bash is too
+    # late, because ld.so only reads LD_PRELOAD at process start. Measured on 8x:
+    #   export inside bash          -> pm2: /usr/bin/env: bad interpreter
+    #   LD_PRELOAD=... before bash  -> 6.0.14
+    # So re-exec ourselves once with the preload in place. Without this, every
+    # action that shells out to pm2/n8n/openclaw fails under RUN_COMMAND while the
+    # same command works over SSH — which is exactly how it presented.
+    if [ -f "$PREFIX/lib/libtermux-exec.so" ]; then
+        case " ${LD_PRELOAD:-} " in
+            *libtermux-exec.so*) ;;
+            *)
+                _env_bin="$PREFIX/bin/env"
+                [ -x "$_env_bin" ] || _env_bin="env"
+                exec "$_env_bin" LD_PRELOAD="$PREFIX/lib/libtermux-exec.so${LD_PRELOAD:+ $LD_PRELOAD}" \
+                    "${BASH:-$PREFIX/bin/bash}" "$0" "${ORIGINAL_ARGS[@]}"
+                ;;
+        esac
+    fi
+
+    # Every step primitive. Globbed so adding a tool does not require editing
+    # this list (and does not fail silently when someone forgets to).
+    for _lib in "$TOOLKIT_DIR"/lib/steps/*.sh; do
+        [ -f "$_lib" ] || continue
+        # shellcheck source=/dev/null
+        . "$_lib"
+    done
+    # shellcheck source=lib/runner.sh
+    . "$TOOLKIT_DIR/lib/runner.sh"
+    # Read by lib/steps/status.sh. Exported rather than passed as an arg so the step
+    # contract (see actions/status.json) does not change shape for a caller-side wish.
+    export DROIDAI_STATUS_FAST="$API_FAST"
+    # Read by lib/runner.sh: capacity gates are advisory when the caller says so.
+    export API_FORCE
+    api_dispatch
+    exit $?
+fi
+
 check_termux
 ensure_deps
+
+# The catalog menu (Phase 7). Sourced, not copied: it renders `--api list` and runs
+# `--api run`, so the text menu and the app execute the same code.
+if [ -f "${TOOLKIT_DIR:-}/lib/ui/tui.sh" ]; then
+    # shellcheck source=lib/ui/tui.sh
+    . "${TOOLKIT_DIR}/lib/ui/tui.sh"
+fi
 
 while true; do
     choice=$(show_whi_menu "Main Menu  |  Use ↑/↓ to navigate, Enter to select" \
@@ -6422,17 +6640,28 @@ while true; do
         "UTILITIES"  "Developer    — Gemini CLI, Pi, Ollama, GCP Bridge" \
         "SERVICES"   "Background   — PM2, Native Services" \
         ""           "" \
+        "ACTIONS"    "Catalog      — run any action (same code as the app)" \
         "COMPAT"     "[C]  Tested    — Versions verified & how to report" \
         "UNINSTALL"  "Uninstall    — Remove Tools & Reset" \
         "HELP"       "[?]  Help      — What each tool does" \
         ""           "" \
-        "EXIT"       "[X]  EXIT TOOLKIT") || exit 0
+        "EXIT"       "[X]  EXIT TOOLKIT") || {
+        # 2 = no terminal to draw the menu on. That is NOT a user cancellation:
+        # exiting 0 there reported success for a run that did nothing at all.
+        _menu_rc=$?
+        if [ "$_menu_rc" -eq 2 ]; then
+            error_msg "No interactive terminal available. Use --api list|status|run for the machine interface."
+            exit 2
+        fi
+        exit 0
+    }
     case "$choice" in
         "") continue ;;
         AGENTS)     menu_agents ;;
         WORKFLOWS)  menu_workflows ;;
         UTILITIES)  menu_utilities ;;
         SERVICES)   menu_services ;;
+        ACTIONS)    tui_catalog_menu ;;
         COMPAT)     menu_compat ;;
         UNINSTALL)  menu_uninstall ;;
         HELP)       menu_help ;;

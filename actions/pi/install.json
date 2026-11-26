@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "id": "pi.install",
+  "title": "Pi coding agent",
+  "summary": "Install or upgrade the Pi coding agent and write its Termux context file",
+  "category": "agents",
+  "requires": {
+    "arch": [
+      "aarch64",
+      "armv8l",
+      "x86_64"
+    ],
+    "min_mem_mb": 384,
+    "min_disk_mb": 1200,
+    "tools": [
+      "node",
+      "pnpm"
+    ]
+  },
+  "steps": [
+    {
+      "id": "clean",
+      "title": "Remove stale pi shim",
+      "run": "step_remove_path",
+      "args": {
+        "path": "$PREFIX/bin/pi"
+      },
+      "optional": true,
+      "idempotent": true
+    },
+    {
+      "id": "install",
+      "title": "Install into its own project",
+      "run": "step_pnpm_tool",
+      "args": {
+        "tool": "pi",
+        "name": "@earendil-works/pi-coding-agent",
+        "spec": "latest"
+      },
+      "retry_on_sigkill": 2,
+      "idempotent": true
+    },
+    {
+      "id": "context",
+      "title": "Write Termux context",
+      "run": "step_pi_agents_md",
+      "idempotent": true
+    },
+    {
+      "id": "verify",
+      "title": "Verify",
+      "run": "step_verify_cmd",
+      "args": {
+        "cmd": [
+          "pi",
+          "--version"
+        ]
+      }
+    }
+  ]
+}

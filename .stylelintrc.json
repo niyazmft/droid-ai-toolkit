@@ -1,11 +1,24 @@
 {
-  "extends": ["stylelint-config-standard"],
+  "extends": [
+    "stylelint-config-standard"
+  ],
   "rules": {
     "at-rule-no-unknown": [
       true,
       {
-        "ignoreAtRules": ["tailwind", "apply", "variants", "responsive", "screen"]
+        "ignoreAtRules": [
+          "tailwind",
+          "apply",
+          "variants",
+          "responsive",
+          "screen"
+        ]
       }
     ]
-  }
+  },
+  "ignoreFiles": [
+    "apk/**/build/**",
+    "node_modules/**",
+    "dist/**"
+  ]
 }

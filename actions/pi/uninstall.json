@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "id": "pi.uninstall",
+  "title": "Remove Pi coding agent",
+  "summary": "Stop nothing, delete tools/pi and its shims",
+  "category": "agents",
+  "destructive": true,
+  "requires": {},
+  "steps": [
+    {
+      "id": "uninstall",
+      "title": "Remove the tool project",
+      "run": "step_uninstall_tool",
+      "args": {
+        "tool": "pi"
+      }
+    }
+  ]
+}

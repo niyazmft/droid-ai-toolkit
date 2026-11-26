@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "service.resurrect",
+  "title": "Restart services",
+  "summary": "pm2 resurrect, then start the gateway if it is still down",
+  "category": "services",
+  "idempotent": false,
+  "requires": {},
+  "steps": [
+    { "id": "resurrect", "title": "Resurrect and verify", "run": "step_pm2_resurrect" }
+  ]
+}
