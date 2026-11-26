@@ -14,7 +14,6 @@ A high-performance, automated toolkit for running AI tools — [OpenClaw](https:
 
 ## 📑 Table of Contents
 
-- [Key Features](#-key-features)
 - [Compatibility](#-compatibility)
 - [Android App (APK)](#-android-app-apk)
 - [Before You Start](#-before-you-start)
@@ -38,45 +37,13 @@ A high-performance, automated toolkit for running AI tools — [OpenClaw](https:
   - [Pi Coding Agent](#pi-coding-agent-recommended)
   - [Ollama](#ollama--local-llm-runner)
   - [GCP Bridge](#gcp-bridge-walkthrough-optional)
+- [What the Toolkit Fixes For You](#-what-the-toolkit-fixes-for-you)
 - [Quick Commands](#-quick-commands)
 - [Maintenance](#-maintenance)
 - [Troubleshooting](#-troubleshooting)
 - [Uninstallation & Reset](#-uninstallation--reset)
 - [Code Quality](#-code-quality)
 - [License](#-license)
-
----
-
-## ✨ Key Features
-
-- 📱 **Manage It From an App (v0.1.0 beta)**: a sideloadable APK that drives the same `install.sh` the terminal runs — install, update, repair and remove tools, watch what is running, restart a service, and read the raw output. Termux still does the work; see [Android App (APK)](#-android-app-apk).
-- ⚡ **Zero-Latency Navigation**: In-memory caching for Bash config lookups eliminates ~1-second menu reload delays.
-- 🛠 **Smart Repair**: Detects existing installations and provides a 2-second "Repair Only" path to re-apply patches without redundant downloads.
-- 🩹 **Zero-Config Patching**: Automatically fixes the `koffi` native bridge and `renameat2` kernel crashes for OpenClaw.
-- 🔄 **Automatic State Migrations (v1.17.0+)**: OpenClaw 2026.9.x legacy-state migrations (workspace setup state, session store, exec approvals) run automatically during install/repair — no `openclaw doctor --fix` needed on Android (where it cannot run). Legacy files are archived, never deleted.
-- 🔐 **Command Authorization Defaults (v1.17.1+)**: Pins `channels.telegram.dmPolicy` to `allowlist` so slash commands keep working after the 2026.9.x pairing-policy change.
-- 🔁 **Reachable After Reboot (v1.17.5+)**: The generated boot script restores `sshd` as well as PM2, so a reboot no longer leaves your phone answering ping while every port refuses — see [Keeping services alive after a reboot](#keeping-services-alive-after-a-reboot).
-- 🛟 **Update Safety Net (v1.17.5+)**: An OpenClaw update snapshots your working install first and rolls back automatically if the download is killed — the usual outcome on low-RAM devices — instead of leaving no working `openclaw` at all.
-- 🧩 **Your Plugin Choices Are Kept (v1.17.5+)**: The installer no longer force-disables plugins you enabled yourself (e.g. `openclaw-honcho`, `zulip`) when it re-applies its config.
-- 🐍 **Survives `pkg upgrade` (v1.17.6+)**: A Termux `pkg upgrade` moves the unversioned `python` symlink to a new major version, which used to silently break the Hermes virtualenv (`No module named 'pip'` / `'yaml'`) and leave the gateway crash-looping. The venv is now pinned to the versioned interpreter, so upgrades cannot break it — see [Hermes — Nous Research Agent](#hermes--nous-research-agent).
-- 🧯 **Updates Cannot Report False Success (v1.17.7+)**: The Hermes update path now proves the CLI actually runs (`hermes --version`) instead of only checking that a launcher exists, resets a checkout left with merge conflict markers, and reports such a checkout as broken so **[F] Fix** is offered. Termux Python builds that ship without `os.link` (so upstream's hardlink fallbacks never get the `OSError` they expect) are shimmed through libc.
-- 🧠 **Memory Providers Keep Working (v1.17.7+)**: Hermes 2026.9.24 moved `honcho` memory out of core, and its documented `hermes plugins install` route cannot complete on Termux — the toolkit installs the published plugin directly and verifies the provider resolves.
-- 🧬 **CLI Writes Keep Working (v1.17.9+)**: Android reports `ctime` as `birthtime`, and OpenClaw's file-identity guard exists in ~14 bundles. The patch that neutralises it takes minutes over ~181 MB, so an interrupted pass leaves some copies comparing birthtime — after which every CLI **write** dies with `Existing shared-state database generation changed` while the gateway runs fine. Repair now detects the leftovers and tells you to re-run it.
-- ⚙️ **PM2 Really Starts OpenClaw (v1.17.8+)**: With a pnpm install, **SERVICES → PM2 → OpenClaw** used to hand PM2 the `node_modules` *directory* as the script. PM2 cannot exec a directory, so it reported the app as `online` with pid `N/A`, 0 b of memory and two empty logs — the gateway was never running and nothing said so. PM2 now gets the real executable.
-- 🔒 **Stale Gateway Locks Are Cleared (v1.17.8+)**: OpenClaw 2026.9.8+ keeps its Gateway lock in `$PREFIX/tmp/openclaw-<uid>/`, not `~/.openclaw/tmp`. Upstream honours such a lock even when its owning PID died months ago, which blocks both the gateway boot and `doctor --fix`. Dead-owner locks are now removed; a live owner keeps its lock.
-- 🩺 **Install Check Proves the CLI Runs (v1.17.8+)**: OpenClaw's post-install check is `openclaw --version` instead of `command -v openclaw` — the pnpm shim survives a deleted package, so the old check could pass on a broken install.
-- 🧱 **2026.11.x Limits Are Documented (v1.17.8+)**: OpenClaw 2026.11.x installs but cannot migrate on Termux — its pre-repair capture needs a native `fs-safe` addon with no Android build, so a device moving from 9.x is gated on agent schema 24 → 38. The remedy is documented rather than papered over.
-- 🧹 **No Python 3.14 Hijack (v1.17.7+)**: A half-built PM store left by a failed `hermes pm install` used to prepend a bundled Python **3.14** to `PATH` for every Hermes process (cron jobs and tools included) and warn on every command. It is now detected and discarded.
-- 📂 **Path Awareness**: Aggressively redirects `/bin/npm`, `/bin/node`, and `/tmp` to Termux-compatible directories using `$PREFIX`.
-- 🚀 **PM2 Integration**: Native support for starting, stopping, and monitoring OpenClaw, n8n, Ollama, Paperclip, Pi, and Gemini CLI via PM2 with optimized memory flags.
-- 🗄 **n8n Actually Starts (v1.17.11+)**: global installs skip package scripts, which also skipped `sqlite3`'s own build — so n8n installed, answered `--version`, and then retried
-  `SQLite package has not been found installed` forever without ever binding port 5678. The toolkit now compiles the missing native addons (`sqlite3`, and `isolated-vm` for expressions) with
-  the Termux toolchain, and the install check requires the database driver to load rather than trusting `--version`.
-- 🔧 **Global pnpm Installs Keep Working (v1.17.10+)**: `pnpm add -g` and a plain `pnpm install` disagree about where the global project's virtual store lives, and after the OpenClaw two-phase install every later global install died with `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE` — which is what broke n8n on the 8x device. The installer now pins the local install to the `-g` location and repairs an already-mismatched store by relinking (no re-download). n8n also stops on a failed install instead of printing "successfully installed" and then failing the health check.
-- ✅ **The `[Y/n]` Prompt Answers Correctly (v1.17.10+)**: the confirmation prompt read a single character after a 0.1s type-ahead flush, so typing `y` could be swallowed and treated as "no" while pressing Enter alone went ahead. It now reads a whole line, accepts yes/no explicitly, and re-asks on anything else.
-- 📦 **pnpm Support**: Integrated support for pnpm to speed up installations and save storage space.
-- 🧠 **Memory Guard**: Automatically clears memory (PM2 kill) and increases Node.js heap limits (1.5GB+) to prevent crashes on low-RAM devices during updates.
-- 🛡 **Surgical Cleanup**: The uninstaller offers **Soft/Deep** options and a **Wipe Stack (Reset)** function that preserves your system packages while cleaning the apps.
 
 ---
 
@@ -622,6 +589,39 @@ To expose your n8n instance securely to the internet (`https://yourdomain.com`),
 2. Follow the prompts to enter your VM IP and Domain.
 3. Copy the generated **SSH Public Key** and paste it into the GCP VM's `~/.ssh/authorized_keys` file.
 4. The monitor script will now automatically maintain a secure `autossh` tunnel to the VM.
+
+---
+
+## 🔧 What the Toolkit Fixes For You
+
+Android is a hostile host for these tools. Every line below is a workaround already in the
+installer — the detail lives in the section it links to, so this is the map, not the manual.
+
+- 💥 **Kernel and path traps** — `koffi`'s `renameat2` crash, `/tmp`, `/bin/npm` and `/bin/node`
+  redirected into Termux's own tree, and hardlink tricks replaced by copies where Android refuses
+  them ([OpenClaw on Android](#-openclaw-20269x-on-android)).
+- 🧠 **OpenClaw runs, and keeps running** — install-time state migrations (no `doctor --fix` on
+  Android), a pinned `dmPolicy` so slash commands survive the pairing-policy change, stale gateway
+  locks cleared, and PM2 handed the shim instead of a directory.
+- 🛟 **An update cannot wreck a working install** — the previous version is snapshotted and restored
+  if the download is killed, and "installed" is proven by `--version`, not by a shim that outlives
+  a deleted package.
+- 🐍 **Hermes survives `pkg upgrade`** — the venv is pinned to a versioned interpreter, an abandoned
+  PM store is purged from `PATH`, `honcho` is reinstalled without the missing runtime, and every
+  update ends by proving `hermes --version`
+  ([Hermes](#hermes--nous-research-agent)).
+- 🗄 **n8n actually starts, and serves TLS** — the `sqlite3` build that `--ignore-scripts` skipped is
+  compiled afterwards, and nginx terminates TLS on the LAN with a one-time setup password
+  ([n8n](#n8n--workflow-automation-server)).
+- 📦 **pnpm's two global layouts are reconciled** — an install can no longer be broken by whichever
+  `pnpm` command ran last.
+- 🔁 **A reboot brings things back** — the boot script restarts `sshd` and `pm2 resurrect`s the saved
+  list, and the app can set it up and test it
+  ([Keeping services alive](#keeping-services-alive-after-a-reboot)).
+- ⚡ **Menus are instant, memory is capped** — cached config lookups, and a Node heap limit sized to
+  the device instead of the default.
+- 🧹 **Uninstall means gone** — soft and deep options, a stack reset that keeps system packages, and
+  legacy folders removed only once no tool still needs them.
 
 ---
 
