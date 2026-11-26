@@ -1,7 +1,7 @@
 # APK UX & Functional Audit — device 8x
 
 Audited build: `dev.droidai.launcher` 0.1.0 (versionCode 1)
-Device: JSN-L22 (Honor 8X), Android 10 / API 29, 720×1560 @ 320 dpi, aarch64
+Device: an Honor 8X-class phone, Android 10 / API 29, 720×1560 @ 320 dpi, aarch64
 Method: code review of all 15 Kotlin sources + on-device testing via adb (screens,
 `uiautomator` accessibility tree, forced font scale, permission revocation, process
 death), with the engine verified independently over SSH (port 8022).
@@ -131,7 +131,7 @@ query. Fix: `rememberSaveable` for all three.
 
 ### ✅ F11. Fact rows lost their own values at the default font size
 
-`maxLines = 1` + `Ellipsis` produced `Command perm…` and `JSN-L22 · Android 10 (…` at
+`maxLines = 1` + `Ellipsis` produced `Command perm…` and `TEST-DEVICE · Android 10 (…` at
 font scale 1.0, and worse at 1.3. Fix: two lines; verified wrap of the long Hermes
 version string.
 

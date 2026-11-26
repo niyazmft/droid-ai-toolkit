@@ -19,7 +19,7 @@ class ProtocolTest {
             """{"t":"start","action":"status"}""",
             """{"t":"step","id":"collect","title":"Collect device status","state":"running"}""",
             """{"t":"step","id":"collect","title":"Collect device status","state":"ok","ms":1200}""",
-            """{"t":"data","payload":{"device":{"model":"JSN-L22","android":"9","api":28,"arch":"armv8l","mem_total_mb":1800,"mem_available_mb":344,"swap_free_mb":120,"disk_free_mb":9216,"hardlinks":false},"termux":{"version":"0.118.0","allow_external_apps":true,"boot_installed":true,"doze_whitelisted":false},"tools":{"node":"22.9.0","pnpm":"9.15.4","python":"3.11.17","openclaw":"","hermes":"","n8n":"2.48.7","ollama":"","pm2_installed":true,"installed":{"openclaw":false,"hermes":false,"n8n":true,"ollama":false}},"services":[{"name":"n8n","status":"online","restarts":0,"mem_mb":210}],"checks":{"postgres_running":false,"pkg_available:ollama":false}}}""",
+            """{"t":"data","payload":{"device":{"model":"TEST-DEVICE","android":"9","api":28,"arch":"armv8l","mem_total_mb":1800,"mem_available_mb":344,"swap_free_mb":120,"disk_free_mb":9216,"hardlinks":false},"termux":{"version":"0.118.0","allow_external_apps":true,"boot_installed":true,"doze_whitelisted":false},"tools":{"node":"22.9.0","pnpm":"9.15.4","python":"3.11.17","openclaw":"","hermes":"","n8n":"2.48.7","ollama":"","pm2_installed":true,"installed":{"openclaw":false,"hermes":false,"n8n":true,"ollama":false}},"services":[{"name":"n8n","status":"online","restarts":0,"mem_mb":210}],"checks":{"postgres_running":false,"pkg_available:ollama":false}}}""",
             """{"t":"end","code":0}""",
         ).joinToString("\n")
 
@@ -34,7 +34,7 @@ class ProtocolTest {
         assertNotNull(parsed.snapshot)
         val snap = requireNotNull(parsed.snapshot)
 
-        assertEquals("JSN-L22", snap.device.model)
+        assertEquals("TEST-DEVICE", snap.device.model)
         assertEquals(28, snap.device.api)
         assertEquals("armv8l", snap.device.arch)
         assertEquals(344, snap.device.memAvailableMb)

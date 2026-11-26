@@ -708,7 +708,7 @@ private enum class Tab(
 /**
  * When the visible answer was read, as a clock time.
  *
- * It shares the header line with the model and arch — "JSN-L22 · aarch64 · 14:32" — so it
+ * It shares the header line with the model and arch — "TEST-DEVICE · aarch64 · 14:32" — so it
  * has to be a couple of tokens. A *relative* age ("2m ago") cannot be rendered once and
  * left alone: it needs a timer to stay honest, and that timer recomposed the whole Home
  * screen every 30 s, in the background, to change one word. A fixed time never goes stale.

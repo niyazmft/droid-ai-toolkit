@@ -633,7 +633,7 @@ The app ships as the release asset **`droid-ai-0.1.0.apk`**. Facts that matter w
 
 ### UI map (v0.1.0) — the shape the owner settled on
 
-- **One header on every screen**: `Droid AI`, the device line (`JSN-L22 · 22:44`) and Refresh. The
+- **One header on every screen**: `Droid AI`, the device line (`TEST-DEVICE · 22:44`) and Refresh. The
   page name lives in the content, not in the header.
 - **One footer on every screen**: four equal segments — Home, Tools, Device, Settings — same
   icon-over-label shape, accent pill only on the destination you are on (Raw Output keeps
@@ -818,7 +818,7 @@ real defect. Before adding a screen, read this list:
 Neither test device (y6 API 28, 8x API 29) could ever exercise this, so it went unnoticed:
 a `foregroundServiceType="dataSync"` declaration with only `FOREGROUND_SERVICE` makes
 `startForeground()` throw on **any** Android 14+ phone. Measured A/B on an S22 (Android 16 /
-API 36, `SM-S901E`), same APK lineage:
+API 36, S22-class), same APK lineage:
 
 ```text
 SecurityException: Starting FGS with type dataSync callerApp=… targetSDK=34

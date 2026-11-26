@@ -5,7 +5,7 @@
 # (lib/usage.sh). This summarises it, locally or on a device over SSH:
 #
 #   scripts/usage_report.sh            # this machine's ledger
-#   scripts/usage_report.sh y6         # a device (ssh y6 …)
+#   scripts/usage_report.sh my-phone   # a device (ssh my-phone …)
 #
 # Why it exists: the Tier-1 work in TASKS.md is invisible — an app that re-reads status on
 # launch feels identical to one that does not, until the battery or the low-memory killer says
