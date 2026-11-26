@@ -6626,6 +6626,13 @@ fi
 check_termux
 ensure_deps
 
+# The catalog menu (Phase 7). Sourced, not copied: it renders `--api list` and runs
+# `--api run`, so the text menu and the app execute the same code.
+if [ -f "${TOOLKIT_DIR:-}/lib/ui/tui.sh" ]; then
+    # shellcheck source=lib/ui/tui.sh
+    . "${TOOLKIT_DIR}/lib/ui/tui.sh"
+fi
+
 while true; do
     choice=$(show_whi_menu "Main Menu  |  Use ↑/↓ to navigate, Enter to select" \
         "AGENTS"     "AI Agents    — OpenClaw, Hermes, Nanobot" \
@@ -6633,6 +6640,7 @@ while true; do
         "UTILITIES"  "Developer    — Gemini CLI, Pi, Ollama, GCP Bridge" \
         "SERVICES"   "Background   — PM2, Native Services" \
         ""           "" \
+        "ACTIONS"    "Catalog      — run any action (same code as the app)" \
         "COMPAT"     "[C]  Tested    — Versions verified & how to report" \
         "UNINSTALL"  "Uninstall    — Remove Tools & Reset" \
         "HELP"       "[?]  Help      — What each tool does" \
@@ -6653,6 +6661,7 @@ while true; do
         WORKFLOWS)  menu_workflows ;;
         UTILITIES)  menu_utilities ;;
         SERVICES)   menu_services ;;
+        ACTIONS)    tui_catalog_menu ;;
         COMPAT)     menu_compat ;;
         UNINSTALL)  menu_uninstall ;;
         HELP)       menu_help ;;
