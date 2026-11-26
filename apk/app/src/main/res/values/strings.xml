@@ -1,24 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Droid AI</string>
-    <string name="advanced_advanced">Advanced</string>
     <string name="advanced_arch_how_this_phone_s_processor">arch — how this phone\'s processor is built. Tools only run here if a build exists for it.</string>
-    <string name="advanced_back_to_settings">Back to Settings</string>
-    <string name="advanced_check_again">Check again</string>
-    <string name="advanced_everything_termux_printed_during_the_last">Everything Termux printed during the last command. Useful when asking for help; it is the raw evidence behind a failure.</string>
     <string name="advanced_if_you_did_not_install_one">If you did not install one of these, uninstall it from Android Settings → Apps.</string>
-    <string name="advanced_mb_restarts">%1$s MB · %2$s restarts</string>
-    <string name="advanced_memory_and_swap_over_the_last">Memory and swap over the last day or week, sampled every five minutes while the app runs. Nothing here is needed to use a tool.</string>
     <string name="advanced_memory_how_much_ram_is_free">Memory — how much RAM is free right now. Android kills background apps when it runs out.</string>
-    <string name="advanced_nothing_is_running_choose_a_tool">Nothing is running. Choose a tool in Tools to install one.</string>
-    <string name="advanced_only_this_app_can_run_commands">Only this app can run commands in Termux.</string>
     <string name="advanced_open_raw_output">Open raw output</string>
     <string name="advanced_other_app_s_can_also_run">%1$s other app(s) can also run commands in Termux:</string>
     <string name="advanced_pm2_the_process_manager_that_keeps">PM2 — the process manager that keeps a tool running after you close the app.</string>
     <string name="advanced_reading_device_status">Reading device status…</string>
-    <string name="advanced_restart">Restart</string>
-    <string name="advanced_restart_everything">Restart everything</string>
-    <string name="advanced_stop">Stop</string>
     <string name="advanced_storage_space_left_for_tools_and">Storage — space left for tools and their files.</string>
     <string name="home_after_that_come_back_here_and">After that, come back here and the app carries on by itself. If it still fails, the details below say exactly what Termux answered.</string>
     <string name="home_allow_droid_ai_to_control_termux">Allow Droid AI to control Termux</string>
@@ -61,7 +50,6 @@
     <string name="raw_of_line_s">%1$s of %2$s line(s)</string>
     <string name="raw_raw_output">Raw Output</string>
     <string name="raw_raw_output_retention_is_off_settings">Raw output retention is off (Settings → Termux &amp; Safety).</string>
-    <string name="settings_about_this_phone_background_apps_termux">About this phone, background apps, Termux access and the raw output of the last command. All of it optional — nothing here is needed to use a tool.</string>
     <string name="settings_access">Access</string>
     <string name="settings_ask_before_removing">Ask before removing</string>
     <string name="settings_back">Back</string>
@@ -73,7 +61,6 @@
     <string name="settings_legacy_package_folder">Legacy package folder · %1$s</string>
     <string name="settings_notifications_are_off_so_a_stopped">Notifications are off, so a stopped service goes unnoticed.</string>
     <string name="settings_one_notification_checked_when_you_unlock">One notification, checked when you unlock. Off: no warnings, no auto-restart.</string>
-    <string name="settings_open_advanced">Open Advanced</string>
     <string name="settings_re_read_status">Re-read status</string>
     <string name="settings_remove">Remove</string>
     <string name="settings_remove_it">Remove it</string>
@@ -97,8 +84,6 @@
     <string name="usage_free_swap_in_mb_higher_is">free swap in MB · higher is better</string>
     <string name="usage_low_mb_high_mb">low %1$s MB · high %2$s MB</string>
     <string name="usage_mb">%1$s MB</string>
-    <string name="usage_no_service_count_changes_in_this">No service-count changes in this window.</string>
-    <string name="usage_text">%1$s  %2$s</string>
     <string name="home_get_termux_f_droid">Get Termux (F-Droid)</string>
     <string name="home_i_already_installed_it">I already installed it</string>
     <string name="home_allow">Allow</string>
@@ -114,7 +99,6 @@
     <string name="home_mb_restarts">%1$d MB · %2$d restarts</string>
     <string name="home_stopped">Stopped</string>
     <string name="home_s">${seconds}s</string>
-    <string name="home_m_s">${seconds / 60}m ${seconds % 60}s</string>
     <string name="settings_allowed">Allowed</string>
     <string name="settings_not_allowed">Not allowed</string>
     <string name="advanced_installed">installed</string>
@@ -131,12 +115,7 @@
     <string name="settings_droid_ai">Droid AI</string>
     <string name="settings_startup_services">Startup &amp; Services</string>
     <string name="settings_termux_safety">Termux &amp; Safety</string>
-    <string name="settings_advanced">Advanced</string>
     <string name="settings_cleanup">Cleanup</string>
-    <string name="advanced_about_this_phone">About this phone</string>
-    <string name="advanced_background_apps">Background apps</string>
-    <string name="advanced_termux_safety">Termux &amp; safety</string>
-    <string name="advanced_diagnostics">Diagnostics</string>
     <string name="settings_diagnostics">Diagnostics</string>
     <string name="phone_about_this_phone">About this phone</string>
     <string name="phone_device">This device</string>
@@ -147,10 +126,8 @@
     <string name="home_installed">Installed</string>
     <string name="home_nothing_running_yet">Nothing is running right now. Open Tools to start a tool.</string>
     <string name="settings_diagnostics_what_termux_printed">What Termux printed during the last command — the evidence behind a failure.</string>
-    <string name="advanced_usage">Usage</string>
     <string name="tools_not_installed">Not installed</string>
     <string name="usage_memory">Memory</string>
     <string name="usage_swap_free">Swap free</string>
     <string name="usage_allocation">Allocation</string>
-    <string name="usage_events">Events</string>
 </resources>
