@@ -184,18 +184,24 @@ if not width or not height:
 # The bar is split into equal segments, so the tab centre is geometry, not a lookup: the
 # *selected* tab is reported with clickable=false, so counting clickable nodes cannot tell
 # which one is which (and the label nodes have empty frames).
-y = None
+# The bar holds four targets now: the two tabs on the left, then Info and Settings at icon
+# size on the right. Equal division of the width would tap the gap between them, so the
+# targets are read from the dump, ordered left to right, and the wanted tab is the nth
+# (Home = 0, Tools = 1).
+targets = []
 for m in re.finditer(
     r"clickable=\"true\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", xml
 ):
     x1, y1, x2, y2 = (int(m.group(i)) for i in (1, 2, 3, 4))
     if y2 > y1 and y1 > height * 0.8 and x2 > x1:
-        y = (y1 + y2) // 2
-        break
-if y is None:
-    y = int(height * 0.92)
+        targets.append((x1, y1, x2, y2))
+targets.sort(key=lambda t: t[0])
 idx = names.index(want)
-print(int((idx + 0.5) * width / len(names)), y)
+if idx < len(targets):
+    x1, y1, x2, y2 = targets[idx]
+    print((x1 + x2) // 2, (y1 + y2) // 2)
+else:
+    print(int((idx + 0.5) * width / len(names)), int(height * 0.92))
 ' 2>/dev/null)
   if [ -z "$coords" ]; then
     return 1
@@ -203,6 +209,20 @@ print(int((idx + 0.5) * width / len(names)), y)
   # shellcheck disable=SC2086  # two integers by construction
   adb_cmd shell input tap $coords >/dev/null 2>&1
   return 0
+}
+
+# A plugged-in cable makes some Androids pop the "Use USB to" chooser over everything, which
+# hides the app from uiautomator (it only dumps the focused window) and looks exactly like
+# "the app never reached Home". Dismiss it when it is the thing on screen.
+dismiss_usb_chooser() {
+  local ui
+  ui=$(dump_ui)
+  if on_screen "$ui" 'Use USB to'; then
+    tap_text "CANCEL" >/dev/null 2>&1 || true
+    sleep 1
+    return 0
+  fi
+  return 1
 }
 
 # --- harness -----------------------------------------------------------------
@@ -229,6 +249,8 @@ if [ -z "$original_font_scale" ] || [ "$original_font_scale" = "null" ]; then
 fi
 
 # --- 1. cold start must not show a false failure ------------------------------
+
+dismiss_usb_chooser || true
 
 say "1. cold start"
 adb_cmd shell am force-stop "$PKG" >/dev/null 2>&1

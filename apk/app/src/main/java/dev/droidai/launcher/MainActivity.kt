@@ -66,7 +66,6 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -732,8 +731,6 @@ private fun AppHeader(
     detail: String,
     age: String?,
     onRefresh: () -> Unit,
-    onSettings: () -> Unit,
-    onOpenPhone: () -> Unit = {},
 ) {
     Row(
         Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 12.dp, bottom = 4.dp),
@@ -742,49 +739,21 @@ private fun AppHeader(
         Column(Modifier.weight(1f)) {
             Text(stringResource(R.string.home_droid_ai), style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.height(2.dp))
-            // The device line is the door to the device facts. It already answers "which phone
-            // is this?", so tapping it opens the rest of that answer instead of adding a fifth
-            // icon to the row; the glyph says the line is tappable, which a bare label does not.
-            Row(
-                Modifier
-                    .clip(MaterialTheme.shapes.small)
-                    .clickable(onClick = onOpenPhone)
-                    .semantics {
-                        role = Role.Button
-                        contentDescription = "About this phone"
-                    }.padding(vertical = 2.dp, horizontal = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    listOfNotNull(detail, age).joinToString(" · "),
-                    style = UiType.meta,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    Icons.Filled.Info,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            // Plain text again: the device facts open from the bar below, with Settings. Two
+            // navigation doors in two different places — one in the header, one in the footer —
+            // is the cognitive load this review asked us to remove.
+            Text(
+                listOfNotNull(detail, age).joinToString(" · "),
+                style = UiType.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
         IconButton(onClick = onRefresh, modifier = Modifier.size(44.dp)) {
             Icon(
                 Icons.Filled.Refresh,
                 contentDescription = stringResource(R.string.home_refresh),
-                modifier = Modifier.size(20.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        // Settings is a gear here rather than a fourth tab: it is where you go to change the
-        // app, not where you go to use it.
-        IconButton(onClick = onSettings, modifier = Modifier.size(44.dp)) {
-            Icon(
-                Icons.Filled.Settings,
-                contentDescription = stringResource(R.string.home_settings),
                 modifier = Modifier.size(20.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -805,6 +774,8 @@ private fun AppHeader(
 private fun SoftTabBar(
     current: Tab,
     onSelect: (Tab) -> Unit,
+    onOpenPhone: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     val p = Skin.palette
     val dim = MaterialTheme.colorScheme.onSurfaceVariant
@@ -862,7 +833,40 @@ private fun SoftTabBar(
                     )
                 }
             }
+
+            // Both "go somewhere else" doors live here, next to one another, in the bar the
+            // thumb is already at. They used to be split: Settings in the header, the device
+            // facts behind the phone name *also* in the header — two navigation targets above
+            // the content and none below, which is the opposite of where a phone user looks.
+            //
+            // They are drawn at icon size and without labels, unlike the tabs: these are not
+            // places you switch between, they are pages you visit and come back from.
+            Box(Modifier.width(1.dp).height(24.dp).background(Skin.palette.divider))
+            ChromeButton(Icons.Filled.Info, stringResource(R.string.home_about_phone), onOpenPhone)
+            ChromeButton(Icons.Filled.Settings, stringResource(R.string.home_settings), onSettings)
         }
+    }
+}
+
+/**
+ * A door in the bottom bar: an icon a thumb can hit, 44 dp square.
+ *
+ * `contentDescription` is the label, because the bar has no room for a second word and a
+ * screen reader still has to be able to say what the button does.
+ */
+@Composable
+private fun ChromeButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick, modifier = Modifier.size(44.dp)) {
+        Icon(
+            icon,
+            contentDescription = description,
+            modifier = Modifier.size(20.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -999,7 +1003,14 @@ private fun Home(
         // A sub-screen is a full-page detour, so it has no tab bar: offering one would only
         // invite leaving the page you just opened.
         bottomBar = {
-            if (!showSettings && !showRawScreen && !showPhone) SoftTabBar(tab) { tabName = it.name }
+            if (!showSettings && !showRawScreen && !showPhone) {
+                SoftTabBar(
+                    current = tab,
+                    onSelect = { tabName = it.name },
+                    onOpenPhone = { showPhone = true },
+                    onSettings = { showSettings = true },
+                )
+            }
         },
     ) { pad ->
         when {
@@ -1090,8 +1101,6 @@ private fun Home(
                     } ?: "Termux is ready.",
                 age = if (s.snapshot != null && s.checkedAt > 0L) clockShort(s.checkedAt) else null,
                 onRefresh = { vm.refresh() },
-                onSettings = { showSettings = true },
-                onOpenPhone = { showPhone = true },
             )
 
             PinnedBanners(state = s, onDetails = { showFailureDetails = true }, onDismiss = { vm.dismissFailure() })
