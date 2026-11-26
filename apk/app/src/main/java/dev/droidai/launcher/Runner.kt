@@ -237,10 +237,13 @@ object Runner {
                 if (o == Origin.USER) {
                     queuedArgs = args
                     queuedLabel = label
+                    diag("queue ${args.joinToString(" ")} ($label, was ${_label.value})")
                     return@synchronized Dispatch.QUEUED
                 }
+                diag("skip ${args.joinToString(" ")} origin=$o")
                 return@synchronized Dispatch.SKIPPED
             }
+            diag("send ${args.joinToString(" ")} origin=$o label=$label")
             dispatchLocked(context, args, o, label)
         }
 
@@ -462,6 +465,17 @@ object Runner {
                 .take(300)
         return "exit=${result.exitCode} err=${result.err} " +
             if (head.isBlank()) "(no output and no error text)" else head
+    }
+
+    /**
+     * One line per transport decision, in debug builds only.
+     *
+     * "Why do the versions appear twice" was unanswerable from the phone: the engine log shows
+     * what arrived, not who asked twice. `adb logcat -s DroidAI` now answers it. Log.d is a no-op
+     * in a release build (the level is stripped), so this costs nothing there.
+     */
+    private fun diag(message: String) {
+        Log.d("DroidAI", message)
     }
 
     private fun flushQueueLocked() {

@@ -5,12 +5,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -51,7 +55,9 @@ fun SettingsScreen(
     onRecheckPermission: () -> Unit,
     onRequestNotifications: () -> Unit = {},
     onRunAction: (String) -> Unit,
-    onOpenAdvanced: () -> Unit = {},
+    foreign: List<String> = emptyList(),
+    onCheckAgain: () -> Unit = {},
+    onOpenRawOutput: () -> Unit = {},
     onBack: () -> Unit = {},
     onTestBoot: () -> Unit = {},
     onOpenBootApp: () -> Unit = {},
@@ -62,6 +68,7 @@ fun SettingsScreen(
     val confirmRemove by Prefs.confirmRemove.collectAsStateWithLifecycle()
     val retainRaw by Prefs.retainRaw.collectAsStateWithLifecycle()
     val themeMode by Prefs.themeMode.collectAsStateWithLifecycle()
+    val bootTestedAt by Prefs.bootTestedAt.collectAsStateWithLifecycle()
     // collectAsState, not .value: the row used to keep showing the old answer after
     // "Re-check" succeeded, because reading a StateFlow value is not observable.
     val permission by Gate.permissionGranted.collectAsStateWithLifecycle()
@@ -92,35 +99,6 @@ fun SettingsScreen(
         Text(stringResource(R.string.settings_settings), style = MaterialTheme.typography.headlineMedium)
         TextButton(onClick = onBack, modifier = Modifier.padding(top = 2.dp)) {
             Text(stringResource(R.string.settings_back))
-        }
-
-        Section(stringResource(R.string.settings_appearance))
-        Panel {
-            Text(
-                stringResource(R.string.settings_both_palettes_are_designed_this_only),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(
-                Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                ThemeChoice("System", themeMode == Prefs.THEME_SYSTEM, Modifier.weight(1f)) {
-                    Prefs.setThemeMode(Prefs.THEME_SYSTEM)
-                }
-                ThemeChoice("Light", themeMode == Prefs.THEME_LIGHT, Modifier.weight(1f)) {
-                    Prefs.setThemeMode(Prefs.THEME_LIGHT)
-                }
-                ThemeChoice("Dark", themeMode == Prefs.THEME_DARK, Modifier.weight(1f)) {
-                    Prefs.setThemeMode(Prefs.THEME_DARK)
-                }
-            }
-        }
-
-        Section(stringResource(R.string.settings_droid_ai))
-        Panel {
-            Fact("Version", APP_VERSION)
-            Fact("Package", context.packageName)
         }
 
         Section(stringResource(R.string.settings_startup_services))
@@ -164,6 +142,7 @@ fun SettingsScreen(
             BootStateBlock(
                 snapshot = snapshot,
                 running = running,
+                testedAt = bootTestedAt,
                 onRunAction = onRunAction,
                 onTestBoot = onTestBoot,
                 onOpenBootApp = onOpenBootApp,
@@ -191,6 +170,22 @@ fun SettingsScreen(
                 spoken = fullVersion.ifBlank { "unknown" },
             )
             UiPill(label = stringResource(R.string.settings_check_again), ghost = true, onClick = onRecheckPermission)
+            // Moved from Advanced: this is the one place that answers "who else can run
+            // commands in Termux", so the warning and the re-check belong on the same panel.
+            if (foreign.isNotEmpty()) {
+                Text(
+                    stringResource(R.string.advanced_other_app_s_can_also_run, foreign.size),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                UiCodeBlock(foreign.joinToString("\n"))
+                Text(
+                    stringResource(R.string.advanced_if_you_did_not_install_one),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                UiCodeBlock(foreign.joinToString("\n") { Security.revokeCommand(it) })
+            }
             SwitchRow(
                 title = stringResource(R.string.settings_ask_before_removing),
                 subtitle = stringResource(R.string.settings_confirm_before_deleting_a_tool_its),
@@ -203,14 +198,59 @@ fun SettingsScreen(
             ) { Prefs.setRetainRaw(it) }
         }
 
-        Section(stringResource(R.string.settings_advanced))
+        Section(stringResource(R.string.settings_diagnostics))
         Panel {
             Text(
-                stringResource(R.string.settings_about_this_phone_background_apps_termux),
+                stringResource(R.string.settings_diagnostics_what_termux_printed),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            UiPill(label = stringResource(R.string.settings_open_advanced), ghost = true, onClick = onOpenAdvanced)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    TerminalIcon,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(6.dp))
+                UiPill(
+                    label = stringResource(R.string.advanced_open_raw_output),
+                    ghost = true,
+                    onClick = onOpenRawOutput,
+                )
+            }
+        }
+
+        // Appearance last: it is the setting people change once, and it used to sit above
+        // everything they change often.
+        Section(stringResource(R.string.settings_appearance))
+        Panel {
+            Text(
+                stringResource(R.string.settings_both_palettes_are_designed_this_only),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ThemeChoice("System", themeMode == Prefs.THEME_SYSTEM, Modifier.weight(1f)) {
+                    Prefs.setThemeMode(Prefs.THEME_SYSTEM)
+                }
+                ThemeChoice("Light", themeMode == Prefs.THEME_LIGHT, Modifier.weight(1f)) {
+                    Prefs.setThemeMode(Prefs.THEME_LIGHT)
+                }
+                ThemeChoice("Dark", themeMode == Prefs.THEME_DARK, Modifier.weight(1f)) {
+                    Prefs.setThemeMode(Prefs.THEME_DARK)
+                }
+            }
+        }
+
+        Section(stringResource(R.string.settings_droid_ai))
+        Panel {
+            // No package name: it is the same app the reader is holding, and a dotted
+            // `dev.droidai.launcher` is the kind of row people scroll past to reach the version.
+            Fact("Version", APP_VERSION)
         }
 
         // Hidden entirely when the legacy folder is absent, which is the normal state on a
@@ -292,6 +332,7 @@ fun SettingsScreen(
 private fun BootStateBlock(
     snapshot: Protocol.Snapshot?,
     running: Boolean,
+    testedAt: Long = 0L,
     onRunAction: (String) -> Unit,
     onTestBoot: () -> Unit,
     onOpenBootApp: () -> Unit,
@@ -331,6 +372,14 @@ private fun BootStateBlock(
                 "Android may still stop Termux at boot. Allow Termux and Termux:Boot to run in the background (Settings → Apps → Battery)."
             label = "Check again"
             onClick = { onRunAction("service.boot") }
+        }
+        testedAt > 0L -> {
+            // It still cannot claim a *reboot* worked — only that the restore the boot script
+            // runs has. Saying which one is the difference between evidence and a slogan.
+            title = "Works after reboot — tested ${Format.age(System.currentTimeMillis(), testedAt)}"
+            detail = "The saved list was restored successfully the same way the boot script does it."
+            label = "Test again"
+            onClick = onTestBoot
         }
         else -> {
             title = "Works after reboot — not yet tested"

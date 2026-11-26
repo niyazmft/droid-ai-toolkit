@@ -68,6 +68,14 @@ data class HomeState(
 )
 
 /**
+ * The label of the boot test run.
+ *
+ * A constant because the completion handler compares against it: the test proves that the
+ * *same* restore the boot script performs can run, so it must be recognisable when it lands.
+ */
+internal const val BOOT_TEST_LABEL = "Testing the boot restore"
+
+/**
  * The state machine behind the Overview and Packages screens.
  *
  * ## Why results are collected here, once
@@ -102,6 +110,9 @@ class HomeViewModel(
 
     /** At most one `--api list` per process, so a device with no catalog does not loop. */
     private var catalogRequested = false
+
+    /** A boot test is in flight; its success is what [Prefs.bootTestedAt] records. */
+    private var bootTestPending = false
 
     private var clock: Job? = null
 
@@ -220,7 +231,18 @@ class HomeViewModel(
         dispatch(args, label)
     }
 
-    /** Run an action a screen has already confirmed (Settings → legacy-folder cleanup). */
+    /**
+     * "Test now" on the boot block: restore the saved list, and *record that it worked*.
+     *
+     * The block used to say "not yet tested" forever, because nothing ever wrote down the
+     * result. The app still cannot watch a reboot — it can only prove that the same restore the
+     * boot script runs did complete — so that is exactly what the timestamp says.
+     */
+    fun testBoot() {
+        bootTestPending = true
+        runService("service.resurrect", null, BOOT_TEST_LABEL)
+    }
+
     fun runConfirmed(
         id: String,
         label: String,
@@ -300,6 +322,7 @@ class HomeViewModel(
             // returned from the error branch *before* this line, so `failedTools` was never
             // populated and the "Last attempt failed" group could not appear at all.
             markFailed(completion, failed = true)
+            if (completion.label == BOOT_TEST_LABEL) bootTestPending = false
             maybeRequestCatalog()
             return
         }
@@ -310,6 +333,10 @@ class HomeViewModel(
         if (fromUser && completion.actionId.isNotBlank()) {
             _state.update { it.copy(failure = null) }
             persistFailure(null)
+        }
+        if (fromUser && bootTestPending && completion.label == BOOT_TEST_LABEL) {
+            bootTestPending = false
+            Prefs.setBootTestedAt(System.currentTimeMillis())
         }
         if (fromUser) say(completionMessage(completion, parsed))
         markFailed(completion, failed = false)
@@ -390,6 +417,10 @@ class HomeViewModel(
     }
 
     private fun refreshAfterRun(actionId: String) {
+        // An action changes the device; a status read does not. Without this guard, opening
+        // Tools sent a full read and then a second one from its own completion (see
+        // RefreshPolicy.needsPostRunRefresh) — the versions appeared twice.
+        if (!RefreshPolicy.needsPostRunRefresh(actionId)) return
         if (Runner.running.value) return
         Runner.send(app, RefreshPolicy.argsAfterRun(actionId), Origin.REFRESH, "Refresh")
     }

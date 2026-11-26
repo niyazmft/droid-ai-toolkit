@@ -68,4 +68,25 @@ object Format {
 
     /** The first three-part number in a string: `0.119.0-beta.3` → `0.119.0`. */
     private val DOTTED_TRIPLE = Regex("""\d+\.\d+\.\d+""")
+
+    /**
+     * "how long ago", in the words a person would use: `just now`, `4 min ago`, `2 h ago`.
+     *
+     * Used by the boot block, which used to say "not yet tested" forever and now says when it
+     * was tested. Coarse on purpose: the exact minute is not the point, and a relative phrase
+     * does not go stale the way a clock time does when the screen is left open.
+     */
+    fun age(
+        now: Long,
+        at: Long,
+    ): String {
+        if (at <= 0L) return "never"
+        val minutes = ((now - at) / 60_000L).coerceAtLeast(0L)
+        return when {
+            minutes < 1 -> "just now"
+            minutes < 60 -> "$minutes min ago"
+            minutes < 60 * 24 -> "${minutes / 60} h ago"
+            else -> "${minutes / (60 * 24)} d ago"
+        }
+    }
 }

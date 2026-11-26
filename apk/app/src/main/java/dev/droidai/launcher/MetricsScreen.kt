@@ -28,10 +28,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 import kotlin.math.max
 
 private const val HOUR_MS = 60L * 60 * 1000
@@ -39,12 +35,17 @@ private const val HOUR_MS = 60L * 60 * 1000
 /**
  * What the device has been doing, from the samples the supervisor writes.
  *
+ * Lives on the phone-info screen with the rest of the "about this phone" facts: memory, swap
+ * and what is using them are properties of the device, not settings. The **Events** section
+ * (a list of service-count transitions) is gone — it restated a number that the chart above it
+ * already drew, in a format nobody could act on.
+ *
  * Charts are drawn on a Canvas rather than pulled from a charting library: the series is
  * a few hundred points of two values, which is not worth a megabyte of dependency or the
  * startup cost.
  */
 @Composable
-fun MetricsScreen(snapshot: Protocol.Snapshot?) {
+fun PhoneUsage(snapshot: Protocol.Snapshot?) {
     val context = LocalContext.current
     var windowHours by remember { mutableStateOf(24) }
 
@@ -63,8 +64,8 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        // No headline: this renders inside Advanced → Usage now (W8). A second "Metrics" title
-        // under the Advanced one was a page pretending to be a page.
+        // No headline: this renders inside a titled section of the phone screen. A second
+        // "Metrics" title under that one was a page pretending to be a page.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(24, 168).forEach { hours ->
                 UiChoice(
@@ -196,46 +197,8 @@ fun MetricsScreen(snapshot: Protocol.Snapshot?) {
                     }
                 }
             }
-
-            Section(stringResource(R.string.usage_events))
-            Panel {
-                val events = remember(samples) { transitions(samples) }
-                if (events.isEmpty()) {
-                    Text(
-                        stringResource(R.string.usage_no_service_count_changes_in_this),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    events.forEach { (ts, text) ->
-                        Text(
-                            stringResource(R.string.usage_text, formatTime(ts), text),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-            }
         }
     }
-}
-
-// Immutable and thread-safe; the old per-row SimpleDateFormat allocated an object per label
-// per recomposition, and java.time is native at minSdk 28.
-private val TIME_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm", Locale.US)
-
-private fun formatTime(ts: Long): String = TIME_FMT.format(Instant.ofEpochMilli(ts).atZone(ZoneId.systemDefault()))
-
-/** Service-count changes, which is what a restart or an LMK kill looks like in the data. */
-private fun transitions(samples: List<Metrics.Sample>): List<Pair<Long, String>> {
-    val out = mutableListOf<Pair<Long, String>>()
-    var previous = samples.firstOrNull()?.services
-    samples.drop(1).forEach { s ->
-        if (previous != null && s.services != previous) {
-            out += s.ts to "services $previous → ${s.services}"
-        }
-        previous = s.services
-    }
-    return out.takeLast(12).reversed()
 }
 
 @Composable

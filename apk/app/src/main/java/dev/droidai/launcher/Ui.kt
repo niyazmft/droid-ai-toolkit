@@ -2,7 +2,6 @@ package dev.droidai.launcher
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -109,8 +108,14 @@ fun UiState(
  *
  * `primary` is a solid pill in the ink colour — black on paper, white on graphite — which
  * is how ChatGPT draws its only button. No blue: blue is reserved for "where am I" and
- * "what has focus". `ghost` is bare text in grey, so removal never competes with the
- * action the row exists for.
+ * "what has focus".
+ *
+ * `ghost` used to be *bare grey text*, and that was a usability bug reported from the phone:
+ * "Open Advanced", "Test now", "Re-check status" and "Check again" all looked like disabled
+ * labels, so nobody knew they were tappable. A quiet action is now a hairline **outlined**
+ * pill in the ink colour: unmistakably a button, still obviously secondary to the solid one
+ * next to it. Only the *disabled* state is grey-on-no-border, which is what makes the
+ * difference between "quiet" and "unavailable" readable at all.
  */
 @Composable
 fun UiPill(
@@ -122,22 +127,36 @@ fun UiPill(
     val bg = MaterialTheme.colorScheme.primary
     val fg = MaterialTheme.colorScheme.onPrimary
     if (ghost) {
-        Text(
-            label,
-            style = UiType.pill,
-            color =
-                if (enabled) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                },
-            modifier =
-                Modifier
-                    .heightIn(min = 44.dp)
-                    .semantics { role = Role.Button }
-                    .clickable(enabled = enabled, onClick = onClick)
-                    .padding(horizontal = 12.dp, vertical = 13.dp),
-        )
+        Surface(
+            onClick = onClick,
+            enabled = enabled,
+            shape = CircleShape,
+            color = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            border =
+                BorderStroke(
+                    1.dp,
+                    if (enabled) {
+                        MaterialTheme.colorScheme.outline
+                    } else {
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                    },
+                ),
+            modifier = Modifier.heightIn(min = 40.dp).semantics { role = Role.Button },
+        ) {
+            Box(Modifier.padding(horizontal = 16.dp, vertical = 9.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    label,
+                    style = UiType.pill,
+                    color =
+                        if (enabled) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        },
+                )
+            }
+        }
         return
     }
     Surface(

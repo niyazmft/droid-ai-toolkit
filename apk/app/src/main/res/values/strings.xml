@@ -111,6 +111,7 @@
     <string name="home_hide_technical_details">Hide technical details</string>
     <string name="home_show_technical_details">Show technical details</string>
     <string name="home_running">Running</string>
+    <string name="home_mb_restarts">%1$d MB · %2$d restarts</string>
     <string name="home_stopped">Stopped</string>
     <string name="home_s">${seconds}s</string>
     <string name="home_m_s">${seconds / 60}m ${seconds % 60}s</string>
@@ -136,6 +137,16 @@
     <string name="advanced_background_apps">Background apps</string>
     <string name="advanced_termux_safety">Termux &amp; safety</string>
     <string name="advanced_diagnostics">Diagnostics</string>
+    <string name="settings_diagnostics">Diagnostics</string>
+    <string name="phone_about_this_phone">About this phone</string>
+    <string name="phone_device">This device</string>
+    <string name="phone_installed_software">Installed software</string>
+    <string name="phone_memory_over_time">Memory over time</string>
+    <string name="phone_back">Back</string>
+    <string name="home_running_now">Running now</string>
+    <string name="home_installed">Installed</string>
+    <string name="home_nothing_running_yet">Nothing is running right now. Open Tools to start a tool.</string>
+    <string name="settings_diagnostics_what_termux_printed">What Termux printed during the last command — the evidence behind a failure.</string>
     <string name="advanced_usage">Usage</string>
     <string name="tools_not_installed">Not installed</string>
     <string name="usage_memory">Memory</string>

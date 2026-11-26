@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -65,6 +66,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -74,6 +76,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
@@ -730,6 +733,7 @@ private fun AppHeader(
     age: String?,
     onRefresh: () -> Unit,
     onSettings: () -> Unit,
+    onOpenPhone: () -> Unit = {},
 ) {
     Row(
         Modifier.fillMaxWidth().padding(start = 16.dp, end = 6.dp, top = 12.dp, bottom = 4.dp),
@@ -738,13 +742,34 @@ private fun AppHeader(
         Column(Modifier.weight(1f)) {
             Text(stringResource(R.string.home_droid_ai), style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.height(2.dp))
-            Text(
-                listOfNotNull(detail, age).joinToString(" · "),
-                style = UiType.meta,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            // The device line is the door to the device facts. It already answers "which phone
+            // is this?", so tapping it opens the rest of that answer instead of adding a fifth
+            // icon to the row; the glyph says the line is tappable, which a bare label does not.
+            Row(
+                Modifier
+                    .clip(MaterialTheme.shapes.small)
+                    .clickable(onClick = onOpenPhone)
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "About this phone"
+                    }.padding(vertical = 2.dp, horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    listOfNotNull(detail, age).joinToString(" · "),
+                    style = UiType.meta,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    Icons.Filled.Info,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         IconButton(onClick = onRefresh, modifier = Modifier.size(44.dp)) {
             Icon(
@@ -884,7 +909,7 @@ private fun Home(
     // Overview with the sub-screen closed and the scroll position lost.
     var showRawScreen by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
-    var showAdvanced by rememberSaveable { mutableStateOf(false) }
+    var showPhone by rememberSaveable { mutableStateOf(false) }
     var tabName by rememberSaveable { mutableStateOf(Tab.HOME.name) }
     var showFailureDetails by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
@@ -962,18 +987,19 @@ private fun Home(
         }
     }
 
-    // Sub-screens are pushed, not tab-switched: Settings is behind the gear, Advanced behind
-    // Settings, raw output behind Advanced. Back must pop one level, never quit the app.
+    // Sub-screens are pushed, not tab-switched: Settings is behind the gear (and raw output
+    // behind Settings → Diagnostics), the device facts behind the phone name in the header.
+    // Back must pop one level, never quit the app.
     BackHandler(enabled = showRawScreen) { showRawScreen = false }
-    BackHandler(enabled = !showRawScreen && showAdvanced) { showAdvanced = false }
-    BackHandler(enabled = !showRawScreen && !showAdvanced && showSettings) { showSettings = false }
+    BackHandler(enabled = !showRawScreen && showPhone) { showPhone = false }
+    BackHandler(enabled = !showRawScreen && !showPhone && showSettings) { showSettings = false }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         // A sub-screen is a full-page detour, so it has no tab bar: offering one would only
         // invite leaving the page you just opened.
         bottomBar = {
-            if (!showSettings && !showRawScreen) SoftTabBar(tab) { tabName = it.name }
+            if (!showSettings && !showRawScreen && !showPhone) SoftTabBar(tab) { tabName = it.name }
         },
     ) { pad ->
         when {
@@ -988,7 +1014,7 @@ private fun Home(
                 return@Scaffold
             }
 
-            showAdvanced -> {
+            showPhone -> {
                 Column(Modifier.padding(pad).fillMaxSize()) {
                     PinnedBanners(
                         state = s,
@@ -996,23 +1022,7 @@ private fun Home(
                         onDismiss = { vm.dismissFailure() },
                     )
                     Box(Modifier.weight(1f)) {
-                        AdvancedScreen(
-                            snapshot = s.snapshot,
-                            services = s.snapshot?.services.orEmpty(),
-                            foreign = s.foreign,
-                            accessAllowed = accessAllowed,
-                            running = s.running,
-                            onBack = { showAdvanced = false },
-                            onRestartService = { name -> vm.runService("service.restart", name, "Restarting $name") },
-                            onStopService = { name -> vm.runService("service.stop", name, "Stopping $name") },
-                            onRestartEverything = { vm.runService("service.resurrect", null, "Restarting services") },
-                            onCheckAgain = {
-                                vm.refreshForeign()
-                                Gate.refresh(context)
-                                Termux.probe(context)
-                            },
-                            onOpenRawOutput = { showRawScreen = true },
-                        )
+                        PhoneScreen(snapshot = s.snapshot, onBack = { showPhone = false })
                     }
                 }
                 return@Scaffold
@@ -1034,6 +1044,7 @@ private fun Home(
                                 snapshot = s.snapshot,
                                 running = s.running,
                                 notificationsGranted = notificationsGranted,
+                                foreign = s.foreign,
                                 onRefresh = { vm.refresh() },
                                 onRecheckPermission = {
                                     Gate.refresh(context)
@@ -1049,9 +1060,17 @@ private fun Home(
                                         }
                                     vm.runConfirmed(id, label)
                                 },
-                                onOpenAdvanced = { showAdvanced = true },
+                                onCheckAgain = {
+                                    vm.refreshForeign()
+                                    Gate.refresh(context)
+                                    Termux.probe(context)
+                                },
+                                // Raw output used to be Settings → Advanced → Diagnostics. The
+                                // middle screen is gone, so the terminal output lives one tap
+                                // from the setting that talks about it.
+                                onOpenRawOutput = { showRawScreen = true },
                                 onBack = { showSettings = false },
-                                onTestBoot = { vm.runService("service.resurrect", null, "Testing the boot restore") },
+                                onTestBoot = { vm.testBoot() },
                                 onOpenBootApp = { openExternal("https://f-droid.org/packages/com.termux.boot/") },
                             )
                         }
@@ -1072,6 +1091,7 @@ private fun Home(
                 age = if (s.snapshot != null && s.checkedAt > 0L) clockShort(s.checkedAt) else null,
                 onRefresh = { vm.refresh() },
                 onSettings = { showSettings = true },
+                onOpenPhone = { showPhone = true },
             )
 
             PinnedBanners(state = s, onDetails = { showFailureDetails = true }, onDismiss = { vm.dismissFailure() })
@@ -1087,6 +1107,7 @@ private fun Home(
                     Tab.HOME ->
                         HomeBody(
                             snapshot = s.snapshot,
+                            services = s.snapshot?.services.orEmpty(),
                             steps = s.steps,
                             installedKnown = installedKnown,
                             actions = s.actions,
@@ -1274,6 +1295,7 @@ private fun PinnedBanners(
 @Composable
 private fun HomeBody(
     snapshot: Protocol.Snapshot?,
+    services: List<Protocol.Service>,
     steps: List<Protocol.Step>,
     installedKnown: Set<String>,
     actions: List<Protocol.Action>,
@@ -1345,11 +1367,107 @@ private fun HomeBody(
         }
     }
 
-    if (steps.isNotEmpty()) {
+    // Home used to end here, on every device with everything running: a headline, a sentence
+    // and empty space. "1 tool running" is a verdict, not information — a reader could not tell
+    // *which* tool, or how much of the phone it was using, without going to another screen.
+    // These two panels are painted from the snapshot the app already holds, so they are as
+    // fresh as the last read and cost nothing extra: they simply do not update every second,
+    // which was never the point.
+    if (services.isNotEmpty()) {
+        Section(stringResource(R.string.home_running_now))
+        Panel {
+            services.forEach { sv ->
+                RunningRow(sv)
+            }
+            UiPill(
+                label = HomeSummary.actionLabel(HomeSummary.Action.RESTART_EVERYTHING),
+                enabled = !running,
+                ghost = true,
+                onClick = onRestartEverything,
+            )
+        }
+    } else if (verdict != HomeSummary.Verdict.NOTHING_INSTALLED) {
+        Section(stringResource(R.string.home_running_now))
+        Panel {
+            Text(
+                stringResource(R.string.home_nothing_running_yet),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    val installedTools = snapshot?.tools
+    if (installedTools != null && installed > 0) {
+        Section(stringResource(R.string.home_installed))
+        Panel {
+            ToolLine("OpenClaw", installedTools.openclaw, services, running = "openclaw")
+            ToolLine("Hermes", installedTools.hermes, services, running = "hermes")
+            ToolLine("n8n", installedTools.n8n, services, running = "n8n")
+        }
+    }
+
+    // The last run's steps are gone from Home: a finished run's step list is a receipt, and
+    // reading it here competed with what is happening *now*. The failure banner still replays
+    // the failing step's own output, and the whole stream is in Settings → Diagnostics.
+    if (steps.isNotEmpty() && running) {
         Section(stringResource(R.string.home_last_run))
         Panel {
             steps.forEach { step -> StepRow(step) }
         }
+    }
+}
+
+/**
+ * One running service: name, what it is costing, and whether it is actually up.
+ *
+ * The memory figure is the reason this row exists — "running" can mean 40 MB or 600 MB, and on
+ * a phone that kills background apps the second number is the one that explains tomorrow.
+ */
+@Composable
+private fun RunningRow(sv: Protocol.Service) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(sv.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        Text(
+            stringResource(R.string.home_mb_restarts, sv.memMb, sv.restarts),
+            style = UiType.meta,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(8.dp))
+        StatusChip(sv.status == "online")
+    }
+}
+
+/**
+ * One installed tool on Home: what version, and whether it is among the running services.
+ *
+ * `version` is blank when the tool did not answer or the last read was `--fast`; the row then
+ * says only what it knows rather than inventing a version or claiming the tool is missing.
+ */
+@Composable
+private fun ToolLine(
+    name: String,
+    version: String,
+    services: List<Protocol.Service>,
+    running: String,
+) {
+    val short = Format.toolVersion(version)
+    val up = services.any { it.name == running && it.status == "online" }
+    if (short.isBlank() && version.isBlank() && !up) return
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        if (short.isNotBlank()) {
+            Text(
+                short,
+                style = UiType.meta,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        UiState(
+            text = stringResource(if (up) R.string.home_running else R.string.home_stopped),
+            tone = if (up) StateTone.OK else StateTone.PLAIN,
+        )
     }
 }
 

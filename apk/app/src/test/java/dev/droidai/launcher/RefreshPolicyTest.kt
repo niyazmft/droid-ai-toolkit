@@ -68,4 +68,15 @@ class PostRunRefreshTest {
     fun `a read with no action attached is the full form`() {
         assertEquals(listOf("--api", "status"), RefreshPolicy.argsAfterRun(""))
     }
+
+    @Test
+    fun `a status read is not a reason to read again`() {
+        // The Tools screen sent a full read and then a second one from that read's own
+        // completion, so the versions appeared twice a few seconds apart. Only an action can
+        // change the device.
+        assertFalse(RefreshPolicy.needsPostRunRefresh(""))
+        assertTrue(RefreshPolicy.needsPostRunRefresh("service.restart"))
+        assertTrue(RefreshPolicy.needsPostRunRefresh("pi.install"))
+        assertTrue(RefreshPolicy.needsPostRunRefresh("openclaw.uninstall"))
+    }
 }

@@ -70,4 +70,19 @@ class FormatTest {
         assertEquals("nightly", Format.shortVersion("nightly"))
         assertEquals("", Format.shortVersion(""))
     }
+
+    @Test
+    fun `age is phrased the way a person says it`() {
+        val now = 1_000_000_000_000L
+        val minute = 60_000L
+        // "not yet tested" used to stay on screen after the test succeeded; the fix records a
+        // timestamp, so the phrasing has to survive every distance from it.
+        assertEquals("never", Format.age(now, 0L))
+        assertEquals("just now", Format.age(now, now))
+        assertEquals("4 min ago", Format.age(now, now - 4 * minute))
+        assertEquals("2 h ago", Format.age(now, now - 2 * 60 * minute))
+        assertEquals("3 d ago", Format.age(now, now - 3 * 24 * 60 * minute))
+        // A clock that went backwards must not produce "-2 min ago".
+        assertEquals("just now", Format.age(now, now + 5 * minute))
+    }
 }

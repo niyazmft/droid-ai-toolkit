@@ -22,6 +22,7 @@ object Prefs {
     private const val KEY_FAILED = "failed_tools"
     private const val KEY_LAST_STATUS = "last_status"
     private const val KEY_LAST_STATUS_AT = "last_status_at"
+    private const val KEY_BOOT_TESTED_AT = "boot_tested_at"
     private const val KEY_RESTART_ATTEMPTS = "restart_attempts"
     private const val KEY_THEME = "theme_mode"
     private const val KEY_NOTIFICATION_ASKED = "notification_asked"
@@ -109,6 +110,16 @@ object Prefs {
      */
     val notificationAsked = MutableStateFlow(false)
 
+    /**
+     * When the boot restore was last proven to work, 0 if it has never run.
+     *
+     * "Works after reboot — not yet tested" stayed on screen after tapping **Test now**, which
+     * is the worst kind of button: it did the work and then denied it. The app cannot watch a
+     * reboot, but it *can* record that it restored the saved list successfully, and report that
+     * instead of repeating a claim that is no longer true.
+     */
+    val bootTestedAt = MutableStateFlow(0L)
+
     fun init(context: Context) {
         val prefs = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         store = prefs
@@ -126,6 +137,7 @@ object Prefs {
         restartAttempts.value = prefs.getInt(KEY_RESTART_ATTEMPTS, 0)
         themeMode.value = prefs.getString(KEY_THEME, THEME_SYSTEM) ?: THEME_SYSTEM
         notificationAsked.value = prefs.getBoolean(KEY_NOTIFICATION_ASKED, false)
+        bootTestedAt.value = prefs.getLong(KEY_BOOT_TESTED_AT, 0L)
     }
 
     fun setRestartAttempts(value: Int) {
@@ -186,6 +198,11 @@ object Prefs {
         if (themeMode.value == value) return
         themeMode.value = value
         store?.edit()?.putString(KEY_THEME, value)?.apply()
+    }
+
+    fun setBootTestedAt(at: Long) {
+        bootTestedAt.value = at
+        store?.edit()?.putLong(KEY_BOOT_TESTED_AT, at)?.apply()
     }
 
     fun setNotificationAsked() {

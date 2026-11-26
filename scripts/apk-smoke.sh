@@ -268,7 +268,7 @@ for _ in $(seq 1 20); do
   sleep 2
   ui=$(dump_ui)
   # Home is one sentence and one button now (F3): the device table, the service pills and
-  # raw output moved to Settings → Advanced. Reaching it means the payload arrived, because
+  # raw output moved to Settings → Diagnostics. Reaching it means the payload arrived, because
   # the sentence is derived from the snapshot.
   if on_screen "$ui" 'Home' &&
      { on_screen "$ui" 'tool running' || on_screen "$ui" 'tools running' ||
@@ -293,14 +293,14 @@ fi
 
 # --- 3. Back on the Raw Output sub-screen must not quit -----------------------
 
-say "3. back navigation (raw output is behind Settings -> Advanced)"
+say "3. back navigation (raw output is behind Settings -> Diagnostics)"
 if [ "$ready" -eq 1 ]; then
   opened=0
   if tap_desc "Settings"; then
     sleep 2
-    if scroll_to "Open Advanced" && tap_text "Open Advanced"; then
-      sleep 2
-      if scroll_to "Open raw output"; then
+    # Advanced is gone: the device facts moved behind the phone name in the header, the
+    # services to Home, and the terminal output to Settings -> Diagnostics.
+    if scroll_to "Open raw output"; then
         # Two attempts: the page can still be settling (the reboot block and the cleanup size
         # both trigger a refresh on open), and a tap that lands mid-layout hits nothing.
         opened_raw=0
@@ -327,17 +327,16 @@ if [ "$ready" -eq 1 ]; then
         else
           bad "could not open the Raw Output screen"
         fi
-      fi
     fi
   fi
   if [ "$opened" -eq 0 ]; then
-    bad "could not reach Raw Output through Settings -> Advanced"
+    bad "could not reach Raw Output through Settings -> Diagnostics"
   fi
   # Back to Home for the remaining checks. Popped one level at a time and checked, because the
   # number of levels depends on where §3 left the app and one Back too many exits it.
   for _ in 1 2 3 4; do
     ui=$(dump_ui)
-    if on_screen "$ui" 'Home' && ! on_screen "$ui" 'Advanced' && ! on_screen "$ui" 'Raw Output'; then
+    if on_screen "$ui" 'Home' && ! on_screen "$ui" 'Diagnostics' && ! on_screen "$ui" 'Raw Output'; then
       break
     fi
     adb_cmd shell input keyevent KEYCODE_BACK >/dev/null 2>&1
@@ -404,6 +403,10 @@ if [ "$ready" -eq 1 ]; then
   sleep 2
   # Assert on a fact near the top of Settings: at 1.3x the Termux panel scrolls below
   # the fold, and uiautomator dumps only what is on screen.
+  # Appearance and Version are the *last* two panels now (the owner asked for the theme
+  # switcher not to be the first thing in Settings), so the page has to be scrolled before
+  # the check means anything.
+  scroll_to "Appearance" || true
   ui=$(dump_ui)
   if on_screen "$ui" 'Appearance' && on_screen "$ui" 'Version'; then
     ok "Settings renders at font scale 1.3"

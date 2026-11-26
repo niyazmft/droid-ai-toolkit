@@ -50,4 +50,15 @@ internal object RefreshPolicy {
         } else {
             listOf("--api", "status")
         }
+
+    /**
+     * Does a finished run need a follow-up read at all?
+     *
+     * Only an *action* can change the device; a status read changes nothing, and re-reading
+     * after one is pure waste. This was a real defect: opening Tools started a full read (23 s
+     * on 8x), and the completion handler then sent a second identical read — so every visit
+     * painted the versions twice, several seconds apart, which read as the screen "updating
+     * twice". The action id is blank for a read and `service.x`/`tool.install` for a run.
+     */
+    fun needsPostRunRefresh(actionId: String): Boolean = actionId.isNotBlank()
 }
