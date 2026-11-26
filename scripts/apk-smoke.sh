@@ -418,7 +418,10 @@ if [ "$ready" -eq 1 ]; then
     adb_cmd shell input swipe 360 1200 360 500 200 >/dev/null 2>&1
   done
   sleep 1
-  density=$(adb_cmd shell wm density 2>/dev/null | tr -dc '0-9')
+  # `wm density` prints more than one line on some devices ("Physical density: 480" /
+  # "Override density: 480"); squashing every digit together produced a budget of 84056 px on
+  # 8x, which passes any wrapping. Take the first number only.
+  density=$(adb_cmd shell wm density 2>/dev/null | sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p' | head -1)
   budget=$(( 28 * ${density:-320} / 160 ))
   # A row clipped by the top of the scroll viewport reports a sliver of its height, which would
   # pass the budget for the wrong reason. Nudge until the label is fully on screen.
