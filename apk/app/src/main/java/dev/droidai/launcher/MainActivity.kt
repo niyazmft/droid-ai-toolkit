@@ -116,6 +116,19 @@ class MainActivity : ComponentActivity() {
             Termux.probe(this)
         }
 
+    /**
+     * Read the engine's live progress file (Task 17).
+     *
+     * Asked the first time a run starts, not at launch: the permission buys one thing — the
+     * step line inside the running banner — and a prompt on first open would ask for it before
+     * the user has any idea what it is for.
+     */
+    private val storageLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            // Nothing to do on the result: the banner reads the file on its next tick, and an
+            // unchanged elapsed-time banner is a correct fallback.
+        }
+
     private val notificationLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
             // Asked once: Prefs.setNotificationAsked() ran before the dialog opened, so a
@@ -196,6 +209,12 @@ class MainActivity : ComponentActivity() {
     private fun requestPermission() = permissionLauncher.launch(Termux.PERMISSION)
 
     private fun requestNotifications() = notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+
+    private fun requestStorage() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            storageLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
 
     private fun refreshNotifications() {
         notificationsGranted.value =
@@ -286,13 +305,17 @@ class MainActivity : ComponentActivity() {
                 // launch. Anything that is genuinely wrong demotes the flag in
                 // Runner.classify() and the gate reappears during this same run.
                 if (readyBefore) {
-                    screens.SaveableStateProvider(SCREEN_HOME) { Home(vm, notifGranted, ::requestNotifications) }
+                    screens.SaveableStateProvider(SCREEN_HOME) {
+                        Home(vm, notifGranted, ::requestNotifications, ::requestStorage)
+                    }
                 } else {
                     Checking()
                 }
 
             probe == Probe.READY ->
-                screens.SaveableStateProvider(SCREEN_HOME) { Home(vm, notifGranted, ::requestNotifications) }
+                screens.SaveableStateProvider(SCREEN_HOME) {
+                    Home(vm, notifGranted, ::requestNotifications, ::requestStorage)
+                }
             probe == Probe.DENIED ->
                 Setup(
                     title = stringResource(R.string.home_one_time_setup_in_termux),
@@ -842,6 +865,7 @@ private fun Home(
     vm: HomeViewModel,
     notificationsGranted: Boolean,
     onRequestNotifications: () -> Unit,
+    onRequestStorage: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -900,6 +924,16 @@ private fun Home(
         }
     }
 
+    // Live progress needs one read permission; ask when there is finally something to show,
+    // and only once per process (a denied prompt must not come back on every install).
+    var storageAsked by remember { mutableStateOf(false) }
+    LaunchedEffect(s.running) {
+        if (s.running && !storageAsked && !Progress.canRead(context)) {
+            storageAsked = true
+            onRequestStorage()
+        }
+    }
+
     // On API 33+ the supervisor's notification is invisible without this grant, which
     // silently defeats the only thing it exists for. Asked in context, once.
     LaunchedEffect(supervisorOn, notificationsGranted, notificationAsked) {
@@ -955,24 +989,31 @@ private fun Home(
             }
 
             showAdvanced -> {
-                Box(Modifier.padding(pad)) {
-                    AdvancedScreen(
-                        snapshot = s.snapshot,
-                        services = s.snapshot?.services.orEmpty(),
-                        foreign = s.foreign,
-                        accessAllowed = accessAllowed,
-                        running = s.running,
-                        onBack = { showAdvanced = false },
-                        onRestartService = { name -> vm.runService("service.restart", name, "Restarting $name") },
-                        onStopService = { name -> vm.runService("service.stop", name, "Stopping $name") },
-                        onRestartEverything = { vm.runService("service.resurrect", null, "Restarting services") },
-                        onCheckAgain = {
-                            vm.refreshForeign()
-                            Gate.refresh(context)
-                            Termux.probe(context)
-                        },
-                        onOpenRawOutput = { showRawScreen = true },
+                Column(Modifier.padding(pad).fillMaxSize()) {
+                    PinnedBanners(
+                        state = s,
+                        onDetails = { showFailureDetails = true },
+                        onDismiss = { vm.dismissFailure() },
                     )
+                    Box(Modifier.weight(1f)) {
+                        AdvancedScreen(
+                            snapshot = s.snapshot,
+                            services = s.snapshot?.services.orEmpty(),
+                            foreign = s.foreign,
+                            accessAllowed = accessAllowed,
+                            running = s.running,
+                            onBack = { showAdvanced = false },
+                            onRestartService = { name -> vm.runService("service.restart", name, "Restarting $name") },
+                            onStopService = { name -> vm.runService("service.stop", name, "Stopping $name") },
+                            onRestartEverything = { vm.runService("service.resurrect", null, "Restarting services") },
+                            onCheckAgain = {
+                                vm.refreshForeign()
+                                Gate.refresh(context)
+                                Termux.probe(context)
+                            },
+                            onOpenRawOutput = { showRawScreen = true },
+                        )
+                    }
                 }
                 return@Scaffold
             }
@@ -981,32 +1022,39 @@ private fun Home(
                 // SettingsScreen has no scroller of its own (the tab content used to own it), so
                 // the page must provide one — without this the lower sections were clipped and
                 // unreachable, which is how Advanced became untappable on the first build.
-                Box(Modifier.padding(pad).fillMaxSize()) {
-                    Column(Modifier.verticalScroll(rememberScrollState())) {
-                        SettingsScreen(
-                            snapshot = s.snapshot,
-                            running = s.running,
-                            notificationsGranted = notificationsGranted,
-                            onRefresh = { vm.refresh() },
-                            onRecheckPermission = {
-                                Gate.refresh(context)
-                                Termux.probe(context)
-                            },
-                            onRequestNotifications = onRequestNotifications,
-                            onRunAction = { id ->
-                                val label =
-                                    if (id == "service.boot") {
-                                        "Setting up after reboot"
-                                    } else {
-                                        "Removing the old pnpm project"
-                                    }
-                                vm.runConfirmed(id, label)
-                            },
-                            onOpenAdvanced = { showAdvanced = true },
-                            onBack = { showSettings = false },
-                            onTestBoot = { vm.runService("service.resurrect", null, "Testing the boot restore") },
-                            onOpenBootApp = { openExternal("https://f-droid.org/packages/com.termux.boot/") },
-                        )
+                Column(Modifier.padding(pad).fillMaxSize()) {
+                    PinnedBanners(
+                        state = s,
+                        onDetails = { showFailureDetails = true },
+                        onDismiss = { vm.dismissFailure() },
+                    )
+                    Box(Modifier.weight(1f)) {
+                        Column(Modifier.verticalScroll(rememberScrollState())) {
+                            SettingsScreen(
+                                snapshot = s.snapshot,
+                                running = s.running,
+                                notificationsGranted = notificationsGranted,
+                                onRefresh = { vm.refresh() },
+                                onRecheckPermission = {
+                                    Gate.refresh(context)
+                                    Termux.probe(context)
+                                },
+                                onRequestNotifications = onRequestNotifications,
+                                onRunAction = { id ->
+                                    val label =
+                                        if (id == "service.boot") {
+                                            "Setting up after reboot"
+                                        } else {
+                                            "Removing the old pnpm project"
+                                        }
+                                    vm.runConfirmed(id, label)
+                                },
+                                onOpenAdvanced = { showAdvanced = true },
+                                onBack = { showSettings = false },
+                                onTestBoot = { vm.runService("service.resurrect", null, "Testing the boot restore") },
+                                onOpenBootApp = { openExternal("https://f-droid.org/packages/com.termux.boot/") },
+                            )
+                        }
                     }
                 }
                 return@Scaffold
@@ -1026,63 +1074,7 @@ private fun Home(
                 onSettings = { showSettings = true },
             )
 
-            // Pinned above the list, not inside it: a failure that has scrolled out of
-            // view is the same as no failure at all, and that is how "Step failed" went
-            // unnoticed during the device runs.
-            if (s.running) {
-                Box(Modifier.padding(horizontal = 16.dp)) {
-                    WorkingBanner(label = s.runLabel, elapsedSeconds = s.elapsedSeconds)
-                }
-            }
-
-            s.failure?.let { f ->
-                Box(Modifier.padding(horizontal = 16.dp)) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            f.headline,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier =
-                                Modifier
-                                    .weight(1f)
-                                    .semantics { liveRegion = LiveRegionMode.Polite },
-                        )
-                        // The reason is in the detail lines; without this the banner is a
-                        // verdict with no evidence, which is what made failures so hard to
-                        // act on during testing.
-                        if (f.details.isNotEmpty()) {
-                            Text(
-                                stringResource(R.string.home_details),
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.labelLarge,
-                                modifier =
-                                    Modifier
-                                        .clickable(onClickLabel = stringResource(R.string.home_show_what_failed)) {
-                                            showFailureDetails =
-                                                true
-                                        }.padding(vertical = 4.dp, horizontal = 4.dp),
-                            )
-                        }
-                        // A verdict that can only be cleared by running something else is a
-                        // banner the user cannot get rid of once they have read it.
-                        Text(
-                            stringResource(R.string.home_dismiss),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier =
-                                Modifier
-                                    .clickable(
-                                        onClickLabel = stringResource(R.string.home_dismiss_the_failure),
-                                    ) { vm.dismissFailure() }
-                                    .padding(vertical = 4.dp, horizontal = 4.dp),
-                        )
-                    }
-                }
-            }
+            PinnedBanners(state = s, onDetails = { showFailureDetails = true }, onDismiss = { vm.dismissFailure() })
 
             Column(
                 Modifier
@@ -1203,6 +1195,72 @@ private fun Home(
 }
 
 /**
+ * The running banner and the failure banner, pinned above whatever screen is open.
+ *
+ * Both used to live inside the Home tab's column, so an install started from Advanced hid the
+ * "Working…" line — the only sign the tap did anything — and a failure raised there stayed
+ * invisible until the user navigated back.
+ */
+@Composable
+private fun PinnedBanners(
+    state: HomeState,
+    onDetails: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    if (state.running) {
+        Box(Modifier.padding(horizontal = 16.dp)) {
+            WorkingBanner(
+                label = state.runLabel,
+                elapsedSeconds = state.elapsedSeconds,
+                step = state.progress,
+            )
+        }
+    }
+
+    state.failure?.let { f ->
+        Box(Modifier.padding(horizontal = 16.dp)) {
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    f.headline,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .semantics { liveRegion = LiveRegionMode.Polite },
+                )
+                if (f.details.isNotEmpty()) {
+                    Text(
+                        stringResource(R.string.home_details),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier =
+                            Modifier
+                                .clickable(onClickLabel = stringResource(R.string.home_show_what_failed)) {
+                                    onDetails()
+                                }.padding(vertical = 4.dp, horizontal = 4.dp),
+                    )
+                }
+                Text(
+                    stringResource(R.string.home_dismiss),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier =
+                        Modifier
+                            .clickable(onClickLabel = stringResource(R.string.home_dismiss_the_failure)) {
+                                onDismiss()
+                            }.padding(vertical = 4.dp, horizontal = 4.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
  * Home: one sentence of state and one button.
  *
  * Everything the old Overview put here — the eleven-row device table, per-service Stop/Restart,
@@ -1316,6 +1374,7 @@ private const val RECOMMENDED_TOOL = "openclaw.install"
 private fun WorkingBanner(
     label: String,
     elapsedSeconds: Long,
+    step: Progress.Step? = null,
 ) {
     val accent = Skin.palette.accent
     Surface(
@@ -1340,6 +1399,15 @@ private fun WorkingBanner(
                 )
             }
             LinearProgressIndicator(Modifier.fillMaxWidth(), color = accent)
+            // The live step, when the engine can publish one (Task 17). Absent is normal: it
+            // needs shared storage, and the elapsed time above already answers "is it alive".
+            if (step != null) {
+                Text(
+                    Progress.label(step),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
             if (elapsedSeconds >= 20) {
                 Text(
                     stringResource(R.string.home_still_working_this_is_normal_for),

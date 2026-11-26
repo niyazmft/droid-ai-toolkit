@@ -170,6 +170,9 @@ runner_run() {
 
     run_id="${API_RUN_ID:-$(date +%s)-$$}"
     ev_start "$id" "$run_id"
+    # Live progress for the app (lib/progress.sh). Best-effort: with no shared storage every
+    # call is a no-op, and the app keeps its elapsed-time banner.
+    progress_begin "$id" "$run_id" "$(printf '%s' "$spec" | jq -r '(.steps // []) | length' 2>/dev/null)"
 
     runner_preflight "$spec" "${API_FORCE:-0}" || { ev_done 3 "[]"; return 3; }
 
@@ -228,6 +231,7 @@ runner_run() {
         if [ "${s_idem:-false}" = "true" ] && [ "${API_FRESH:-0}" -ne 1 ] \
            && state_step_ok "$id" "$s_id" "$s_fp"; then
             ev_step "$s_id" "skipped" "$s_title (already done)" 0
+            progress_step "$s_id" "$s_title" skipped
             skipped="$skipped $s_id"
             continue
         fi
@@ -242,6 +246,7 @@ runner_run() {
         max=$(( s_retry + 1 ))
         while :; do
             ev_step "$s_id" "running" "$s_title" 0
+            progress_step "$s_id" "$s_title" running
             [ -n "$RUNNER_RESULT" ] && : > "$RUNNER_RESULT"
             log_from=$(( $(wc -c < "$log" 2>/dev/null || echo 0) + 1 ))
             t0=$(date +%s)
@@ -253,6 +258,7 @@ runner_run() {
             if [ "$rc" -eq 0 ]; then
                 state_mark "$id" "$s_id" ok "$ms" "$s_fp" >/dev/null 2>&1 || true
                 ev_step "$s_id" "ok" "$s_title" "$ms"
+                progress_step "$s_id" "$s_title" ok
                 if [ -n "$RUNNER_RESULT" ] && [ -s "$RUNNER_RESULT" ] \
                    && jq -e . "$RUNNER_RESULT" >/dev/null 2>&1; then
                     ev_data "$s_id" "$(cat "$RUNNER_RESULT")"
@@ -270,12 +276,14 @@ runner_run() {
 
             state_mark "$id" "$s_id" failed "$ms" "$s_fp" >/dev/null 2>&1 || true
             ev_step "$s_id" "failed" "$s_title" "$ms"
+            progress_step "$s_id" "$s_title" failed
             # Why it failed, for a client that cannot read the log file.
             runner_replay_tail "$s_id" "$log" "$log_from" 12
             if [ "$s_optional" = "true" ]; then
                 ev_log "$s_id" "optional step failed (code $rc) — continuing"
                 break
             fi
+            progress_end "$rc"
             ev_done "$rc" "[]"
             return "$rc"
         done
@@ -285,6 +293,7 @@ EOF
 
     state_finish "$id" >/dev/null 2>&1 || true
     rm -f "${RUNNER_RESULT:-}"
+    progress_end 0
     ev_done 0 "$(printf '%s' "$skipped" | jq -Rc 'split(" ") | map(select(length > 0))')"
     return 0
 }

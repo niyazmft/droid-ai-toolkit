@@ -22,6 +22,11 @@
          once somebody opens the app, which is the exact case it exists to report. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Live install progress (Task 17). The engine writes step transitions to
+         ~/storage/shared/droid-ai/progress.ndjson; this is what lets the app read it. The
+         feature is optional — without the grant the banner shows elapsed time only. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
     <!-- Required when targetSdk >= 30 so the app can see com.termux. -->
     <queries>
         <package android:name="com.termux" />
@@ -40,6 +45,7 @@
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.DroidAI">

@@ -52,6 +52,13 @@ data class HomeState(
     val running: Boolean = false,
     val runLabel: String = "",
     val elapsedSeconds: Long = 0L,
+    /**
+     * The step the engine says it is on, when shared storage makes that readable.
+     *
+     * Null is the normal case: it needs `termux-setup-storage` in Termux, and the banner then
+     * shows the elapsed time instead (which is what it did before this existed).
+     */
+    val progress: Progress.Step? = null,
     /** A destructive action awaiting confirmation. */
     val pending: Protocol.Action? = null,
     /** An action whose `min_mem_mb`/`min_disk_mb` this device does not meet. */
@@ -443,7 +450,20 @@ class HomeViewModel(
             viewModelScope.launch {
                 while (isActive) {
                     val elapsed = ((System.currentTimeMillis() - Runner.startedAt.value) / 1000).coerceAtLeast(0)
-                    _state.update { it.copy(elapsedSeconds = elapsed) }
+                    // One small file read per second while a run is in flight, off the main
+                    // thread: this is the only way to know what the engine is doing, and it is
+                    // skipped entirely when shared storage is not set up.
+                    val step = withContext(Dispatchers.IO) { Progress.latest(app) }
+                    _state.update {
+                        it.copy(
+                            elapsedSeconds = elapsed,
+                            progress =
+                                step?.takeIf { p ->
+                                    p.state ==
+                                        "running"
+                                },
+                        )
+                    }
                     // The ceiling is per caller, so a 40-minute install is not mistaken for a
                     // dead one — but a genuinely wedged run still gets cleared.
                     Runner.checkCeiling()
@@ -455,7 +475,7 @@ class HomeViewModel(
     private fun stopClock() {
         clock?.cancel()
         clock = null
-        _state.update { it.copy(elapsedSeconds = 0L) }
+        _state.update { it.copy(elapsedSeconds = 0L, progress = null) }
     }
 
     // ---- process death ------------------------------------------------------------------

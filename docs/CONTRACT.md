@@ -180,6 +180,24 @@ nothing:
 `data {boot_app, boot_script, doze_whitelisted, pm2_dump, tested: false}`. `tested` is always
 `false`: the engine cannot observe a reboot, so no layer claims one has been verified.
 
+## Live progress (`~/storage/shared/droid-ai/progress.ndjson`)
+
+A background command reports only when it finishes, so a 20–40 minute install showed nothing but
+an elapsed timer. Each step transition is therefore also appended to a file both sides can read:
+
+```json
+{"run":"1795713610-25493","action":"service.resurrect","index":1,"total":1,
+ "step":"resurrect","title":"Resurrect and verify","state":"running","ts":1795713611000}
+```
+
+`state` is `running`, `ok`, `failed`, `skipped` or `finished`; the file is truncated at the start
+of every run, so a reader never mistakes yesterday's last step for the current one.
+
+It is **best-effort by design**: it needs `termux-setup-storage` in Termux, which the app cannot
+grant, and without it every write is a no-op and the app keeps its elapsed-time banner. The app
+reads the last line and shows `Step 3 of 7 · Install Pi` inside the running banner. Nothing in
+the event stream depends on this file.
+
 ## Exit codes
 
 | Code | Meaning |
