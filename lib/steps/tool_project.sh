@@ -180,5 +180,87 @@ step_uninstall_tool() {
         rm -f "$bin" && removed=$((removed + 1))
     done
     echo "removed $removed shim(s)"
+
+    _uninstall_legacy_copy "$tool" || return 1
+    _uninstall_verify "$tool"
+}
+
+# _uninstall_legacy_copy <tool> -- remove the pre-migration copy too, if the tool still has one.
+#
+# On a device that never migrated, "uninstall" used to remove only `tools/<tool>` — which does
+# not exist there — and the shims that point into it, which is none of them. The tool kept
+# running from `global/<n>/node_modules` and `tools.installed` kept reporting it, so the app said
+# "removed" and nothing changed (y6, where Pi and Gemini live only in the legacy tree).
+#
+# The legacy project is shared, so only the tool's own directory is removed, never the tree: the
+# cleanup action owns that, and it refuses while anything still depends on it.
+_uninstall_legacy_copy() {
+    local tool="$1" rel removed=0 f
+    for rel in $(_legacy_paths "$tool"); do
+        for f in "$HOME"/.local/share/pnpm/global/*/node_modules/"$rel"; do
+            [ -e "$f" ] || continue
+            case "$f" in
+                "$HOME"/.local/share/pnpm/global/*/node_modules/?*) ;;
+                *) echo "refusing to remove unexpected path: $f"; return 1 ;;
+            esac
+            rm -rf "$f" && echo "removed legacy copy: $f" && removed=$((removed + 1))
+        done
+    done
+    if [ "$removed" -gt 0 ]; then
+        # The legacy bins point into that directory; without this they survive as broken shims.
+        local bin
+        for bin in "$TERMUX_BIN"/*; do
+            [ -f "$bin" ] || continue
+            head -c 400 "$bin" 2>/dev/null | grep -q "pnpm/global/" || continue
+            case "$bin" in
+                */pm2 | */pm2-runtime | */node | */npm | */pnpm | */npx | */corepack | \
+                */bash | */sh | */sshd | */ssh | */git | */jq | */curl | */wget | */python3 | */pip3) continue ;;
+            esac
+            basename=$(basename "$bin")
+            case " $(_tool_bins "$tool") " in
+                *" $basename "*) rm -f "$bin" && echo "removed legacy shim: $basename" ;;
+            esac
+        done
+    fi
+    return 0
+}
+
+# _legacy_paths <tool> -- where this tool could live in the shared pre-migration project.
+#
+# Scoped packages matter: the old installer linked `@earendil-works/pi-coding-agent`, so a
+# name-only lookup missed it and the uninstall reported success over a live install.
+_legacy_paths() {
+    case "$1" in
+        pi) printf '%s\n' pi @earendil-works/pi-coding-agent ;;
+        gemini) printf '%s\n' gemini @google/gemini-cli ;;
+        openclaw) printf '%s\n' openclaw ;;
+        n8n) printf '%s\n' n8n ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# _tool_bins <tool> -- the command names a tool installs.
+_tool_bins() {
+    case "$1" in
+        pi) printf '%s' pi ;;
+        gemini) printf '%s' gemini ;;
+        openclaw) printf '%s' openclaw ;;
+        n8n) printf '%s' n8n ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# _uninstall_verify <tool> -- fail when the command still resolves after a removal.
+#
+# "Done" must mean "gone": the whole point of this path is that a silent no-op looked like
+# success on y6.
+_uninstall_verify() {
+    local tool="$1" bin
+    for bin in $(_tool_bins "$tool"); do
+        if command -v "$bin" >/dev/null 2>&1; then
+            echo "still on PATH after removal: $bin ($(command -v "$bin"))"
+            return 1
+        fi
+    done
     return 0
 }
