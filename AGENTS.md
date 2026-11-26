@@ -2,9 +2,10 @@
 
 ## Project Type
 
-Bash scripting toolkit **and a native Android app**. `install.sh` is the executor and
-single source of truth for logic; `apk/` is a Kotlin/Compose client that drives it over
-`install.sh --api` (see `docs/CONTRACT.md`). `package.json` remains lint-only
+Bash scripting toolkit **and a native Android app**, and the app is now shipped: the APK is
+released as a GitHub release asset (**`droid-ai-0.1.0.apk`**, debug-signed, beta). `install.sh`
+is the executor and single source of truth for logic; `apk/` is a Kotlin/Compose client that
+drives it over `install.sh --api` (see `docs/CONTRACT.md`). `package.json` remains lint-only
 infrastructure.
 
 ## Toolchain & Commands
@@ -13,7 +14,10 @@ infrastructure.
 pnpm install               # Install linter deps (pnpm@10.32.1 enforced via packageManager field)
 pnpm run lint:all          # Full gate: ESLint → Stylelint → Markdownlint → compat → action specs → shellcheck (read-only)
 pnpm run lint:actions      # Validate actions/*.json: schema, ids, step primitives
-(cd apk && ./gradlew :app:assembleDebug)  # Build the APK (JDK 17 + Android SDK 34)
+(cd apk && ./gradlew :app:assembleDebug)          # Build the APK (JDK 17 + Android SDK 34)
+(cd apk && ./gradlew :app:testDebugUnitTest)     # 76 JVM tests (pure logic: parsers, policies)
+bash tests/run.sh                                # Engine tests: 7 scripts, 89 assertions
+ANDROID_SERIAL=<serial> bash scripts/apk-smoke.sh  # 8 device checks against a real phone
 python3 scripts/self_heal.py  # Strips unused `catch (err)` params from JS/MJS only
 ```
 
@@ -613,7 +617,65 @@ removed automatically once `/rest/settings` reports
 `N8N_NODES_INCLUDE=[executeCommand,manualTrigger]` lines are removed. PM2 env
 handling still requires delete+start, not `pm2 restart`.
 
-## APK on a 32-bit device: --force, checkpoints, legacy detection (unreleased)
+## Android app release — v0.1.0 beta (GitHub Releases)
+
+The app ships as the release asset **`droid-ai-0.1.0.apk`**. Facts that matter when touching it:
+
+- `applicationId` `dev.droidai.launcher`, `minSdk 28` (Android 9), `targetSdk 34`, `versionName`
+  `0.1.0`, `versionCode 1`.
+- **The release build is signed with the debug key** (`signingConfig = signingConfigs["debug"]` in
+  `apk/app/build.gradle.kts`). A build signed with any other key cannot install over it — a user
+  updating between keys must uninstall first. Do not describe the app as Play/F-Droid
+  installable, and do not claim silent updates.
+- The app is a **client**: it runs `install.sh --api …` inside Termux. It has no root, never
+  installs Linux packages itself beyond provisioning `jq`/`git`/`curl`/`tar` and the toolkit
+  checkout, and cannot flip `allow-external-apps` (the one manual step a user must do).
+
+### UI map (v0.1.0) — the shape the owner settled on
+
+- **One header on every screen**: `Droid AI`, the device line (`JSN-L22 · 22:44`) and Refresh. The
+  page name lives in the content, not in the header.
+- **One footer on every screen**: four equal segments — Home, Tools, Device, Settings — same
+  icon-over-label shape, accent pill only on the destination you are on (Raw Output keeps
+  Settings lit because it is reached from there).
+- **No back arrows.** The footer is the visible way to move; the system Back still pops. A back
+  arrow was tried and removed as redundant — do not reintroduce one.
+- Screens: **Home** (verdict + *Running now* with memory/restarts + *Installed* + recommended
+  tool when empty), **Tools** (catalog cards), **Device** (`About this phone`: facts, installed
+  software, memory/swap chart), **Settings** (Startup & services → Termux & safety → Diagnostics
+  → Appearance → Version), **Raw Output** (under Settings → Diagnostics).
+- `Advanced` no longer exists. Its contents were re-homed: services → Home, Termux & safety +
+  Diagnostics → Settings, device facts → Device.
+
+### Live progress feed
+
+The engine appends NDJSON to `~/storage/shared/droid-ai/progress.ndjson`
+(`lib/progress.sh`: begin/step/end, one line per transition, truncated per run). The app reads the
+last line and shows `Step 3 of 7 · Install Pi`. Needs the storage permission and a set-up
+`~/storage/shared` (`termux-setup-storage`); when shared storage is absent the engine writes
+nothing and the app simply shows no step — never an error.
+
+### Smoke harness — four ways it lies if you are not careful
+
+`scripts/apk-smoke.sh` (8 checks) is the only thing that exercises the real UI. Every one of these
+has already produced a false PASS or a false FAIL:
+
+1. **`uiautomator dump` leaves the previous file behind when it fails**, so a check keeps reading
+   the last screen it managed to capture — a stale "Settings" survived a force-stop and a
+   restart. `dump_ui` deletes the file first and retries six times.
+2. **A run repaints once a second** (elapsed + progress), so the window never goes idle and the
+   dump fails. `wait_idle` waits for the working banner to clear before tapping.
+3. **The selected tab reports `clickable="false"`** (it is a `selectable`), so counting clickable
+   nodes shifts every index by one — "tap Tools" landed on Device and the next assertion passed
+   for the wrong reason because the device page contains the word "Installed". Count
+   `selected="true"` too.
+4. **A plugged-in cable raises the system "Use USB to" chooser**, which hides the app from
+   uiautomator entirely. `dismiss_usb_chooser` clears it.
+
+Also: a single quote inside the single-quoted `python3 -c` block in the harness ends the shell
+string and python receives `clickable=true`; keep those blocks double-quoted-only.
+
+## APK on a 32-bit device: --force, checkpoints, legacy detection
 
 Testing the client end-to-end on y6 (Android 9 / API 28, `armeabi-v7a`,
 `uname -m` = **armv8l**, 1.8 GB) found four defects that no earlier 8x pass could see,
