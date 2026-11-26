@@ -40,6 +40,8 @@ fun PhoneScreen(snapshot: Protocol.Snapshot?) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        Text(stringResource(R.string.phone_about_this_phone), style = MaterialTheme.typography.headlineMedium)
+
         Section(stringResource(R.string.phone_device))
         Panel {
             if (snapshot == null) {

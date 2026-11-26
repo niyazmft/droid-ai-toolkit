@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.stringResource
@@ -33,7 +34,6 @@ import androidx.compose.ui.unit.dp
 fun RawOutputScreen(
     raw: String,
     retained: Boolean = true,
-    onBack: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
     var filter by remember { mutableStateOf("All") }
@@ -53,17 +53,20 @@ fun RawOutputScreen(
         Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        SubScreenHeader(
-            title = stringResource(R.string.raw_raw_output),
-            onBack = onBack,
-            action = {
-                UiPill(
-                    label = stringResource(R.string.raw_copy),
-                    ghost = true,
-                    onClick = { clipboard.setText(AnnotatedString(raw)) },
-                )
-            },
-        )
+        // The page name sits in the content, like every other screen: the header above is the
+        // app's, and a second bar with a back arrow here duplicated it.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                stringResource(R.string.raw_raw_output),
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.weight(1f),
+            )
+            UiPill(
+                label = stringResource(R.string.raw_copy),
+                ghost = true,
+                onClick = { clipboard.setText(AnnotatedString(raw)) },
+            )
+        }
 
         Row(
             Modifier.horizontalScroll(rememberScrollState()),

@@ -58,7 +58,6 @@ fun SettingsScreen(
     foreign: List<String> = emptyList(),
     onCheckAgain: () -> Unit = {},
     onOpenRawOutput: () -> Unit = {},
-    onBack: () -> Unit = {},
     onTestBoot: () -> Unit = {},
     onOpenBootApp: () -> Unit = {},
 ) {
@@ -96,6 +95,8 @@ fun SettingsScreen(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        Text(stringResource(R.string.settings_settings), style = MaterialTheme.typography.headlineMedium)
+
         Section(stringResource(R.string.settings_startup_services))
         Panel {
             // Copy per PLAN.md §F3.2: a 230-character subtitle was five lines of prose for a

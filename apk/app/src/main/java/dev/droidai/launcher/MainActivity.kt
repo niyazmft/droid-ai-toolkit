@@ -1100,51 +1100,38 @@ private fun Home(
             )
         },
     ) { pad ->
-        when {
-            showRawScreen -> {
-                Box(Modifier.padding(pad)) {
-                    RawOutputScreen(
-                        raw = if (retainRaw) s.raw else "",
-                        retained = retainRaw,
-                        onBack = { showRawScreen = false },
-                    )
-                }
-                return@Scaffold
-            }
+        // One header, one place, on every screen.
+        //
+        // Settings and the device facts used to swap in their own: an arrow and a page name,
+        // no device line, no refresh. Side by side with Home and Tools that reads as a different
+        // app, and the arrow duplicated navigation the bar below already offers — with the bar
+        // visible everywhere, a back arrow is a second way to do the same thing.
+        Column(Modifier.padding(pad).fillMaxSize()) {
+            AppHeader(
+                detail =
+                    s.snapshot?.let {
+                        // Model only. The arch used to sit here too, which is a word a
+                        // non-technical reader cannot use; it is in the device facts.
+                        it.device.model
+                    } ?: "Termux is ready.",
+                age = if (s.snapshot != null && s.checkedAt > 0L) clockShort(s.checkedAt) else null,
+                onRefresh = { vm.refresh() },
+            )
 
-            showPhone -> {
-                Column(Modifier.padding(pad).fillMaxSize()) {
-                    PinnedBanners(
-                        state = s,
-                        onDetails = { showFailureDetails = true },
-                        onDismiss = { vm.dismissFailure() },
-                    )
-                    SubScreenHeader(
-                        title = stringResource(R.string.phone_about_this_phone),
-                        onBack = { showPhone = false },
-                    )
-                    Box(Modifier.weight(1f)) {
-                        PhoneScreen(snapshot = s.snapshot)
-                    }
-                }
-                return@Scaffold
-            }
+            PinnedBanners(state = s, onDetails = { showFailureDetails = true }, onDismiss = { vm.dismissFailure() })
 
-            showSettings -> {
-                // SettingsScreen has no scroller of its own (the tab content used to own it), so
-                // the page must provide one — without this the lower sections were clipped and
-                // unreachable, which is how Advanced became untappable on the first build.
-                Column(Modifier.padding(pad).fillMaxSize()) {
-                    PinnedBanners(
-                        state = s,
-                        onDetails = { showFailureDetails = true },
-                        onDismiss = { vm.dismissFailure() },
-                    )
-                    SubScreenHeader(
-                        title = stringResource(R.string.settings_settings),
-                        onBack = { showSettings = false },
-                    )
-                    Box(Modifier.weight(1f)) {
+            Box(Modifier.weight(1f)) {
+                when {
+                    showRawScreen ->
+                        RawOutputScreen(
+                            raw = if (retainRaw) s.raw else "",
+                            retained = retainRaw,
+                        )
+
+                    showPhone -> PhoneScreen(snapshot = s.snapshot)
+
+                    showSettings ->
+                        // SettingsScreen has no scroller of its own, so the page provides one.
                         Column(Modifier.verticalScroll(rememberScrollState())) {
                             SettingsScreen(
                                 snapshot = s.snapshot,
@@ -1171,66 +1158,51 @@ private fun Home(
                                     Gate.refresh(context)
                                     Termux.probe(context)
                                 },
-                                // Raw output used to be Settings → Advanced → Diagnostics. The
-                                // middle screen is gone, so the terminal output lives one tap
-                                // from the setting that talks about it.
                                 onOpenRawOutput = { showRawScreen = true },
-                                onBack = { showSettings = false },
                                 onTestBoot = { vm.testBoot() },
                                 onOpenBootApp = { openExternal("https://f-droid.org/packages/com.termux.boot/") },
                             )
                         }
-                    }
-                }
-                return@Scaffold
-            }
-        }
 
-        Column(Modifier.padding(pad).fillMaxSize()) {
-            AppHeader(
-                detail =
-                    s.snapshot?.let {
-                        // Model only. The arch used to sit here too, which is a word a
-                        // non-technical reader cannot use; it lives in Advanced now.
-                        it.device.model
-                    } ?: "Termux is ready.",
-                age = if (s.snapshot != null && s.checkedAt > 0L) clockShort(s.checkedAt) else null,
-                onRefresh = { vm.refresh() },
-            )
+                    else ->
+                        Column(
+                            Modifier
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            when (tab) {
+                                Tab.HOME ->
+                                    HomeBody(
+                                        snapshot = s.snapshot,
+                                        services = s.snapshot?.services.orEmpty(),
+                                        steps = s.steps,
+                                        installedKnown = installedKnown,
+                                        actions = s.actions,
+                                        running = s.running,
+                                        failedTools = failedTools,
+                                        onChooseTool = { tabName = Tab.TOOLS.name },
+                                        onRestartEverything = {
+                                            vm.runService(
+                                                "service.resurrect",
+                                                null,
+                                                "Restarting services",
+                                            )
+                                        },
+                                        onRun = { action -> vm.onRun(action) },
+                                    )
 
-            PinnedBanners(state = s, onDetails = { showFailureDetails = true }, onDismiss = { vm.dismissFailure() })
-
-            Column(
-                Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                when (tab) {
-                    Tab.HOME ->
-                        HomeBody(
-                            snapshot = s.snapshot,
-                            services = s.snapshot?.services.orEmpty(),
-                            steps = s.steps,
-                            installedKnown = installedKnown,
-                            actions = s.actions,
-                            running = s.running,
-                            failedTools = failedTools,
-                            onChooseTool = { tabName = Tab.TOOLS.name },
-                            onRestartEverything = { vm.runService("service.resurrect", null, "Restarting services") },
-                            onRun = { action -> vm.onRun(action) },
-                        )
-
-                    Tab.TOOLS ->
-                        PackagesScreen(
-                            snapshot = s.snapshot,
-                            actions = s.actions,
-                            running = s.running,
-                            knownInstalled = installedKnown,
-                            failedTools = failedTools,
-                            onRun = { action -> vm.onRun(action) },
-                        )
+                                Tab.TOOLS ->
+                                    PackagesScreen(
+                                        snapshot = s.snapshot,
+                                        actions = s.actions,
+                                        running = s.running,
+                                        knownInstalled = installedKnown,
+                                        failedTools = failedTools,
+                                        onRun = { action -> vm.onRun(action) },
+                                    )
+                            }
+                        }
                 }
             }
         }

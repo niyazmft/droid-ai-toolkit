@@ -9,20 +9,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -207,43 +201,6 @@ fun UiChoice(
                 color = if (selected) p.accent else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-    }
-}
-
-/**
- * The top of a sub-screen: a back arrow, the page's name, and an optional action on the right.
- *
- * Settings, the device facts and the raw output each had their own version of this — a text
- * "Back" button at the top of one, at the bottom of another, an arrow on the third, and two
- * different title sizes. The arrow wins because it is the shape Android users already know, and
- * it now sits in the same place, at the same size, on all three.
- */
-@Composable
-fun SubScreenHeader(
-    title: String,
-    onBack: () -> Unit,
-    action: @Composable () -> Unit = {},
-) {
-    Row(
-        Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
-            Icon(
-                Icons.Filled.ArrowBack,
-                contentDescription = "Back",
-                modifier = Modifier.size(22.dp),
-            )
-        }
-        Spacer(Modifier.width(4.dp))
-        Text(
-            title,
-            style = MaterialTheme.typography.headlineSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        action()
     }
 }
 
