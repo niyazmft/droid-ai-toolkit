@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -790,48 +791,13 @@ private fun SoftTabBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Tab.values().forEach { t ->
-                val selected = t == current
-                Column(
-                    Modifier
-                        .weight(1f)
-                        // weight, not fillMaxHeight: the bar is measured with an unbounded max
-                        // height (it is a Scaffold bottomBar), and fillMaxHeight against an
-                        // infinite constraint collapses the whole Scaffold — the content went
-                        // blank and the tab bar floated mid-screen when this was tried.
-                        .fillMaxWidth()
-                        // selectable, not clickable: TalkBack needs role=Tab and the
-                        // selected state, which a bare clickable does not report.
-                        .selectable(selected = selected, role = Role.Tab) { onSelect(t) },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    // The pill behind the icon is the only place the accent is used in
-                    // chrome. It says "you are here" without a border under the bar.
-                    Box(
-                        Modifier
-                            .size(width = 54.dp, height = 30.dp)
-                            .background(if (selected) p.accentSoft else Color.Transparent, CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            when (t) {
-                                Tab.HOME -> Icons.Filled.Home
-                                Tab.TOOLS -> PackageIcon
-                            },
-                            // The label names the tab; a description here made TalkBack
-                            // say "Overview, Overview".
-                            contentDescription = null,
-                            modifier = Modifier.size(19.dp),
-                            tint = if (selected) p.accent else dim,
-                        )
-                    }
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        t.label,
-                        style = UiType.tab,
-                        color = if (selected) p.accent else dim,
-                    )
-                }
+                // selectable, not clickable: TalkBack needs role=Tab and the selected state,
+                // which a bare clickable does not report. weight lives inside BarItem.
+                TabItem(
+                    tab = t,
+                    selected = t == current,
+                    onSelect = onSelect,
+                )
             }
 
             // Both "go somewhere else" doors live here, next to one another, in the bar the
@@ -839,33 +805,134 @@ private fun SoftTabBar(
             // facts behind the phone name *also* in the header — two navigation targets above
             // the content and none below, which is the opposite of where a phone user looks.
             //
-            // They are drawn at icon size and without labels, unlike the tabs: these are not
-            // places you switch between, they are pages you visit and come back from.
-            Box(Modifier.width(1.dp).height(24.dp).background(Skin.palette.divider))
-            ChromeButton(Icons.Filled.Info, stringResource(R.string.home_about_phone), onOpenPhone)
-            ChromeButton(Icons.Filled.Settings, stringResource(R.string.home_settings), onSettings)
+            // All four get the same width and the same shape (icon over label), so the bar has
+            // one rhythm: two of them happen to mark a tab you are on and two do not. Clustering
+            // the doors at the right edge instead left an empty gutter in the middle and made
+            // the bar read as two bars.
+            BarItem(
+                icon = Icons.Filled.Info,
+                label = stringResource(R.string.home_device),
+                description = stringResource(R.string.home_about_phone),
+                selected = false,
+                tint = dim,
+                onClick = onOpenPhone,
+            )
+            BarItem(
+                icon = Icons.Filled.Settings,
+                label = stringResource(R.string.home_settings),
+                description = stringResource(R.string.home_settings),
+                selected = false,
+                tint = dim,
+                onClick = onSettings,
+            )
         }
     }
 }
 
 /**
- * A door in the bottom bar: an icon a thumb can hit, 44 dp square.
+ * A tab: the same look as a door, with the semantics of a tab.
  *
- * `contentDescription` is the label, because the bar has no room for a second word and a
- * screen reader still has to be able to say what the button does.
+ * `selectable` cannot be folded into [BarItem] without giving the doors a role they do not have,
+ * so the tab wraps the shared shape in its own selector.
  */
 @Composable
-private fun ChromeButton(
+private fun RowScope.TabItem(
+    tab: Tab,
+    selected: Boolean,
+    onSelect: (Tab) -> Unit,
+) {
+    val p = Skin.palette
+    Column(
+        Modifier
+            .weight(1f)
+            // weight, not fillMaxHeight: the bar is measured with an unbounded max height (it is
+            // a Scaffold bottomBar), and fillMaxHeight against an infinite constraint collapses
+            // the whole Scaffold — the content went blank and the bar floated mid-screen when
+            // this was tried.
+            .fillMaxWidth()
+            .selectable(selected = selected, role = Role.Tab) { onSelect(tab) }
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        // The pill behind the icon is the only place the accent is used in chrome. It says
+        // "you are here" without a border under the bar.
+        Box(
+            Modifier
+                .size(width = 54.dp, height = 30.dp)
+                .background(if (selected) p.accentSoft else Color.Transparent, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                when (tab) {
+                    Tab.HOME -> Icons.Filled.Home
+                    Tab.TOOLS -> PackageIcon
+                },
+                // The label names the tab; a description here made TalkBack say
+                // "Overview, Overview".
+                contentDescription = null,
+                modifier = Modifier.size(19.dp),
+                tint = if (selected) p.accent else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(3.dp))
+        Text(
+            tab.label,
+            style = UiType.tab,
+            color = if (selected) p.accent else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * One segment of the bottom bar: an icon in a pill, a label under it, equal width.
+ *
+ * Shared by the two tabs and the two doors on purpose — the bar has one rhythm, and a door that
+ * is drawn differently from its neighbours reads as a different kind of thing. The pill only
+ * appears for the segment you are *on*; a door has no "here" state, so it never shows one.
+ */
+@Composable
+private fun RowScope.BarItem(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
     description: String,
+    selected: Boolean,
+    tint: Color,
     onClick: () -> Unit,
 ) {
-    IconButton(onClick = onClick, modifier = Modifier.size(44.dp)) {
-        Icon(
-            icon,
-            contentDescription = description,
-            modifier = Modifier.size(20.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+    val p = Skin.palette
+    Column(
+        Modifier
+            .weight(1f)
+            .fillMaxWidth()
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics(mergeDescendants = true) { contentDescription = description }
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            Modifier
+                .size(width = 54.dp, height = 30.dp)
+                .background(if (selected) p.accentSoft else Color.Transparent, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                // The label under it names the segment; a description here makes TalkBack say
+                // the name twice.
+                contentDescription = null,
+                modifier = Modifier.size(19.dp),
+                tint = if (selected) p.accent else tint,
+            )
+        }
+        Spacer(Modifier.height(3.dp))
+        Text(
+            label,
+            style = UiType.tab,
+            color = if (selected) p.accent else tint,
+            maxLines = 1,
         )
     }
 }

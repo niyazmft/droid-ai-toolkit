@@ -51,9 +51,26 @@ trap cleanup EXIT
 
 # The accessibility tree is the only stable text oracle here: Compose draws text on a
 # Canvas, so OCR would be the alternative and that is not reproducible.
+# The dump file is deleted first, on purpose.
+#
+# `uiautomator dump` fails while the app is animating or a run is redrawing ("could not get idle
+# state"), and when it fails it leaves the *previous* file on disk. Reading that file made the
+# harness blind in the worst way: every check kept seeing the last screen it managed to capture,
+# so a stale "Settings" survived a force-stop, a restart and five Back presses, and the failure
+# was reported against the next test. With the file removed first, a failed dump now says so.
 dump_ui() {
-  adb_cmd shell uiautomator dump /sdcard/smoke.xml >/dev/null 2>&1 || true
-  adb_cmd shell cat /sdcard/smoke.xml 2>/dev/null | tr -d '\r'
+  local try
+  for try in 1 2 3 4 5 6; do
+    adb_cmd shell rm -f /sdcard/smoke.xml >/dev/null 2>&1 || true
+    adb_cmd shell uiautomator dump /sdcard/smoke.xml >/dev/null 2>&1 || true
+    ui=$(adb_cmd shell cat /sdcard/smoke.xml 2>/dev/null | tr -d '\r')
+    if [ -n "$ui" ]; then
+      printf '%s' "$ui"
+      return 0
+    fi
+    sleep 1
+  done
+  return 0
 }
 
 on_screen() { printf '%s' "$1" | grep -Fq -- "$2"; }
@@ -164,11 +181,12 @@ for m in re.finditer(
 # The tab's *label* cannot be used: `selectable(role = Tab)` merges its descendants into one
 # semantics node, so uiautomator reports the label with an empty frame ([0,0][0,0]) and a
 # coordinate tap on it lands in the corner of the screen. The selectable node itself carries
-# real bounds but no text, so the tab is identified by its place in the bar — which is fixed
-# by the design (four tabs, left to right).
+# real bounds but no text, so the tab is identified by its place in the bar: four targets in
+# equal quarters, left to right.
 tap_tab() {
   local wanted="$1" ui coords
-  ui=$(dump_ui)
+  for try in 1 2 3; do
+    ui=$(dump_ui)
   coords=$(printf '%s' "$ui" | WANT="$wanted" python3 -c '
 import os, re, sys
 names = ["Home", "Tools"]
@@ -181,17 +199,26 @@ width = int(screen.group(1)) if screen else 0
 height = int(screen.group(2)) if screen else 0
 if not width or not height:
     sys.exit(0)
-# The bar is split into equal segments, so the tab centre is geometry, not a lookup: the
-# *selected* tab is reported with clickable=false, so counting clickable nodes cannot tell
-# which one is which (and the label nodes have empty frames).
-# The bar holds four targets now: the two tabs on the left, then Info and Settings at icon
-# size on the right. Equal division of the width would tap the gap between them, so the
-# targets are read from the dump, ordered left to right, and the wanted tab is the nth
-# (Home = 0, Tools = 1).
+# The label nodes have empty frames, so the bar is located by geometry: four targets in equal
+# quarters, left to right.
+# The bar holds four targets — Home, Tools, Device, Settings — in equal quarters, so the
+# wanted tab is the nth from the left.
+#
+# The *selected* tab is reported with clickable="false" (it is a `selectable`, and uiautomator
+# reports the current one as not clickable). Counting only clickable nodes therefore shifted
+# every index by one whenever the tab being left was the selected one: tapping "Tools" from
+# Home landed on "Device" and the assertion that followed passed for the wrong reason, because
+# the phone-info page contains the word "Installed". Both attributes count as a target.
 targets = []
 for m in re.finditer(
-    r"clickable=\"true\"[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"", xml
+    r"<node[^>]*bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"[^>]*>", xml
 ):
+    tag = m.group(0)
+    # Only double quotes here: this python is inside a single-quoted shell string, so a
+    # single quote would end it and the shell would strip the inner double quotes too —
+    # python then saw `clickable=true` and every tap died with a SyntaxError.
+    if "clickable=\"true\"" not in tag and "selected=\"true\"" not in tag:
+        continue
     x1, y1, x2, y2 = (int(m.group(i)) for i in (1, 2, 3, 4))
     if y2 > y1 and y1 > height * 0.8 and x2 > x1:
         targets.append((x1, y1, x2, y2))
@@ -203,17 +230,59 @@ if idx < len(targets):
 else:
     print(int((idx + 0.5) * width / len(names)), int(height * 0.92))
 ' 2>/dev/null)
-  if [ -z "$coords" ]; then
-    return 1
+  if [ -n "$coords" ]; then
+    # shellcheck disable=SC2086  # two integers by construction
+    adb_cmd shell input tap $coords >/dev/null 2>&1
+    return 0
   fi
-  # shellcheck disable=SC2086  # two integers by construction
-  adb_cmd shell input tap $coords >/dev/null 2>&1
-  return 0
+  sleep 1
+  done
+  return 1
 }
 
 # A plugged-in cable makes some Androids pop the "Use USB to" chooser over everything, which
 # hides the app from uiautomator (it only dumps the focused window) and looks exactly like
 # "the app never reached Home". Dismiss it when it is the thing on screen.
+# Home's own sentence, not the footer label that every top-level screen carries.
+home_visible() {
+  on_screen "$1" 'tool running' ||
+    on_screen "$1" 'tools running' ||
+    on_screen "$1" 'Nothing installed yet' ||
+    on_screen "$1" 'Nothing is running' ||
+    on_screen "$1" 'Something needs attention'
+}
+
+# Wait until no run is drawing.
+#
+# The app repaints once a second while a run is in flight (elapsed time and the step line), and
+# uiautomator refuses to dump a window that never reaches idle — "could not get idle state". The
+# dump then comes back empty, which read as "there is no tab bar" and failed the *next* check.
+# Bounded, because a 40-minute install must not stall the suite: it just proceeds and let the
+# assertion speak.
+wait_idle() {
+  local limit="${1:-20}" ui
+  for _ in $(seq 1 "$limit"); do
+    ui=$(dump_ui)
+    if [ -n "$ui" ] && ! on_screen "$ui" 'Working'; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 0
+}
+
+on_screen_summary() {
+  # -o, not a greedy `.*text=` substitution: the dump is a single line, so the greedy form
+  # returned the *last* text in the document — always the footer label "Settings" — and every
+  # failure reported the same wrong screen.
+  printf '%s' "$1" |
+    grep -o 'text="[^"]\{3,24\}"' |
+    head -6 |
+    tr -d '"' |
+    sed 's/^text=//' |
+    paste -sd'|' -
+}
+
 dismiss_usb_chooser() {
   local ui
   ui=$(dump_ui)
@@ -354,16 +423,21 @@ if [ "$ready" -eq 1 ]; then
   if [ "$opened" -eq 0 ]; then
     bad "could not reach Raw Output through Settings -> Diagnostics"
   fi
-  # Back to Home for the remaining checks. Popped one level at a time and checked, because the
-  # number of levels depends on where §3 left the app and one Back too many exits it.
-  for _ in 1 2 3 4; do
-    ui=$(dump_ui)
-    if on_screen "$ui" 'Home' && ! on_screen "$ui" 'Diagnostics' && ! on_screen "$ui" 'Raw Output'; then
+  # Back to Home for the remaining checks. Walking back a level at a time was fragile: the
+  # number of levels depends on where §3 left the app, one Back too many exits it, and a dump
+  # taken 1 s after a Back can show the old screen — which then read as "Back does nothing".
+  # A cold start is one command and a known state.
+  # `am start -S`: stop the app first, in the same command. A separate `force-stop` followed by
+  # `start` was asynchronous enough that the task came back with its saved sub-screen — a
+  # Settings page survived what the harness called a cold start.
+  adb_cmd shell am start -S -n "$ACTIVITY" >/dev/null 2>&1
+  for _ in $(seq 1 12); do
+    sleep 2
+    if home_visible "$(dump_ui)"; then
       break
     fi
-    adb_cmd shell input keyevent KEYCODE_BACK >/dev/null 2>&1
-    sleep 1
   done
+
   if ! resumed_activity | grep -q "$PKG"; then
     adb_cmd shell am start -n "$ACTIVITY" >/dev/null 2>&1
     sleep 8
@@ -376,7 +450,8 @@ fi
 
 say "4. rotation keeps the tab"
 if [ "$ready" -eq 1 ]; then
-  tap_tab "Tools" || bad "could not find the Tools tab"
+  wait_idle
+  tap_tab "Tools" || bad "could not find the Tools tab ($(on_screen_summary "$(dump_ui)"))"
   sleep 2
   adb_cmd shell settings put system accelerometer_rotation 0 >/dev/null 2>&1
   adb_cmd shell settings put system user_rotation 1 >/dev/null 2>&1
@@ -402,7 +477,9 @@ if [ "$ready" -eq 1 ]; then
   if [ "$kept" -eq 1 ]; then
     ok "rotation kept the user on Tools"
   else
-    bad "rotation reset the screen"
+    # Say what was actually on screen: "reset the screen" alone cost a round trip to the phone
+    # to find out it was the phone-info page, not Home.
+    bad "rotation reset the screen (saw: $(on_screen_summary "$rot"))"
   fi
   adb_cmd shell settings put system user_rotation 0 >/dev/null 2>&1
   adb_cmd shell settings put system accelerometer_rotation 1 >/dev/null 2>&1
@@ -416,8 +493,7 @@ fi
 say "5. large font"
 if [ "$ready" -eq 1 ]; then
   adb_cmd shell settings put system font_scale 1.3 >/dev/null 2>&1
-  adb_cmd shell am force-stop "$PKG" >/dev/null 2>&1
-  adb_cmd shell am start -n "$ACTIVITY" >/dev/null 2>&1
+  adb_cmd shell am start -S -n "$ACTIVITY" >/dev/null 2>&1
   sleep 18
   if ! tap_desc "Settings"; then
     bad "could not find the Settings gear at font scale 1.3"
